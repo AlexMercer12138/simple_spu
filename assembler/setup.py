@@ -16,7 +16,7 @@ setup(
     description="Simple CPU 汇编器 - 支持 MOV/JMP/BRC 语法",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mercer/simple-cpu",
+    url="https://github.com/AlexMercer12138/simple_spu",
     py_modules=["assembler"],
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -40,7 +40,7 @@ setup(
     },
     keywords="assembler cpu riscv verilog fpga",
     project_urls={
-        "Bug Reports": "https://github.com/mercer/simple-cpu/issues",
-        "Source": "https://github.com/mercer/simple-cpu",
+        "Bug Reports": "https://github.com/AlexMercer12138/simple_spu/issues",
+        "Source": "https://github.com/AlexMercer12138/simple_spu",
     },
 )
