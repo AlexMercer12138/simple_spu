@@ -1,0 +1,48 @@
+{
+  "name": "sass-asm-syntax",
+  "displayName": "SASS Assembly Syntax",
+  "description": "Syntax highlighting for SASS (Simple CPU Assembler)",
+  "version": "1.0.0",
+  "publisher": "simple-cpu",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "assembly",
+    "assembler",
+    "sass",
+    "cpu",
+    "verilog"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sass-asm",
+        "aliases": [
+          "SASS Assembly",
+          "sass-asm"
+        ],
+        "extensions": [
+          ".asm"
+        ],
+        "configuration": "./language-configuration/language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sass-asm",
+        "scopeName": "source.sass-asm",
+        "path": "./syntaxes/sass-asm.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "sass-asm",
+        "path": "./snippets/sass-asm.json"
+      }
+    ]
+  }
+}

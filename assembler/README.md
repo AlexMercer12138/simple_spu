@@ -10,17 +10,77 @@ Simple CPU 的汇编器，支持 MOV/JMP/BRC 三种关键字语法，可输出 V
 python assembler.py program.asm
 ```
 
-### 方式二：安装为命令行工具
+### 方式二：Windows 一键安装
+
+双击运行 `install.bat`：
+
+```bash
+install.bat
+```
+
+或在命令行中执行：
+
+```bash
+install.bat
+```
+
+安装程序会自动：
+- 检查 Python 环境
+- 安装 `sass` 命令到系统
+
+安装完成后需要手动将Scripts目录添加到环境变量 PATH 中，即可在任意路径使用：
+
+```bash
+sass program.asm
+```
+
+### 方式三：手动安装（跨平台）
 
 ```bash
 cd assembler
 pip install -e .
 ```
 
-安装后可在任意路径使用：
+### VSCode 插件安装（可选）
+
+提供语法高亮、代码片段和智能提示功能：
 
 ```bash
-sass program.asm
+// 本地开发模式安装
+cd assembler/sass-vscode-extension
+code --extensionDevelopmentPath=.
+
+// 或手动复制到 VSCode 扩展目录
+// Windows: %USERPROFILE%\.vscode\extensions\
+// macOS/Linux: ~/.vscode/extensions/
+```
+
+插件功能：
+- 🎨 **语法高亮** - MOV/JMP/BRC 指令、寄存器、立即数、标签、注释
+- ✂️ **代码片段** - 输入 `movi`、`movr`、`jmpl`、`brceq` 等快速生成代码
+- 📝 **注释支持** - `//` 格式注释，支持 `Ctrl+/` 快捷键
+- 🔤 **括号匹配** - 内存访问括号 `[]` 自动匹配
+
+## 卸载
+
+### Windows 一键卸载
+
+双击运行 `uninstall.bat`：
+
+```bash
+uninstall.bat
+```
+
+或在命令行中执行：
+
+```bash
+uninstall.bat
+```
+
+### 手动卸载
+
+```bash
+pip uninstall simple-cpu-assembler
 ```
 
 ## 使用方法
@@ -28,25 +88,25 @@ sass program.asm
 ### 基本用法
 
 ```bash
-# 默认输出 Verilog 格式，自动生成 test.v
+// 默认输出 Verilog 格式，自动生成 test.v
 sass program.asm
 
-# 指定输出格式，自动生成对应扩展名文件
-sass program.asm -f coe              # 生成 program.coe
-sass program.asm -f mif              # 生成 program.mif
-sass program.asm -f hex              # 生成 program.hex
-sass program.asm -f bin              # 生成 program.bin
+// 指定输出格式，自动生成对应扩展名文件
+sass program.asm -f coe              // 生成 program.coe
+sass program.asm -f mif              // 生成 program.mif
+sass program.asm -f hex              // 生成 program.hex
+sass program.asm -f bin              // 生成 program.bin
 
-# 指定输出文件名
+// 指定输出文件名
 sass program.asm -o output.v
 
-# 仅打印到命令行，不保存文件
+// 仅打印到命令行，不保存文件
 sass program.asm -p
 
-# 生成调试文件(标签表和去注释代码)
+// 生成调试文件(标签表和去注释代码)
 sass program.asm -d
 
-# 生成示例程序
+// 生成示例程序
 sass --sample > sample.asm
 ```
 
@@ -55,84 +115,95 @@ sass --sample > sample.asm
 #### MOV 指令
 
 ```asm
-; 加载立即数
-MOV Rd, #imm              ; Rd = imm
+// 加载立即数 (I-Type)
+MOV Rd, #imm              // Rd = imm
 
-; 寄存器操作
-MOV Rd, Rs                ; Rd = Rs
-MOV Rd, Rs2 + Rs1         ; Rd = Rs2 + Rs1
-MOV Rd, Rs2 - Rs1         ; Rd = Rs2 - Rs1
-MOV Rd, Rs2 & Rs1         ; Rd = Rs2 & Rs1
-MOV Rd, Rs2 | Rs1         ; Rd = Rs2 | Rs1
-MOV Rd, Rs2 ^ Rs1         ; Rd = Rs2 ^ Rs1
-MOV Rd, Rs2 << Rs1        ; Rd = Rs2 << Rs1
-MOV Rd, Rs2 >> Rs1        ; Rd = Rs2 >> Rs1
-
-; 内存访问
-MOV Rd, [Rs]              ; Rd = Mem[Rs]
-MOV [Rs1], Rs2            ; Mem[Rs1] = Rs2
+// 寄存器复制 (R-Type)
+MOV Rd, Rs                // Rd = Rs
 ```
 
-#### ⚠️ 重要约定：R0 不可写入
+#### ALU 运算指令
 
-**R0 固定为 0，禁止作为目标寄存器写入！**
+支持 I-Type（立即数）和 R-Type（寄存器）两种形式：
 
 ```asm
-; ❌ 错误：不要向R0写入数据
-MOV R0, #100              ; 虽然语法允许，但强烈不推荐
-MOV R0, R1                ; 同上
+// I-Type: Rs op #imm
+MOV Rd, Rs + #imm         // Rd = Rs + imm
+MOV Rd, Rs - #imm         // Rd = Rs - imm
+MOV Rd, Rs & #imm         // Rd = Rs & imm
+MOV Rd, Rs | #imm         // Rd = Rs | imm
+MOV Rd, Rs ^ #imm         // Rd = Rs ^ imm
+MOV Rd, Rs << #imm        // Rd = Rs << imm (逻辑左移)
+MOV Rd, Rs >> #imm        // Rd = Rs >> imm (逻辑右移)
+MOV Rd, Rs >>> #imm       // Rd = Rs >>> imm (算术右移)
 
-; ✅ 正确：R0只能作为源寄存器使用
-MOV R1, R0                ; R1 = 0（读取R0的值）
-MOV [R0], R2              ; Mem[0] = R2（地址计算使用R0=0）
+// R-Type: Rs2 op Rs1
+MOV Rd, Rs2 + Rs1         // Rd = Rs2 + Rs1
+MOV Rd, Rs2 - Rs1         // Rd = Rs2 - Rs1
+MOV Rd, Rs2 & Rs1         // Rd = Rs2 & Rs1
+MOV Rd, Rs2 | Rs1         // Rd = Rs2 | Rs1
+MOV Rd, Rs2 ^ Rs1         // Rd = Rs2 ^ Rs1
+MOV Rd, Rs2 << Rs1        // Rd = Rs2 << Rs1 (逻辑左移)
+MOV Rd, Rs2 >> Rs1        // Rd = Rs2 >> Rs1 (逻辑右移)
+MOV Rd, Rs2 >>> Rs1       // Rd = Rs2 >>> Rs1 (算术右移)
 ```
 
-> **为什么有这个约定？**
-> - 全零指令 `0x00000000` 被解释为 `SET R0, #0`
-> - 如果程序未初始化内存或跳转到了空地址，R0会被清零
-> - 遵守约定可避免难以调试的BUG
+#### 内存访问指令
 
-#### ⚠️ 重要约定：R15 专用于 BRC 指令
-
-**R15 作为汇编器内部临时寄存器，用于 BRC 分支指令展开！**
+支持 I-Type（立即数偏移）和 R-Type（寄存器偏移）两种形式：
 
 ```asm
-; ❌ 错误：避免使用 R15 作为 JMP 链接寄存器
-JMP R15, label            ; 可能与 BRC 指令冲突
+// I-Type: [Rs + #imm]
+MOV Rd, [Rs + #imm]       // Rd = Mem[Rs + imm]
+MOV [Rs + #imm], Rd       // Mem[Rs + imm] = Rd
 
-; ✅ 正确：JMP 使用 R1-R14 作为链接寄存器
-JMP R14, label            ; 安全，R14 不会被 BRC 使用
-JMP R5, loop              ; 安全
+// R-Type: [Rs1 + Rs2]
+MOV Rd, [Rs1 + Rs2]       // Rd = Mem[Rs1 + Rs2]
+MOV [Rs1 + Rs2], Rd       // Mem[Rs1 + Rs2] = Rd
+
+// 偏移为0的简写形式
+MOV Rd, [Rs]              // Rd = Mem[Rs] (等同于 [Rs + #0])
+MOV [Rs], Rd              // Mem[Rs] = Rd (等同于 [Rs + #0])
 ```
-
-> **为什么有这个约定？**
-> - BRC 指令使用标签时会展开为 `SET R15, #addr` + `BRC R15, cond`
-> - 如果 JMP 同时使用 R15 作为链接寄存器，会破坏跳转地址
-> - 使用 R1-R14 作为 JMP 链接寄存器可避免冲突
 
 #### JMP 指令
 
+语法: `JMP target, Rd` (与 BRC 指令结构保持一致)
+
 ```asm
-; 跳转到立即数地址
-JMP Rd, #imm              ; Rd = PC+1, PC = imm
+// 跳转到立即数地址 (I-Type)
+JMP #imm, Rd              // Rd = PC+1, PC = imm
 
-; 跳转到标签
-JMP Rd, label             ; Rd = PC+1, PC = label
+// 跳转到标签 (I-Type)
+JMP label, Rd             // Rd = PC+1, PC = label
 
-; 寄存器跳转
-JMP Rd, Rs                ; Rd = PC+1, PC = Rs
+// 寄存器跳转 (R-Type)
+JMP Rs, Rd                // Rd = PC+1, PC = Rs
 ```
+
+**注意：** `target` 是跳转目标，`Rd` 是链接寄存器（用于保存返回地址）。
 
 #### BRC 指令（分支）
 
+支持寄存器跳转和立即数/标签跳转：
+
 ```asm
-BRC Rs, Rd2 == Rd1        ; if (Rd2 == Rd1) PC = Rs
-BRC Rs, Rd2 != Rd1        ; if (Rd2 != Rd1) PC = Rs
-BRC Rs, Rd2 <  Rd1        ; if (Rd2 <  Rd1) PC = Rs
-BRC Rs, Rd2 >= Rd1        ; if (Rd2 >= Rd1) PC = Rs
-BRC Rs, Rd2 >  Rd1        ; if (Rd1 <  Rd2) PC = Rs
-BRC Rs, Rd2 <= Rd1        ; if (Rd1 >= Rd2) PC = Rs
+// 寄存器跳转 (R-Type)
+BRC Rs, Rd2 == Rd1        // if (Rd2 == Rd1) PC = Rs
+BRC Rs, Rd2 != Rd1        // if (Rd2 != Rd1) PC = Rs
+BRC Rs, Rd2 <  Rd1        // if (Rd2 <  Rd1) PC = Rs  (有符号比较)
+BRC Rs, Rd2 >= Rd1        // if (Rd2 >= Rd1) PC = Rs  (有符号比较)
+
+// 立即数跳转 (I-Type)
+BRC #imm, Rd2 == Rd1      // if (Rd2 == Rd1) PC = #imm
+BRC #imm, Rd2 != Rd1      // if (Rd2 != Rd1) PC = #imm
+
+// 标签跳转 (I-Type，自动汇编为立即数)
+BRC label, Rd2 == Rd1     // if (Rd2 == Rd1) PC = label
+BRC label, Rd2 != Rd1     // if (Rd2 != Rd1) PC = label
 ```
+
+**注意：** BLT 和 BGE 使用有符号数比较
 
 ### 标签支持
 
@@ -143,16 +214,32 @@ start:
 
 loop:
     MOV R0, R0 + R1
-    JMP R2, loop        ; 跳转到标签
+    JMP loop, R2        // 跳转到标签 (JMP target, Rd)
+```
+
+### 有符号立即数
+
+立即数为 **16位有符号数**，范围 `-32768 ~ 32767`。
+
+```asm
+// 正数
+MOV R1, #100              // R1 = 100
+
+// 负数（汇编为补码）
+MOV R2, #-1               // R2 = 0xFFFF
+MOV R3, #-32768           // R3 = 0x8000
+
+// 十六进制表示（自动解释为无符号值）
+MOV R4, #0xFFFF           // R4 = 65535 (等同于 #-1 的无符号表示)
 ```
 
 ### 注释
 
-支持 `#` 和 `;` 开头的注释：
+只支持 `//` 格式的注释：
 
 ```asm
-; 这是注释
-MOV R0, #1          # 这也是注释
+// 这是注释
+MOV R0, #1          // 这也是注释
 ```
 
 ## 输出格式说明
@@ -169,10 +256,10 @@ module prog_rom(
 );
 always @(*) begin
     case (prog_addr)
-        default: prog_data = 0;
         0 : prog_data = 32'h00000000;
         1 : prog_data = 32'h00001001;
         ...
+        default: prog_data = 0;
     endcase
 end
 endmodule
@@ -183,7 +270,7 @@ endmodule
 Xilinx FPGA 内存初始化文件，每行一条指令：
 
 ```
-; Simple CPU Program Memory COE File
+// Simple CPU Program Memory COE File
 memory_initialization_radix=16;
 memory_initialization_vector=
 00000000,
@@ -211,46 +298,27 @@ CONTENT BEGIN
 END;
 ```
 
-### HEX 格式
+### HEX 格式（Intel HEX）
 
-纯十六进制，每行一条指令：
+标准Intel HEX格式，包含数据记录和结束记录：
 
 ```
-00000000
-00001001
-00000002
-...
+:0400000000000010EC
+:0400040000010110E6
+:0400080000020210E0
+:00000001FF
 ```
 
-## 完整示例
+格式说明：`:BBAAAATTDD...CC`
+- `BB` - 字节数
+- `AAAA` - 地址
+- `TT` - 记录类型（00=数据，01=结束）
+- `DD...` - 数据字节
+- `CC` - 校验和
 
-```asm
-; 计算 1 + 2 + 3 + 4 = 10
-start:
-    MOV R0, #0          ; R0 = 0 (累加器)
-    MOV R1, #1          ; R1 = 1
-    MOV R2, #2          ; R2 = 2
-    MOV R3, #3          ; R3 = 3
-    MOV R4, #4          ; R4 = 4
+## 参考代码
 
-    MOV R5, R1          ; R5 = R1
-    MOV R5, R5 + R2     ; R5 = R5 + R2 = 3
-    MOV R5, R5 + R3     ; R5 = R5 + R3 = 6
-    MOV R5, R5 + R4     ; R5 = R5 + R4 = 10
-
-    MOV [R0], R5        ; 存储结果到内存地址0
-    MOV R6, [R0]        ; 从内存读取到R6
-
-loop:
-    JMP R7, loop        ; 无限循环
-```
-
-编译后自动生成 `test.v`：
-
-```bash
-$ sass test.asm
-成功: 已生成 test.v (11 条指令)
-```
+- example路径下
 
 ## 许可证
 

@@ -1,0 +1,72 @@
+{
+  "MOV Immediate": {
+    "prefix": "movi",
+    "body": [
+      "MOV ${1:Rd}, #${2:imm}"
+    ],
+    "description": "MOV with immediate value"
+  },
+  "MOV Register": {
+    "prefix": "movr",
+    "body": [
+      "MOV ${1:Rd}, ${2:Rs}"
+    ],
+    "description": "MOV between registers"
+  },
+  "MOV ALU I-Type": {
+    "prefix": "movalu",
+    "body": [
+      "MOV ${1:Rd}, ${2:Rs} ${3:+} #${4:imm}"
+    ],
+    "description": "MOV with ALU operation (immediate)"
+  },
+  "MOV Load": {
+    "prefix": "movl",
+    "body": [
+      "MOV ${1:Rd}, [${2:Rs} + #${3:offset}]"
+    ],
+    "description": "Load from memory"
+  },
+  "MOV Store": {
+    "prefix": "movs",
+    "body": [
+      "MOV [${1:Rs} + #${2:offset}], ${3:Rd}"
+    ],
+    "description": "Store to memory"
+  },
+  "JMP Immediate": {
+    "prefix": "jmpi",
+    "body": [
+      "JMP ${1:Rd}, #${2:addr}"
+    ],
+    "description": "Jump to immediate address"
+  },
+  "JMP Label": {
+    "prefix": "jmpl",
+    "body": [
+      "JMP ${1:Rd}, ${2:label}"
+    ],
+    "description": "Jump to label"
+  },
+  "BRC Equal": {
+    "prefix": "brceq",
+    "body": [
+      "BRC ${1:addr}, ${2:Rd2} == ${3:Rd1}"
+    ],
+    "description": "Branch if equal"
+  },
+  "BRC Not Equal": {
+    "prefix": "brcne",
+    "body": [
+      "BRC ${1:addr}, ${2:Rd2} != ${3:Rd1}"
+    ],
+    "description": "Branch if not equal"
+  },
+  "Label": {
+    "prefix": "label",
+    "body": [
+      "${1:label}:"
+    ],
+    "description": "Create a label"
+  }
+}

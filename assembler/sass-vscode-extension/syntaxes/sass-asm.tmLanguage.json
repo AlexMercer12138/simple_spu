@@ -1,0 +1,252 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SASS Assembly",
+  "scopeName": "source.sass-asm",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#labels"
+    },
+    {
+      "include": "#instructions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.sass-asm",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "name": "entity.name.label.sass-asm",
+          "match": "^[\\s\\t]*([a-zA-Z_][a-zA-Z0-9_]*)\\s*:",
+          "captures": {
+            "1": {
+              "name": "entity.name.label.sass-asm"
+            }
+          }
+        }
+      ]
+    },
+    "instructions": {
+      "patterns": [
+        {
+          "include": "#mov-instruction"
+        },
+        {
+          "include": "#jmp-instruction"
+        },
+        {
+          "include": "#brc-instruction"
+        }
+      ]
+    },
+    "mov-instruction": {
+      "patterns": [
+        {
+          "name": "meta.instruction.mov.sass-asm",
+          "begin": "\\b(MOV)\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.mov.sass-asm"
+            }
+          },
+          "end": "(?=//)|$",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#memory-access"
+            },
+            {
+              "include": "#alu-operation"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        }
+      ]
+    },
+    "jmp-instruction": {
+      "patterns": [
+        {
+          "name": "meta.instruction.jmp.sass-asm",
+          "begin": "\\b(JMP)\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.jmp.sass-asm"
+            }
+          },
+          "end": "(?=//)|$",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        }
+      ]
+    },
+    "brc-instruction": {
+      "patterns": [
+        {
+          "name": "meta.instruction.brc.sass-asm",
+          "begin": "\\b(BRC)\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.brc.sass-asm"
+            }
+          },
+          "end": "(?=//)|$",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#brc-operands"
+            }
+          ]
+        }
+      ]
+    },
+    "brc-operands": {
+      "patterns": [
+        {
+          "match": "(R1[0-5]|R[0-9])\\s*,\\s*(R1[0-5]|R[0-9])\\s*(==|!=|<|>=)\\s*(R1[0-5]|R[0-9])",
+          "captures": {
+            "1": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "2": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "3": {
+              "name": "keyword.operator.comparison.sass-asm"
+            },
+            "4": {
+              "name": "variable.other.register.sass-asm"
+            }
+          }
+        },
+        {
+          "match": "(#-?[0-9]+|#0[xX][0-9a-fA-F]+|#0[bB][01]+)\\s*,\\s*(R1[0-5]|R[0-9])\\s*(==|!=|<|>=)\\s*(R1[0-5]|R[0-9])",
+          "captures": {
+            "1": {
+              "name": "constant.numeric.immediate.sass-asm"
+            },
+            "2": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "3": {
+              "name": "keyword.operator.comparison.sass-asm"
+            },
+            "4": {
+              "name": "variable.other.register.sass-asm"
+            }
+          }
+        },
+        {
+          "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*,\\s*(R1[0-5]|R[0-9])\\s*(==|!=|<|>=)\\s*(R1[0-5]|R[0-9])",
+          "captures": {
+            "1": {
+              "name": "entity.name.label.sass-asm"
+            },
+            "2": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "3": {
+              "name": "keyword.operator.comparison.sass-asm"
+            },
+            "4": {
+              "name": "variable.other.register.sass-asm"
+            }
+          }
+        }
+      ]
+    },
+    "memory-access": {
+      "patterns": [
+        {
+          "name": "meta.memory-access.sass-asm",
+          "match": "\\[\\s*(R1[0-5]|R[0-9])\\s*(?:\\+\\s*(R1[0-5]|R[0-9]|#-?[0-9]+|#0[xX][0-9a-fA-F]+|#0[bB][01]+))?\\s*\\]",
+          "captures": {
+            "1": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "2": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "3": {
+              "name": "constant.numeric.immediate.sass-asm"
+            }
+          }
+        }
+      ]
+    },
+    "alu-operation": {
+      "patterns": [
+        {
+          "name": "meta.alu-operation.sass-asm",
+          "match": "(R1[0-5]|R[0-9])\\s*(\\+|\\-|&|\\||\\^|<<|>>|>>>)\\s*(R1[0-5]|R[0-9]|#-?[0-9]+|#0[xX][0-9a-fA-F]+|#0[bB][01]+)",
+          "captures": {
+            "1": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "2": {
+              "name": "keyword.operator.arithmetic.sass-asm"
+            },
+            "3": {
+              "name": "variable.other.register.sass-asm"
+            },
+            "4": {
+              "name": "constant.numeric.immediate.sass-asm"
+            }
+          }
+        }
+      ]
+    },
+    "operands": {
+      "patterns": [
+        {
+          "name": "variable.other.register.sass-asm",
+          "match": "\\bR1[0-5]\\b"
+        },
+        {
+          "name": "variable.other.register.sass-asm",
+          "match": "\\bR[0-9]\\b"
+        },
+        {
+          "name": "constant.numeric.hex.sass-asm",
+          "match": "#0[xX][0-9a-fA-F]+"
+        },
+        {
+          "name": "constant.numeric.binary.sass-asm",
+          "match": "#0[bB][01]+"
+        },
+        {
+          "name": "constant.numeric.immediate.sass-asm",
+          "match": "#-?[0-9]+"
+        },
+        {
+          "name": "entity.name.label.sass-asm",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        },
+        {
+          "name": "punctuation.separator.comma.sass-asm",
+          "match": ","
+        }
+      ]
+    }
+  }
+}
