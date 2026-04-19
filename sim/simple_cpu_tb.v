@@ -53,13 +53,7 @@ module simple_cpu_tb();
 
     // Reset generation
     initial begin
-        #200 rst_n = 1;
-    end
-
-    // Simulation timeout - finish after enough time to execute all instructions
-    initial begin
-        #10000 $display("=== Simulation Timeout ===");
-        $finish;
+        #2000 rst_n = 1;
     end
 
     // Signals for CPU connection
@@ -285,7 +279,7 @@ module simple_cpu_tb();
     );
 
     // Instantiate Program Memory (ROM)
-    test_rom rom_inst (
+    hello_world rom_inst (
         .prog_addr      (prog_addr),
         .prog_data      (prog_data)
     );
