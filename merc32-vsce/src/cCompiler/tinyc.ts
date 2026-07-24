@@ -787,6 +787,9 @@ interface FunctionContext {
     labelId: number;
 }
 
+const ABI_RETURN_REG = 'r4';
+const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
+
 class CodeGenerator {
     private readonly lines: string[] = [];
     private readonly globals = new Map<string, Slot>();
@@ -799,7 +802,7 @@ class CodeGenerator {
     private current?: FunctionContext;
 
     constructor(private readonly program: Program, options: CompileOptions) {
-        this.dataBase = options.dataBase ?? 0x0010_0000;
+        this.dataBase = options.dataBase ?? 0x0080_0000;
         this.dlbAddrWidth = options.dlbAddrWidth ?? 16;
         this.moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
         this.tempSlots = options.tempSlots ?? 32;
@@ -952,7 +955,7 @@ class CodeGenerator {
                 throw new CompilerError(`internal error: missing parameter '${param.name}'`);
             }
             if (index < 4) {
-                this.emit(`mov [r12 + ${slot.offset}], r${3 + index}`);
+                this.emit(`mov [r12 + ${slot.offset}], ${ABI_ARG_REGS[index]}`);
             } else {
                 const sourceOffset = layout.frameSize + (index - 4) * 4;
                 this.emit(`mov r7, [r12 + ${sourceOffset}]`);
@@ -962,7 +965,7 @@ class CodeGenerator {
 
         this.emitStatement(fn.body);
         if (isVoidType(fn.returnType)) {
-            this.loadImm('r3', 0);
+            this.loadImm(ABI_RETURN_REG, 0);
         }
         this.emit(`jmp ${ctx.returnLabel}`);
 
@@ -1025,9 +1028,9 @@ class CodeGenerator {
                 return;
             case 'return':
                 if (stmt.expr) {
-                    this.emitExpr(stmt.expr, 'r3');
+                    this.emitExpr(stmt.expr, ABI_RETURN_REG);
                 } else {
-                    this.loadImm('r3', 0);
+                    this.loadImm(ABI_RETURN_REG, 0);
                 }
                 this.emit(`jmp ${this.ctx().returnLabel}`);
                 return;
@@ -1327,7 +1330,7 @@ class CodeGenerator {
         }
 
         for (let i = 0; i < Math.min(4, expr.args.length); i++) {
-            this.loadTemp(argTemps[i], `r${3 + i}`);
+            this.loadTemp(argTemps[i], ABI_ARG_REGS[i]);
         }
 
         this.emit(`jmp ${expr.name}, r14`);
@@ -1335,8 +1338,8 @@ class CodeGenerator {
         if (extraBytes > 0) {
             this.adjustSp(extraBytes);
         }
-        if (target !== 'r3') {
-            this.emit(`mov ${target}, r3`);
+        if (target !== ABI_RETURN_REG) {
+            this.emit(`mov ${target}, ${ABI_RETURN_REG}`);
         }
         for (let i = 0; i < argTemps.length; i++) {
             this.freeTemp();

@@ -11,7 +11,7 @@
 .prog full_test
 .entry start
 
-.equ DATA_PAGE 0x0010
+.equ DATA_PAGE 0x0080
 .equ DATA_BASE 64
 .equ STATUS_ADDR 960
 .equ FAIL_ADDR 964
@@ -42,9 +42,9 @@ brc fail, "!="
 .endm
 
 .macro write_mem(addr, value)
-data_addr(r3, addr)
+data_addr(r10, addr)
 mov r4, value
-mov [r3], r4
+mov [r10], r4
 .endm
 
 .macro data_addr(rd, offset)
@@ -65,13 +65,13 @@ write_mem(HEARTBEAT_ADDR, 0)
 // Pseudo-directive checks emitted in this main file.
 // ---------------------------------------------------------------------------
 .ifdef MISSING_SYMBOL
-mov r3, 1
+mov r4, 1
 .elsif FEATURE_PSEUDO
-mov r3, PSEUDO_EXPECT
+mov r4, PSEUDO_EXPECT
 .else
-mov r3, 2
+mov r4, 2
 .endif
-assert_eqi(r3, PSEUDO_EXPECT, 1)
+assert_eqi(r4, PSEUDO_EXPECT, 1)
 
 mov r4, 0
 .rept REPT_COUNT
@@ -82,7 +82,7 @@ assert_eqi(r4, REPT_COUNT, 2)
 // Call the included pseudo test block. The include is appended by the
 // assembler preprocessor, so this also validates cross-file label resolution.
 jmp pseudo_include_test, r12
-assert_eqi(r3, 3, 3)
+assert_eqi(r4, 3, 3)
 
 // ---------------------------------------------------------------------------
 // mov immediate and zero-register behavior.
@@ -90,44 +90,44 @@ assert_eqi(r3, 3, 3)
 mov r0, 99
 assert_eqi(r0, 0, 10)
 
-mov r3, 0
-assert_eqi(r3, 0, 11)
+mov r4, 0
+assert_eqi(r4, 0, 11)
 
-mov r4, 100
-assert_eqi(r4, 100, 12)
+mov r5, 100
+assert_eqi(r5, 100, 12)
 
-mov r5, -1
-assert_eqi(r5, 0xFFFF, 13)
+mov r6, -1
+assert_eqi(r6, 0xFFFF, 13)
 
-mov r6, 0x1234
-assert_eqi(r6, 0x1234, 14)
+mov r7, 0x1234
+assert_eqi(r7, 0x1234, 14)
 
 // Current assembler lowers "mov rd, rs" to ADDI rd, rs, 0.
-mov r7, r6
-assert_eqi(r7, 0x1234, 15)
+mov r8, r7
+assert_eqi(r8, 0x1234, 15)
 
 // ---------------------------------------------------------------------------
 // ALU I-type forms.
 // ---------------------------------------------------------------------------
-mov r8, r4 + 10
+mov r8, r5 + 10
 assert_eqi(r8, 110, 20)
 
-mov r8, r4 - 50
+mov r8, r5 - 50
 assert_eqi(r8, 50, 21)
 
-mov r8, r6 & 0x0F0F
+mov r8, r7 & 0x0F0F
 assert_eqi(r8, 0x0204, 22)
 
-mov r8, r6 | 0x00C0
+mov r8, r7 | 0x00C0
 assert_eqi(r8, 0x12F4, 23)
 
-mov r8, r6 ^ 0x00FF
+mov r8, r7 ^ 0x00FF
 assert_eqi(r8, 0x12CB, 24)
 
-mov r8, r4 << 2
+mov r8, r5 << 2
 assert_eqi(r8, 400, 25)
 
-mov r8, r4 >> 2
+mov r8, r5 >> 2
 assert_eqi(r8, 25, 26)
 
 mov r9, 0
@@ -140,34 +140,34 @@ assert_eqr(r8, r13, 27)
 // ---------------------------------------------------------------------------
 // ALU R-type forms.
 // ---------------------------------------------------------------------------
-mov r3, 20
-mov r4, 7
-mov r5, 2
+mov r4, 20
+mov r5, 7
+mov r6, 2
 
-mov r8, r3 + r4
+mov r8, r4 + r5
 assert_eqi(r8, 27, 30)
 
-mov r8, r3 - r4
+mov r8, r4 - r5
 assert_eqi(r8, 13, 31)
 
-mov r8, r3 & r4
+mov r8, r4 & r5
 assert_eqi(r8, 4, 32)
 
-mov r8, r3 | r4
+mov r8, r4 | r5
 assert_eqi(r8, 23, 33)
 
-mov r8, r3 ^ r4
+mov r8, r4 ^ r5
 assert_eqi(r8, 19, 34)
 
-mov r8, r3 << r5
+mov r8, r4 << r6
 assert_eqi(r8, 80, 35)
 
-mov r8, r3 >> r5
+mov r8, r4 >> r6
 assert_eqi(r8, 5, 36)
 
 mov r9, 0
 mov r9, r9 - 16
-mov r8, r9 >>> r5
+mov r8, r9 >>> r6
 mov r13, 0
 mov r13, r13 - 4
 assert_eqr(r8, r13, 37)
@@ -175,100 +175,100 @@ assert_eqr(r8, r13, 37)
 // ---------------------------------------------------------------------------
 // Local-bus memory forms.
 // ---------------------------------------------------------------------------
-data_addr(r3, DATA_BASE)
-mov r4, 0x1111
-mov r5, 0x2222
-mov r6, 4
-mov r7, 8
+data_addr(r4, DATA_BASE)
+mov r5, 0x1111
+mov r6, 0x2222
+mov r7, 4
+mov r10, 8
 
-mov [r3], r4
-mov r8, [r3]
+mov [r4], r5
+mov r8, [r4]
 assert_eqi(r8, 0x1111, 40)
 
-mov [r3 + 4], r5
-mov r8, [r3 + 4]
+mov [r4 + 4], r6
+mov r8, [r4 + 4]
 assert_eqi(r8, 0x2222, 41)
 
-mov [r3 + r7], r4
-mov r8, [r3 + r7]
+mov [r4 + r10], r5
+mov r8, [r4 + r10]
 assert_eqi(r8, 0x1111, 42)
 
-mov r9, [r3 + r6]
+mov r9, [r4 + r7]
 assert_eqi(r9, 0x2222, 43)
 
 // ---------------------------------------------------------------------------
 // cmp + brc immediate/label target forms.
 // ---------------------------------------------------------------------------
-mov r3, 5
 mov r4, 5
-mov r5, 9
+mov r5, 5
+mov r6, 9
 
 mov r14, 50
-cmp r3, r4
+cmp r4, r5
 brc br_beq_i_ok, "eq"
 jmp fail
 br_beq_i_ok:
 
 mov r14, 51
-cmp r3, r5
+cmp r4, r6
 brc fail, "eq"
 
 mov r14, 52
-cmp r3, r5
+cmp r4, r6
 brc br_bne_i_ok, "ne"
 jmp fail
 br_bne_i_ok:
 
 mov r14, 53
-cmp r3, r4
+cmp r4, r5
 brc fail, "ne"
 
-mov r3, 0
-mov r3, r3 - 1
-mov r4, 1
+mov r4, 0
+mov r4, r4 - 1
+mov r5, 1
 mov r14, 54
-cmp r3, r4
+cmp r4, r5
 brc br_blt_i_ok, "lt"
 jmp fail
 br_blt_i_ok:
 
 mov r14, 55
-cmp r4, r3
+cmp r5, r4
 brc fail, "lt"
 
 mov r14, 56
-cmp r4, r3
+cmp r5, r4
 brc br_bge_i_ok, "ge"
 jmp fail
 br_bge_i_ok:
 
 mov r14, 57
-cmp r3, r4
+cmp r4, r5
 brc fail, "ge"
 
 mov r14, 58
-cmp r4, r3
+cmp r5, r4
 brc br_gt_i_ok, ">"
 jmp fail
 br_gt_i_ok:
 
 mov r14, 59
-cmp r3, r4
+cmp r4, r5
 brc br_le_i_ok, "<="
 jmp fail
 br_le_i_ok:
 
-mov r3, 0
-mov r3, r3 - 1
-mov r4, 1
+mov r4, 0
+mov r4, r4 - 1
+mov r5, 1
 mov r14, 60
-cmp r3, r4
+cmp r4, r5
 brcu br_ugt_i_ok, ">"
 jmp fail
 br_ugt_i_ok:
 
 mov r14, 61
-cmp r4, r3
+cmp r5, r4
 brcu br_ule_i_ok, "<="
 jmp fail
 br_ule_i_ok:
@@ -276,34 +276,34 @@ br_ule_i_ok:
 // ---------------------------------------------------------------------------
 // cmp + brc register-target forms.
 // ---------------------------------------------------------------------------
-mov r3, 6
 mov r4, 6
-mov r5, 8
+mov r5, 6
+mov r6, 8
 
 mov r8, br_beq_r_ok
 mov r14, 62
-cmp r3, r4
+cmp r4, r5
 brc r8, "eq"
 jmp fail
 br_beq_r_ok:
 
 mov r8, br_bne_r_ok
 mov r14, 63
-cmp r3, r5
+cmp r4, r6
 brc r8, "ne"
 jmp fail
 br_bne_r_ok:
 
 mov r8, br_blt_r_ok
 mov r14, 64
-cmp r3, r5
+cmp r4, r6
 brc r8, "lt"
 jmp fail
 br_blt_r_ok:
 
 mov r8, br_bge_r_ok
 mov r14, 65
-cmp r5, r3
+cmp r6, r4
 brc r8, "ge"
 jmp fail
 br_bge_r_ok:
@@ -355,16 +355,17 @@ mov r6, 4
 jmp r9
 
 // ---------------------------------------------------------------------------
-// Interrupt setup. r1 is interrupt control, r2 is vector/return.
-// The wait loop only uses r8-r11 because the ISR uses r3-r6 as scratch.
+// Interrupt setup. r1 is interrupt control, r2 is vector, r3 is return.
+// The wait loop only uses r8-r11 because the ISR uses r4-r6 as scratch and
+// reads r3 as the hardware interrupt return address.
 // ---------------------------------------------------------------------------
 interrupt_setup:
 data_addr(r8, STATUS_ADDR)
 data_addr(r9, HEARTBEAT_ADDR)
 mov r10, READY_CODE
 mov r11, 0
-mov r3, isr_entry
-mov r2, r3 << 16
+mov r4, isr_entry
+mov r2, r4
 mov r1, 1
 
 interrupt_wait:
@@ -375,18 +376,17 @@ jmp interrupt_wait
 
 isr_entry:
 mov r1, r1 & 0xFFFE
-data_addr(r3, ISR_COUNT_ADDR)
-mov r4, [r3]
-mov r4, r4 + 1
-mov [r3], r4
+data_addr(r4, ISR_COUNT_ADDR)
+mov r5, [r4]
+mov r5, r5 + 1
+mov [r4], r5
 
-mov r5, EXPECTED_INTERRUPTS
-cmp r4, r5
+mov r6, EXPECTED_INTERRUPTS
+cmp r5, r6
 brc isr_done, ">="
 
 mov r1, r1 | 0x0001
-mov r6, r2 & 0xFFFF
-jmp r6
+jmp r3
 
 isr_done:
 write_mem(STATUS_ADDR, PASS_CODE)
@@ -394,8 +394,8 @@ pass_loop:
 jmp pass_loop
 
 fail:
-data_addr(r3, FAIL_ADDR)
-mov [r3], r14
+data_addr(r4, FAIL_ADDR)
+mov [r4], r14
 write_mem(STATUS_ADDR, FAIL_CODE)
 fail_loop:
 jmp fail_loop

@@ -39,9 +39,8 @@ module merc32_full_tb();
     wire        plb_wren;
     wire [31:0] plb_addr;
     wire [31:0] plb_wdata;
-    reg         plb_wrack = 1'b0;
     reg [31:0]  plb_rdata = 32'h0;
-    reg         plb_valid = 1'b0;
+    reg         plb_ack = 1'b0;
 
     reg [31:0]  dlb_ram [0:255];
 
@@ -73,20 +72,19 @@ module merc32_full_tb();
     merc32_core cpu_inst (
         .clk            (clk),
         .rst_n          (rst_n),
-        .cpu_rst_n      (1'b1),
         .interrupt      (interrupt),
 
-        .dbg_halt_req   (1'b0),
-        .dbg_step_req   (1'b0),
+        .dbg_halt       (1'b0),
+        .dbg_step       (1'b0),
+        .dbg_reset      (1'b0),
         .dbg_halted     (),
-        .dbg_pc         (),
 
-        .dbg_req        (1'b0),
+        .dbg_rden       (1'b0),
         .dbg_wren       (1'b0),
         .dbg_addr       (32'h0),
         .dbg_wdata      (32'h0),
         .dbg_rdata      (),
-        .dbg_rack       (),
+        .dbg_ack        (),
 
         .dlb_en         (dlb_en),
         .dlb_we         (dlb_we),
@@ -104,9 +102,8 @@ module merc32_full_tb();
         .plb_wren       (plb_wren),
         .plb_addr       (plb_addr),
         .plb_wdata      (plb_wdata),
-        .plb_wrack      (plb_wrack),
         .plb_rdata      (plb_rdata),
-        .plb_valid      (plb_valid)
+        .plb_ack        (plb_ack)
     );
 
     full_test rom_inst (
@@ -117,8 +114,7 @@ module merc32_full_tb();
     always @(posedge clk) begin
         if (!rst_n) begin
             dlb_rdata <= 32'h0;
-            plb_wrack <= 1'b0;
-            plb_valid <= 1'b0;
+            plb_ack <= 1'b0;
             plb_rdata <= 32'h0;
         end else begin
             if (dlb_en && dlb_we) begin
@@ -149,7 +145,7 @@ module merc32_full_tb();
             intr_high_count <= 0;
             intr_low_count <= 0;
             intr_fired <= 0;
-        end else if (!done && ready_seen && intr_fired < EXPECTED_INTR) begin
+        end else if (!done && ready_seen && ((intr_fired < EXPECTED_INTR) || intr_active)) begin
             if (!intr_active && intr_low_count == 0) begin
                 if (intr_wait_count >= FIRST_INTR_WAIT) begin
                     interrupt <= 1'b1;
@@ -193,7 +189,8 @@ module merc32_full_tb();
                     $display("========== MERC32 Full Test Summary ==========");
                     $display("  Result           : FAIL");
                     $display("  Fail code        : %0d", dlb_ram[FAIL_ADDR[7:0]]);
-                    $display("  Program address  : %0d", ilb_addr);
+                    $display("  PC address       : %0d", cpu_inst.prog_addr);
+                    $display("  ROM address      : %0d", ilb_addr);
                     $display("==============================================");
                     done <= 1'b1;
                     $finish;
@@ -227,7 +224,8 @@ module merc32_full_tb();
                 $display("========== MERC32 Full Test Summary ==========");
                 $display("  Result           : FAIL");
                 $display("  Reason           : timeout");
-                $display("  Program address  : %0d", ilb_addr);
+                $display("  PC address       : %0d", cpu_inst.prog_addr);
+                $display("  ROM address      : %0d", ilb_addr);
                 $display("  Status word      : 0x%08h", dlb_ram[STATUS_ADDR[7:0]]);
                 $display("  Fail code        : %0d", dlb_ram[FAIL_ADDR[7:0]]);
                 $display("  Interrupts fired : %0d", intr_fired);

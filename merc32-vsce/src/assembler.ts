@@ -899,7 +899,7 @@ export class SimpleCPUAssembler {
 
         const effectivePreprocessedCode = rawLines.join('\n');
 
-        let instructionCount = 0;
+        let byteAddr = 0;
         for (let lineNum = 1; lineNum <= lines.length; lineNum++) {
             const cleanLine = lines[lineNum - 1].trim();
             if (!cleanLine) continue;
@@ -913,10 +913,10 @@ export class SimpleCPUAssembler {
                     this.errors.push(`第 ${lineNum} 行错误: 重复的标签: ${label}`);
                     continue;
                 }
-                this.symbols.set(label, instructionCount);
+                this.symbols.set(label, byteAddr);
             }
             if (code.trim()) {
-                instructionCount++;
+                byteAddr += 4;
             }
         }
 
@@ -953,7 +953,7 @@ export class SimpleCPUAssembler {
             }
             if (code.trim()) {
                 replacedCodeLines.push(`[${pc.toString().padStart(3, ' ')}\\0x${pc.toString(16).toUpperCase().padStart(4, '0')}] ${code.trim()}`);
-                pc++;
+                pc += 4;
             }
         }
         const replacedCode = replacedCodeLines.join('\n');
@@ -990,7 +990,7 @@ export class SimpleCPUAssembler {
                 const cleanLine = this.removeComments(parsed.lineContent);
                 if (cleanLine) {
                     debugCodeLines.push(`[${pc.toString().padStart(3, ' ')}/0x${pc.toString(16).toUpperCase().padStart(4, '0')}] ${cleanLine}`);
-                    pc++;
+                    pc += 4;
                 }
             }
         }

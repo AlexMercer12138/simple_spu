@@ -170,7 +170,7 @@
         },
         "merc32-asm.c.dataBase": {
           "type": "string",
-          "default": "0x00100000",
+          "default": "0x00800000",
           "description": "Default DLB data base address used by the C compiler"
         },
         "merc32-asm.c.dlbAddrWidth": {

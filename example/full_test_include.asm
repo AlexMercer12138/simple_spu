@@ -9,16 +9,16 @@ mov reg, reg + 1
 .endm
 
 pseudo_include_test:
-mov r3, 0
+mov r4, 0
 .ifdef INCLUDED_FLAG
 .rept 3
-inc_once(r3)
+inc_once(r4)
 .endr
 .else
-mov r3, 99
+mov r4, 99
 .endif
 
-assert_eqi(r3, 3, 80)
+assert_eqi(r4, 3, 80)
 
 mov r4, 8
 mov r14, 81
@@ -33,4 +33,5 @@ brc pseudo_include_le_ok, "<="
 jmp fail
 
 pseudo_include_le_ok:
+mov r4, 3
 jmp r12

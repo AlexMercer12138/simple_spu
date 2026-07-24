@@ -47,7 +47,9 @@ function formatVerilog(codes: number[], moduleName = 'prog_rom'): string {
         '    case (prog_addr)',
     ];
     for (let i = 0; i < codes.length; i++) {
-        lines.push(`        ${i} : prog_data = 32'h${toWordHex(codes[i])};`);
+        const byteAddress = i * 4;
+        const romAddress = byteAddress >>> 2;
+        lines.push(`        ${romAddress} : prog_data = 32'h${toWordHex(codes[i])};`);
     }
     lines.push('        default: prog_data = 0;');
     lines.push('    endcase');

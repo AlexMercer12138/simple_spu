@@ -38,7 +38,6 @@ u_lb2apb (
     .lb_addr                    (lb_addr        ),
     .lb_rdata                   (lb_rdata       ),
     .lb_valid                   (lb_valid       ),
-    .lb_wrack                   (lb_wrack       ),
 
     .m_apb_psel                 (m_apb_psel     ),
     .m_apb_penable              (m_apb_penable  ),
@@ -68,7 +67,6 @@ module lb2apb #(
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
     output  [LB_DATA_WIDTH-1:0]         lb_rdata,
     output                              lb_valid,
-    output                              lb_wrack,
 
     output                              m_apb_psel,
     output                              m_apb_penable,
@@ -91,7 +89,6 @@ module lb2apb #(
     reg                                 apb_pwrite;
     reg     [APB_DATA_WIDTH-1:0]        apb_wdata;
 
-    reg                                 wr_ack;
     reg                                 rd_valid;
     reg     [LB_DATA_WIDTH-1:0]         rd_data;
 
@@ -101,7 +98,6 @@ module lb2apb #(
     assign m_apb_pwrite = apb_pwrite;
     assign m_apb_pwdata = apb_wdata;
 
-    assign lb_wrack = wr_ack;
     assign lb_rdata = rd_data;
     assign lb_valid = rd_valid;
 
@@ -123,12 +119,10 @@ module lb2apb #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            wr_ack <= 1'b0;
             rd_valid <= 1'b0;
             rd_data <= {LB_DATA_WIDTH{1'b0}};
         end else begin
-            wr_ack <= m_apb_psel & m_apb_penable & m_apb_pready & m_apb_pwrite;
-            rd_valid <= m_apb_psel & m_apb_penable & m_apb_pready & ~m_apb_pwrite;
+            rd_valid <= m_apb_psel & m_apb_penable & m_apb_pready;
             rd_data <= m_apb_psel & m_apb_penable & m_apb_pready & ~m_apb_pwrite ? m_apb_prdata[MIN_DATA_WIDTH-1:0] : rd_data;
         end
     end

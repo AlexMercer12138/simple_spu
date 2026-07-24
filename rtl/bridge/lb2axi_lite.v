@@ -38,7 +38,6 @@ u_lb2axi_lite (
     .lb_addr                    (lb_addr        ),
     .lb_rdata                   (lb_rdata       ),
     .lb_valid                   (lb_valid       ),
-    .lb_wrack                   (lb_wrack       ),
 
     .m_axi_awvalid              (m_axi_awvalid  ),
     .m_axi_awready              (m_axi_awready  ),
@@ -78,7 +77,6 @@ module lb2axi_lite #(
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
     output  [LB_DATA_WIDTH-1:0]         lb_rdata,
     output                              lb_valid,
-    output                              lb_wrack,
 
     output                              m_axi_awvalid,
     input                               m_axi_awready,
@@ -117,7 +115,6 @@ module lb2axi_lite #(
     reg                                 axi_bready;
     reg                                 axi_rready;
 
-    reg                                 wr_ack;
     reg                                 rd_valid;
     reg     [LB_DATA_WIDTH-1:0]         rd_data;
 
@@ -133,7 +130,6 @@ module lb2axi_lite #(
 
     assign lb_rdata = rd_data;
     assign lb_valid = rd_valid;
-    assign lb_wrack = wr_ack;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -167,12 +163,10 @@ module lb2axi_lite #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            wr_ack <= 1'b0;
             rd_valid <= 1'b0;
             rd_data <= {LB_DATA_WIDTH{1'b0}};
         end else begin
-            wr_ack <= m_axi_bvalid & m_axi_bready;
-            rd_valid <= m_axi_rvalid & m_axi_rready;
+            rd_valid <= (m_axi_rvalid & m_axi_rready) | (m_axi_bvalid & m_axi_bready);
             rd_data <= m_axi_rvalid & m_axi_rready ? m_axi_rdata[MIN_DATA_WIDTH-1:0] : rd_data;
         end
     end

@@ -38,7 +38,6 @@ u_lb2avalon (
     .lb_addr                    (lb_addr            ),
     .lb_rdata                   (lb_rdata           ),
     .lb_valid                   (lb_valid           ),
-    .lb_wrack                   (lb_wrack           ),
 
     .m_av_address               (m_av_address       ),
     .m_av_read                  (m_av_read          ),
@@ -105,11 +104,9 @@ module lb2avalon #(
         if (!rst_n) begin
             lb_rdata <= {LB_DATA_WIDTH{1'b0}};
             lb_valid <= 1'b0;
-            lb_wrack <= 1'b0;
         end else begin
             lb_rdata <= m_av_readdata[MIN_DATA_WIDTH-1:0];
-            lb_valid <= m_av_readdatavalid;
-            lb_wrack <= m_av_write & ~m_av_waitrequest;
+            lb_valid <= (m_av_write & ~m_av_waitrequest) | m_av_readdatavalid;
         end
     end
 

@@ -121,7 +121,7 @@ main:
 mov r1, 4
 `)
 assert.strictEqual(result.entryLabel, 'main')
-assert.deepStrictEqual(hex(result.machineCodes), ['0x0002001d', '0x00090110', '0x00040110'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x0008001d', '0x00090110', '0x00040110'])
 assert.match(result.preprocessedCode, /^jmp main\b/)
 
 result = assemble(`
@@ -160,11 +160,11 @@ mov r1, 1
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
     '0x0002102b',
-    '0x0008001c',
+    '0x0020001c',
     '0x0007301b',
     '0x0002461c',
     '0x0006502b',
-    '0x0008041c',
+    '0x0020041c',
     '0x0009701b',
     '0x0008092c',
     '0x00010110',
@@ -177,9 +177,17 @@ const serviceResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'verilog
 assert.strictEqual(path.basename(serviceResult.outputFile), 'demo_prog.v')
 assert.match(fs.readFileSync(serviceResult.outputFile, 'utf8'), /module demo_prog\(/)
 
+fs.writeFileSync(main, '.prog byte_addr_prog\n.entry main\ndead:\nmov r1, 9\nmain:\nmov r1, 4\n', 'utf8')
+const byteAddrResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'verilog', 'file')
+const byteAddrVerilog = fs.readFileSync(byteAddrResult.outputFile, 'utf8')
+assert.match(byteAddrVerilog, /0 : prog_data = 32'h0008001D;/)
+assert.match(byteAddrVerilog, /1 : prog_data = 32'h00090110;/)
+assert.match(byteAddrVerilog, /2 : prog_data = 32'h00040110;/)
+assert.doesNotMatch(byteAddrVerilog, /8 : prog_data = 32'h0008001D;/)
+
 const memResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'mem', 'file')
-assert.strictEqual(path.basename(memResult.outputFile), 'demo_prog.mem')
-assert.strictEqual(fs.readFileSync(memResult.outputFile, 'utf8'), '00010110')
+assert.strictEqual(path.basename(memResult.outputFile), 'byte_addr_prog.mem')
+assert.strictEqual(fs.readFileSync(memResult.outputFile, 'utf8'), ['0008001D', '00090110', '00040110'].join('\n'))
 
 const inc1 = path.join(tmp, 'inc1.asm')
 const inc2 = path.join(tmp, 'inc2.asm')
@@ -204,7 +212,7 @@ fs.writeFileSync(
 )
 
 result = assemble(fs.readFileSync(main, 'utf8'), main)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00020110', '0x00030410', '0x00020210', '0x00030310'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00080110', '0x000c0410', '0x00020210', '0x00030310'])
 assert.ok(!result.debugSymbols.includes('inactive'))
 assert.ok(result.debugSymbols.indexOf('main') < result.debugSymbols.indexOf('inc1'))
 assert.ok(result.debugSymbols.indexOf('inc1') < result.debugSymbols.indexOf('inc2'))

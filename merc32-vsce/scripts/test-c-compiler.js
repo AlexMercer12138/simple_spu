@@ -16,7 +16,7 @@ int sum(int *p, int n) {
 }
 
 int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)0x001003C0;
+    volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
     data[0] = 1;
     data[1] = 2;
     data[2] = 3;
@@ -34,6 +34,8 @@ const { assembly } = compileC(source, { moduleName: 'vsce_c_test' });
 assert.match(assembly, /\.entry __start/);
 assert.match(assembly, /jmp sum, r14/);
 assert.match(assembly, /mov r8, r8 << 2/);
+assert.doesNotMatch(assembly, /\br3\b/);
+assert.match(assembly, /mov r13, 0x84/);
 
 const assembler = new SimpleCPUAssembler();
 const result = assembler.assemble(assembly, { sourceFileName: 'vsce_c_test.asm' });

@@ -15,14 +15,13 @@
 // 寄存器分配:
 //   r0  : 硬件归零
 //   r1  : 中断控制 (使能 + 触发方式)
-//   r2  : 中断向量 (高16位=ISR地址, 低16位=硬件自动写返回地址)
-//   r3  : UART 基址 0x10000000
-//   r4  : 通用临时
-//   r5  : 延时计数最大值
-//   r6  : 延时计数器
-//   r7  : 比较寄存器
+//   r2  : 中断向量地址
+//   r3  : 硬件中断返回地址
+//   r4  : UART 基址 0x10000000
+//   r5  : 通用临时
+//   r6  : 延时计数最大值
+//   r7  : 延时计数器
 //   r8  : 中断读取数据寄存器
-//   r13 : 中断返回地址寄存器
 //   r14 : JAL 链接寄存器占位
 //   r15 : 程序指针寄存器
 // ============================================================================
@@ -40,9 +39,8 @@
     mov r1, r1 & 0xFFFE // 关闭中断使能
 .endm
 
-.macro return_main(ra)
-mov ra, r2 & 0xFFFF // 取返回地址
-jmp ra, r14         // 返回主循环
+.macro return_main()
+jmp r3              // 返回主循环
 .endm
 
 .macro branch_eq(target, lhs, rhs)
@@ -59,7 +57,9 @@ jmp ra, r14         // 返回主循环
     mov Rbyte, [Rbase + 20]
     mov Rbyte, Rbyte >> 9
     cmp Rbyte, 0x1
-    brc r15 - 3, "eq"
+    mov Rbyte, 0
+    mov Rbyte, Rbyte - 12
+    brc r15 + Rbyte, "eq"
     mov Rbyte, value
     mov Rbyte, Rbyte << 24
     mov [Rbase + 16], Rbyte
@@ -71,7 +71,9 @@ jmp ra, r14         // 返回主循环
     mov Rint, [Rbase + 20]
     mov Rint, Rint >> 9
     cmp Rint, 0x1
-    brc r15 - 3, "eq"
+    mov Rint, 0
+    mov Rint, Rint - 12
+    brc r15 + Rint, "eq"
     mov Rint, valhi
     mov Rint, Rint << 16
     mov Rint, Rint + vallo
@@ -84,7 +86,9 @@ jmp ra, r14         // 返回主循环
     mov Rbyte, [Rbase + 20]
     mov Rbyte, Rbyte >> 9
     cmp Rbyte, 0x1
-    brc r15 - 3, "eq"
+    mov Rbyte, 0
+    mov Rbyte, Rbyte - 12
+    brc r15 + Rbyte, "eq"
     mov Rbyte, Rsrc
     mov Rbyte, Rbyte << 24
     mov [Rbase + 16], Rbyte
@@ -104,44 +108,44 @@ jmp ra, r14         // 返回主循环
 // ---------------------------- 初始化 ----------------------------------------
 start:
     // 构造 UART 基地址 0x10000000
-    mov r3, UART_BASE       // r3 = 0x1000
-    mov r3, r3 << 16        // r3 = 0x10000000
+    mov r4, UART_BASE       // r4 = 0x1000
+    mov r4, r4 << 16        // r4 = 0x10000000
 
     // 配置波特率寄存器 (offset 0x04)
-    mov r4, UART_BAUD_RATE  // r4 = 57600
-    mov r4, r4 << 1         // r4 = 115200
-    mov [r3 + 4], r4        // write 0x10000004 = r4
+    mov r5, UART_BAUD_RATE  // r5 = 57600
+    mov r5, r5 << 1         // r5 = 115200
+    mov [r4 + 4], r5        // write 0x10000004 = r5
 
     // 配置 UART 中断源: rx_valid 触发
-    mov r4, UART_INT_RX     // r4 = 1
-    mov [r3 + 24], r4       // offset 0x18
+    mov r5, UART_INT_RX     // r5 = 1
+    mov [r4 + 24], r5       // offset 0x18
 
     // 配置 CPU 中断: 上升沿触发, 跳转到 isr
-    mov r4, isr             // 保存中断跳转地址
-    mov r2, r4 << 16        // 写入高 16 位
+    mov r5, isr             // 保存中断跳转地址
+    mov r2, r5
     mov r1, 1               // 中断使能，上升沿触发
 
     // 延时常量
-    mov r5, DELAY_HIGH
+    mov r6, DELAY_HIGH
 .ifdef sim
-    mov r5, r5 << 6         // r5 = 0x00000FF0
+    mov r6, r6 << 6         // r6 = 0x00000FF0
 .else
-    mov r5, r5 << 16        // r5 = 0x00FF0000
+    mov r6, r6 << 16        // r6 = 0x00FF0000
 .endif
 
 // ----------------------------- 主循环 ---------------------------------------
 main_loop:
 
-    UartSendInt(r3, r4, 0x4865, 0x6c6c) // "Hell"
-    UartSendInt(r3, r4, 0x6f20, 0x776f) // "o wo"
-    UartSendInt(r3, r4, 0x726c, 0x6421) // "rld!"
-    UartSendByte(r3, r4, 0x0a) // "\n"
-    UartSendByte(r3, r4, 0x0d) // "\r"
+    UartSendInt(r4, r5, 0x4865, 0x6c6c) // "Hell"
+    UartSendInt(r4, r5, 0x6f20, 0x776f) // "o wo"
+    UartSendInt(r4, r5, 0x726c, 0x6421) // "rld!"
+    UartSendByte(r4, r5, 0x0a) // "\n"
+    UartSendByte(r4, r5, 0x0d) // "\r"
 
 delay:
-    mov r6, r6 + 1
-    branch_ne(delay, r6, r5)
-    mov r6, 0
+    mov r7, r7 + 1
+    branch_ne(delay, r7, r6)
+    mov r7, 0
     jmp main_loop, r14
 
 // ---------------------------- 中断服务程序 ----------------------------------
@@ -150,8 +154,8 @@ delay:
 isr:
     interrupt_disable()         // 关闭中断使能
 
-    UartRecvByte(r3, r8)        // Read byte from fifo
-    UartSendByteR(r3, r4, r8)   // Loopback
+    UartRecvByte(r4, r8)        // Read byte from fifo
+    UartSendByteR(r4, r5, r8)   // Loopback
 
     interrupt_enable()          // 开启中断使能
-    return_main(r13)            // 返回主循环
+    return_main()               // 返回主循环

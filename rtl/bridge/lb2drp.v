@@ -38,7 +38,6 @@ u_lb2drp (
     .lb_addr                    (lb_addr        ),
     .lb_rdata                   (lb_rdata       ),
     .lb_valid                   (lb_valid       ),
-    .lb_wrack                   (lb_wrack       ),
 
     .drp_addr                   (drp_addr       ),
     .drp_en                     (drp_en         ),
@@ -67,7 +66,6 @@ module lb2drp #(
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
     output  reg [LB_DATA_WIDTH-1:0]     lb_rdata,
     output  reg                         lb_valid,
-    output  reg                         lb_wrack,
 
     output  reg [DRP_ADDR_WIDTH-1:0]    drp_addr,
     output  reg                         drp_en,
@@ -89,11 +87,9 @@ module lb2drp #(
         if (!rst_n) begin
             lb_rdata <= {LB_DATA_WIDTH{1'b0}};
             lb_valid <= 1'b0;
-            lb_wrack <= 1'b0;
         end else begin
             lb_rdata <= drp_out[MIN_DATA_WIDTH-1:0];
             lb_valid <= drp_rdy;
-            lb_wrack <= drp_wflag & drp_rdy;
         end
     end
 

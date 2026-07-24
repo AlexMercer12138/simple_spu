@@ -38,7 +38,6 @@ u_lb2wbc (
     .lb_addr                    (lb_addr        ),
     .lb_rdata                   (lb_rdata       ),
     .lb_valid                   (lb_valid       ),
-    .lb_wrack                   (lb_wrack       ),
 
     .m_wb_cyc_o                 (m_wb_cyc_o     ),
     .m_wb_stb_o                 (m_wb_stb_o     ),
@@ -69,7 +68,6 @@ module lb2wbc #(
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
     output  reg [LB_DATA_WIDTH-1:0]     lb_rdata,
     output  reg                         lb_valid,
-    output  reg                         lb_wrack,
 
     output  reg                         m_wb_cyc_o,
     output  reg                         m_wb_stb_o,
@@ -107,11 +105,9 @@ module lb2wbc #(
         if (!rst_n) begin
             lb_rdata <= {LB_DATA_WIDTH{1'b0}};
             lb_valid <= 1'b0;
-            lb_wrack <= 1'b0;
         end else begin
             lb_rdata <= m_wb_dat_i[MIN_DATA_WIDTH-1:0];
-            lb_valid <= m_wb_cyc_o & m_wb_stb_o & m_wb_ack_i & ~m_wb_we_o;
-            lb_wrack <= m_wb_cyc_o & m_wb_stb_o & m_wb_ack_i & m_wb_we_o;
+            lb_valid <= m_wb_cyc_o & m_wb_stb_o & m_wb_ack_i;
         end
     end
 
