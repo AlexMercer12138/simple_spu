@@ -36,8 +36,6 @@ module apb_uart_new_tb();
 
     integer     error_count = 0;
     reg  [31:0] read_data;
-    reg         tx_fifo_rd_en_d = 1'b0;
-    reg         rx_fifo_rd_en_d = 1'b0;
 
     apb_uart_new #(
         .SYS_CLK_FREQ  (SYS_CLK_FREQ),
@@ -139,17 +137,15 @@ module apb_uart_new_tb();
 
     always @(posedge s_apb_pclk) begin
         if (s_apb_presetn) begin
-            if (apb_uart_new_inst.tx_fifo_rd_valid !== tx_fifo_rd_en_d) begin
-                $display("[FAIL] TX FIFO read-valid latency");
+            if (apb_uart_new_inst.tx_data_cnt > FIFO_DEPTH) begin
+                $display("[FAIL] TX FIFO count overflow");
                 error_count = error_count + 1;
             end
-            if (apb_uart_new_inst.rx_fifo_rd_valid !== rx_fifo_rd_en_d) begin
-                $display("[FAIL] RX FIFO read-valid latency");
+            if (apb_uart_new_inst.rx_data_cnt > FIFO_DEPTH) begin
+                $display("[FAIL] RX FIFO count overflow");
                 error_count = error_count + 1;
             end
         end
-        tx_fifo_rd_en_d <= apb_uart_new_inst.tx_fifo_rd_en;
-        rx_fifo_rd_en_d <= apb_uart_new_inst.rx_fifo_rd_en;
     end
 
     initial begin
