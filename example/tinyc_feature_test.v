@@ -793,7 +793,7 @@ always @(*) begin
         785 : prog_data = 32'h0000DC11;
         786 : prog_data = 32'h00000710;
         787 : prog_data = 32'h0008C719;
-        788 : prog_data = 32'h010F0710;
+        788 : prog_data = 32'h018B0710;
         789 : prog_data = 32'h000CC719;
         790 : prog_data = 32'h00000710;
         791 : prog_data = 32'h0010C719;

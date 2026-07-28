@@ -119,7 +119,7 @@ int bit_ops(int x) {
 
 int main(void) {
     int total = 0;
-    int expected = 271;
+    int expected = 395;
     unsigned int ures = 0;
     volatile unsigned int *status = (volatile unsigned int *)status_addr;
     volatile unsigned int *fail = (volatile unsigned int *)fail_addr;

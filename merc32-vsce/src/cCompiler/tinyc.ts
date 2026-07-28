@@ -789,6 +789,9 @@ interface FunctionContext {
 
 const ABI_RETURN_REG = 'r4';
 const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
+const IRQ_HANDLER_NAME = '__irq_handler';
+const IRQ_VECTOR_ADDRESS = 4;
+const IRQ_WRAPPER_FRAME_SIZE = 28;
 
 class CodeGenerator {
     private readonly lines: string[] = [];
@@ -800,6 +803,7 @@ class CodeGenerator {
     private readonly tempSlots: number;
     private nextGlobalAddress: number;
     private current?: FunctionContext;
+    private interruptHandler?: FunctionDecl;
 
     constructor(private readonly program: Program, options: CompileOptions) {
         this.dataBase = options.dataBase ?? 0x0080_0000;
@@ -815,9 +819,16 @@ class CodeGenerator {
         this.emit(`.prog ${this.moduleName}`);
         this.emit('.entry __start');
         this.emit('');
+        if (this.interruptHandler) {
+            this.emitInterruptVector();
+            this.emit('');
+        }
         this.emit('__start:');
         this.loadImm('r13', this.dataBase + (1 << (this.dlbAddrWidth + 2)));
         this.emitGlobalInitializers();
+        if (this.interruptHandler) {
+            this.loadImm('r2', IRQ_VECTOR_ADDRESS);
+        }
         this.emit('jmp main, r14');
         this.emit('__halt:');
         this.emit('jmp __halt');
@@ -861,6 +872,20 @@ class CodeGenerator {
 
         if (!this.functionMap.get('main')?.body) {
             throw new CompilerError("entry function 'main' is required");
+        }
+
+        const interruptHandler = this.functionMap.get(IRQ_HANDLER_NAME);
+        if (interruptHandler) {
+            if (!isVoidType(interruptHandler.returnType)) {
+                throw new CompilerError(`${IRQ_HANDLER_NAME} must return void`);
+            }
+            if (interruptHandler.params.length !== 0) {
+                throw new CompilerError(`${IRQ_HANDLER_NAME} must not have parameters`);
+            }
+            if (!interruptHandler.body) {
+                throw new CompilerError(`${IRQ_HANDLER_NAME} must have a definition`);
+            }
+            this.interruptHandler = interruptHandler;
         }
     }
 
@@ -924,6 +949,28 @@ class CodeGenerator {
             }
         }
         throw new CompilerError('global initializer must be a constant expression');
+    }
+
+    private emitInterruptVector(): void {
+        this.emit('__irq_vector:');
+        this.adjustSp(-IRQ_WRAPPER_FRAME_SIZE);
+        this.emit('mov [r13 + 0], r4');
+        this.emit('mov [r13 + 4], r5');
+        this.emit('mov [r13 + 8], r6');
+        this.emit('mov [r13 + 12], r7');
+        this.emit('mov [r13 + 16], r8');
+        this.emit('mov [r13 + 20], r12');
+        this.emit('mov [r13 + 24], r14');
+        this.emit(`jmp ${IRQ_HANDLER_NAME}, r14`);
+        this.emit('mov r14, [r13 + 24]');
+        this.emit('mov r12, [r13 + 20]');
+        this.emit('mov r8, [r13 + 16]');
+        this.emit('mov r7, [r13 + 12]');
+        this.emit('mov r6, [r13 + 8]');
+        this.emit('mov r5, [r13 + 4]');
+        this.emit('mov r4, [r13 + 0]');
+        this.adjustSp(IRQ_WRAPPER_FRAME_SIZE);
+        this.emit('jmp r3');
     }
 
     private emitFunction(fn: FunctionDecl): void {
@@ -1280,6 +1327,16 @@ class CodeGenerator {
     }
 
     private emitCall(expr: CallExpr, target: string): CType {
+        if (expr.name === '__irq_enable' || expr.name === '__irq_disable') {
+            if (expr.args.length !== 0) {
+                throw new CompilerError(`${expr.name} expects 0 arguments`);
+            }
+            if (!this.interruptHandler) {
+                throw new CompilerError(`${expr.name} requires a defined __irq_handler`);
+            }
+            this.emit(`mov r1, ${expr.name === '__irq_enable' ? 1 : 0}`);
+            return voidType();
+        }
         if (expr.name === '__load32') {
             if (expr.args.length !== 1) throw new CompilerError('__load32 expects 1 argument');
             this.emitExpr(expr.args[0], 'r8');
@@ -1729,6 +1786,10 @@ function intType(): CType {
 
 function uintType(): CType {
     return { base: 'uint', pointerDepth: 0, volatile: false };
+}
+
+function voidType(): CType {
+    return { base: 'void', pointerDepth: 0, volatile: false };
 }
 
 function isVoidType(type: CType): boolean {

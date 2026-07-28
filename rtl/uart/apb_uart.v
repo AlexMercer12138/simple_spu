@@ -24,10 +24,10 @@
 //  Instantiation Template
 //================================================================================
 /*
-apb_uart_new #(
+apb_uart #(
     .SYS_CLK_FREQ               (50_000_000     ),
     .FIFO_DEPTH                 (8              ))
-u_apb_uart_new (
+apb_uart_inst (
     .s_apb_pclk                 (s_apb_pclk     ),
     .s_apb_presetn              (s_apb_presetn  ),
 
@@ -50,7 +50,7 @@ u_apb_uart_new (
 //  Module Definition
 //================================================================================
 
-module apb_uart_new #(
+module apb_uart #(
     parameter SYS_CLK_FREQ              = 50_000_000,
     parameter FIFO_DEPTH                = 8
 )(

@@ -191,6 +191,7 @@
     "compile": "tsc -p ./",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
+    "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test": "npm run test:pseudo && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"
   }

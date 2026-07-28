@@ -170,7 +170,14 @@ module merc32_core #(
     reg                                 intr_ff0;
     reg                                 intr_ff1;
     reg                                 intr_ff2;
+    reg                                 intr_active_ff0;
+    reg                                 intr_active_ff1;
+    reg                                 intr_active_ff2;
     reg                                 intr_flag;
+    reg                                 irq_active;
+    wire                                take_interrupt;
+    wire                                interrupt_return;
+    wire                                trig_active;
 
     reg     signed  [31:0]              regi_int    [0:15];
 
@@ -220,6 +227,10 @@ module merc32_core #(
     assign  inst_mwr   = ({opc, fun} == {OP_IMM, FUNC_MWR} || {opc, fun} == {OP_REG, FUNC_MWR});
     assign  inst_mrd   = ({opc, fun} == {OP_IMM, FUNC_MRD} || {opc, fun} == {OP_REG, FUNC_MRD});
     assign  dbg_halted = (cpu_state == ST_HALT);
+    assign  take_interrupt = prog_step & intr_flag & ~irq_active;
+    assign  interrupt_return = prog_step & irq_active &
+                               ({opc, fun} == {OP_REG, FUNC_JAL}) &
+                               (rd == 4'd0) & (rs2 == 4'd0) & (rs1 == 4'd3);
 
     assign  ilb_en     = dbg_halted ? (dbg_rden | dbg_wren) & inst_addr_hit : prog_load;
     assign  ilb_we     = dbg_halted ? dbg_wren & inst_addr_hit : 1'b0;
@@ -244,6 +255,9 @@ module merc32_core #(
     assign  trig_en    = regi_int[1][0];
     assign  trig_mode  = regi_int[1][2:1];
     assign  intr_addr  = regi_int[2];
+    assign  trig_active =
+        ((trig_mode == TRIG_RISE) || (trig_mode == TRIG_FALL)) ?
+        intr_active_ff1 : intr_active_ff2;
     assign  trig_hit   = 
         (trig_mode == TRIG_RISE) ?  intr_ff1 & ~intr_ff2 :
         (trig_mode == TRIG_FALL) ? ~intr_ff1 &  intr_ff2 :
@@ -258,7 +272,7 @@ module merc32_core #(
                 ST_IDLE:cpu_state <= ST_LOAD;
                 ST_LOAD:cpu_state <= ST_EXEC;
                 ST_EXEC:cpu_state <= ST_STEP;
-                ST_STEP:cpu_state <= prog_step ? (dbg_halt ? ST_HALT : (intr_flag ? ST_INTR : ST_LOAD)) : ST_STEP;
+                ST_STEP:cpu_state <= prog_step ? (dbg_halt ? ST_HALT : (take_interrupt ? ST_INTR : ST_LOAD)) : ST_STEP;
                 ST_INTR:cpu_state <= ST_LOAD;
                 ST_HALT:cpu_state <= dbg_step ? ST_LOAD : ST_HALT;
                 default:cpu_state <= ST_IDLE;
@@ -271,9 +285,18 @@ module merc32_core #(
             prog_addr <= 0;
             ret_addr <= 0;
         end else if(prog_step) begin
-            prog_addr <= intr_flag ? intr_addr : prog_next;
-            ret_addr <= intr_flag ? prog_next : ret_addr;
+            prog_addr <= take_interrupt ? intr_addr : prog_next;
+            ret_addr <= take_interrupt ? prog_next : ret_addr;
         end
+    end
+
+    always @(posedge clk) begin
+        if (!cpu_rst_n)
+            irq_active <= 1'b0;
+        else if (take_interrupt)
+            irq_active <= 1'b1;
+        else if (interrupt_return)
+            irq_active <= 1'b0;
     end
 
     always @(posedge clk) begin
@@ -426,6 +449,12 @@ module merc32_core #(
             sgt <= 0;
             sge <= 0;
             eq <= 0;
+        end else if(interrupt_return) begin
+            ugt <= regi_int[1][7];
+            uge <= regi_int[1][6];
+            sgt <= regi_int[1][5];
+            sge <= regi_int[1][4];
+            eq <= regi_int[1][3];
         end else if(prog_exec) begin
             case({opc, fun})
                 {OP_IMM, FUNC_CMP}:begin
@@ -446,35 +475,45 @@ module merc32_core #(
         end
     end
 
-    always @(posedge clk) begin:register_files
+    always @(posedge clk) begin : register_files
         integer i;
-        if(!cpu_rst_n) begin
-            for (i = 0;i < 16;i = i + 1) begin
+        if (!cpu_rst_n) begin
+            for (i = 0; i < 16; i = i + 1)
                 regi_int[i] <= 0;
-            end
-        end else if(alu_vld) begin
-            case (alu_ptr)
-                4'h0:regi_int[00] <= regi_int[00];
-                4'h1:regi_int[01] <= alu_data;
-                4'h2:regi_int[02] <= alu_data;
-                4'h3:regi_int[03] <= regi_int[03];
-                4'h4:regi_int[04] <= alu_data;
-                4'h5:regi_int[05] <= alu_data;
-                4'h6:regi_int[06] <= alu_data;
-                4'h7:regi_int[07] <= alu_data;
-                4'h8:regi_int[08] <= alu_data;
-                4'h9:regi_int[09] <= alu_data;
-                4'ha:regi_int[10] <= alu_data;
-                4'hb:regi_int[11] <= alu_data;
-                4'hc:regi_int[12] <= alu_data;
-                4'hd:regi_int[13] <= alu_data;
-                4'he:regi_int[14] <= alu_data;
-                4'hf:regi_int[15] <= regi_int[15];
-            endcase
         end else begin
-            regi_int[00] <= 32'h0;
-            regi_int[03] <= {ret_addr};
-            regi_int[15] <= {prog_addr};
+            regi_int[0] <= 32'h0;
+            regi_int[3] <= ret_addr;
+            regi_int[15] <= prog_addr;
+
+            if (take_interrupt) begin
+                regi_int[1] <= {
+                    24'd0, ugt, uge, sgt, sge, eq,
+                    (alu_vld && (alu_ptr == 4'd1)) ? alu_data[2:0] : regi_int[1][2:0]
+                };
+            end else begin
+                regi_int[1] <= {
+                    24'd0, regi_int[1][7:3],
+                    (alu_vld && (alu_ptr == 4'd1)) ? alu_data[2:0] : regi_int[1][2:0]
+                };
+            end
+
+            if (alu_vld) begin
+                case (alu_ptr)
+                    4'd2:  regi_int[2] <= alu_data;
+                    4'd4:  regi_int[4] <= alu_data;
+                    4'd5:  regi_int[5] <= alu_data;
+                    4'd6:  regi_int[6] <= alu_data;
+                    4'd7:  regi_int[7] <= alu_data;
+                    4'd8:  regi_int[8] <= alu_data;
+                    4'd9:  regi_int[9] <= alu_data;
+                    4'd10: regi_int[10] <= alu_data;
+                    4'd11: regi_int[11] <= alu_data;
+                    4'd12: regi_int[12] <= alu_data;
+                    4'd13: regi_int[13] <= alu_data;
+                    4'd14: regi_int[14] <= alu_data;
+                    default: begin end
+                endcase
+            end
         end
     end
 
@@ -483,12 +522,20 @@ module merc32_core #(
             intr_ff0 <= 1'b0;
             intr_ff1 <= 1'b0;
             intr_ff2 <= 1'b0;
+            intr_active_ff0 <= 1'b0;
+            intr_active_ff1 <= 1'b0;
+            intr_active_ff2 <= 1'b0;
             intr_flag <= 1'b0;
         end else begin
             intr_ff0 <= interrupt;
             intr_ff1 <= intr_ff0;
             intr_ff2 <= intr_ff1;
-            intr_flag <= trig_hit & trig_en ? 1'b1 : prog_step ? 1'b0 : intr_flag;
+            intr_active_ff0 <= irq_active | take_interrupt;
+            intr_active_ff1 <= intr_active_ff0;
+            intr_active_ff2 <= intr_active_ff1;
+            intr_flag <= trig_hit & trig_en & ~irq_active & ~trig_active ? 1'b1 :
+                         prog_step ? 1'b0 :
+                         intr_flag;
         end
     end
 
