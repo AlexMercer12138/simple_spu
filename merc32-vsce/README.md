@@ -10,8 +10,8 @@ MERC32 CPU 的 VSCode 扩展，集成汇编器、语法高亮、代码片段，�
 ## 功能特性
 
 - ▶️ **一键编译** - 打开 `.asm` 文件，点击右上角播放按钮直接编译
-- 🎨 **语法高亮** - mov/cmp/jmp/brc/brcu 指令、寄存器、立即数、标签、注释
-- ✂️ **代码片段** - 输入 `mov`、`load`、`store`、`brc`、`macro`、`rept` 等快速生成代码
+- 🎨 **语法高亮** - mov/cmp/cmpu/jmp/bz/bnz 指令、寄存器、立即数、标签、注释
+- ✂️ **代码片段** - 输入 `mov`、`load`、`store`、`cmp`、`bz`、`macro`、`rept` 等快速生成代码
 - 📝 **注释支持** - `//` 格式注释，支持 `Ctrl+/` 快捷键
 - 🔤 **括号匹配** - 内存访问括号 `[]` 自动匹配
 - 🔄 **多种输出格式** - Verilog、COE、MIF、Intel HEX、Binary
@@ -126,12 +126,12 @@ mov [rs], rd              // Mem[rs] = rd
 #### jmp 指令
 
 ```asm
-jmp imm, rd               // rd = PC+1, PC = r0 + imm
-jmp label, rd             // rd = PC+1, PC = r0 + label
-jmp rs, rd                // rd = PC+1, PC = r0 + rs
-jmp rs + imm, rd          // rd = PC+1, PC = rs + imm
-jmp rs - imm, rd          // rd = PC+1, PC = rs + (-imm)
-jmp rs1 + rs2, rd         // rd = PC+1, PC = rs1 + rs2
+jmp imm, rd               // rd = PC+4, PC = r0 + imm
+jmp label, rd             // rd = PC+4, PC = r0 + label
+jmp rs, rd                // rd = PC+4, PC = r0 + rs
+jmp rs + imm, rd          // rd = PC+4, PC = rs + imm
+jmp rs - imm, rd          // rd = PC+4, PC = rs + (-imm)
+jmp rs1 + rs2, rd         // rd = PC+4, PC = rs1 + rs2
 
 jmp imm                   // PC = r0 + imm，不保存链接
 jmp rs                    // PC = r0 + rs，不保存链接
@@ -139,31 +139,23 @@ jmp rs + imm              // PC = rs + imm，不保存链接
 jmp rs1 + rs2             // PC = rs1 + rs2，不保存链接
 ```
 
-`r15` 是只读 PC 寄存器，可用于相对跳转，例如 `jmp r15 - 2`。
+`r15` 是软件可读写的当前 PC 专用寄存器，不作为普通寄存器分配。直接写入 `r15` 不会改变控制流，寄存器组空闲时硬件会把它刷新为当前指令字节地址。跳转由 JAL、BZ 或 BNZ 完成；按当前 PC 相对跳转时可以把 `r15` 作为基址，例如 `jmp r15 + 8`。
 
-#### cmp / brc 指令（比较与分支）
+#### cmp / cmpu / bz / bnz 指令（比较与分支）
 
 ```asm
-cmp ra, rb                // 更新有符号/无符号比较标志
-cmp ra, imm               // ra 可与 16 位立即数比较
+cmp  rd, rs2 < rs1        // 有符号比较，rd = 0 或 1
+cmp  rd, rs2 == imm       // 16 位立即数先符号扩展
+cmpu rd, rs2 >= rs1       // 无符号比较，rd = 0 或 1
+cmpu rd, rs2 < imm        // 16 位立即数先零扩展
 
-brc label, "=="           // equal
-brc label, "!="           // not equal
-brc label, "<"            // signed less than
-brc label, "<="           // signed less or equal
-brc label, ">"            // signed greater than
-brc label, ">="           // signed greater or equal
-brcu label, "<"           // unsigned less than
-brcu label, "<="          // unsigned less or equal
-brcu label, ">"           // unsigned greater than
-brcu label, ">="          // unsigned greater or equal
-
-brc rs, "=="              // PC = r0 + rs
-brcu rs + imm, ">="       // PC = rs + imm
-brc rs1 + rs2, "<"        // PC = rs1 + rs2
+bz  rd, r0 + label       // rd == 0 时跳到绝对字节地址 label
+bnz rd, r0 + label       // rd != 0 时跳到绝对字节地址 label
+bz  rd, rs2 + imm        // rd == 0 时跳到 R[rs2] + zero_extend(imm16)
+bnz rd, rs2 + rs1        // rd != 0 时跳到 R[rs2] + R[rs1]
 ```
 
-`brc target, "cond"` 使用有符号比较条件，`brcu target, "cond"` 使用无符号比较条件；目标格式与 `jmp` 相同。条件也可以写成 `"eq"/"ne"/"lt"/"le"/"gt"/"ge"` 和 `"ult"/"ule"/"ugt"/"uge"`。
+`cmp` 和 `cmpu` 都支持 `==`、`!=`、`<`、`<=`、`>`、`>=`。分支必须显式写出目标基址；直接标签目标使用 `r0 + label`。旧 `brc/brcu` 语法不再支持。
 
 ### 标签支持
 
@@ -205,9 +197,9 @@ main:
 
 `.include "file.asm"` 会把引用文件按声明顺序追加到主文件之后一起汇编。
 
-### 有符号立即数
+### 16 位立即数
 
-立即数为 **16位有符号数**，范围 `-32768 ~ 32767`。
+十进制立即数默认按 **16 位有符号数** 检查，范围为 `-32768 ~ 32767`；带 `0x`/`0b` 前缀的字面量可直接给出 `0 ~ 0xffff` 的原始位模式。EQ/NE 和有符号关系比较符号扩展该 16 位位模式，无符号关系比较与 `bz/bnz` 的立即数目标按无符号数零扩展。`cmpu ==` 和 `cmpu !=` 是 EQ/NE 的编码别名，因此仍执行符号扩展。
 
 ```asm
 mov r1, 100               // r1 = 100
@@ -297,7 +289,7 @@ END
 | 程序存储 | 65536条指令（16位地址） |
 | 有符号数支持 | 原生支持 |
 
-`r0` 固定为0，`r15` 固定为当前 PC，二者写入无效。
+`r0` 固定为 0 且写入无效。`r15` 可读写，但空闲时会自动刷新为当前 PC，写入不会直接改变控制流。
 
 ## 许可证
 

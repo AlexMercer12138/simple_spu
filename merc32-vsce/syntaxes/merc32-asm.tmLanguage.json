@@ -10,7 +10,7 @@
       "include": "#keywords"
     },
     {
-      "include": "#conditions"
+      "include": "#operators"
     },
     {
       "include": "#characters"
@@ -39,11 +39,11 @@
         }
       ]
     },
-    "conditions": {
+    "operators": {
       "patterns": [
         {
-          "name": "variable.parameter.condition.merc32-asm",
-          "match": "\"(?:==|!=|<=|>=|<|>|eq|ne|ge|lt|gt|le|sge|slt|sgt|sle|uge|ult|ugt|ule)\""
+          "name": "keyword.operator.comparison.merc32-asm",
+          "match": "==|!=|<=|>=|<|>"
         }
       ]
     },
@@ -63,7 +63,7 @@
         },
         {
           "name": "keyword.control.instruction.merc32-asm",
-          "match": "\\b(mov|cmp|jmp|brc|brcu)\\b"
+          "match": "\\b(mov|cmp|cmpu|jmp|bz|bnz)\\b"
         }
       ]
     },

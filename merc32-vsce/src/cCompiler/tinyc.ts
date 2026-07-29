@@ -791,7 +791,6 @@ const ABI_RETURN_REG = 'r4';
 const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
-const IRQ_WRAPPER_FRAME_SIZE = 28;
 
 class CodeGenerator {
     private readonly lines: string[] = [];
@@ -953,24 +952,7 @@ class CodeGenerator {
 
     private emitInterruptVector(): void {
         this.emit('__irq_vector:');
-        this.adjustSp(-IRQ_WRAPPER_FRAME_SIZE);
-        this.emit('mov [r13 + 0], r4');
-        this.emit('mov [r13 + 4], r5');
-        this.emit('mov [r13 + 8], r6');
-        this.emit('mov [r13 + 12], r7');
-        this.emit('mov [r13 + 16], r8');
-        this.emit('mov [r13 + 20], r12');
-        this.emit('mov [r13 + 24], r14');
-        this.emit(`jmp ${IRQ_HANDLER_NAME}, r14`);
-        this.emit('mov r14, [r13 + 24]');
-        this.emit('mov r12, [r13 + 20]');
-        this.emit('mov r8, [r13 + 16]');
-        this.emit('mov r7, [r13 + 12]');
-        this.emit('mov r6, [r13 + 8]');
-        this.emit('mov r5, [r13 + 4]');
-        this.emit('mov r4, [r13 + 0]');
-        this.adjustSp(IRQ_WRAPPER_FRAME_SIZE);
-        this.emit('jmp r3');
+        this.emit(`jmp ${IRQ_HANDLER_NAME}`);
     }
 
     private emitFunction(fn: FunctionDecl): void {
@@ -1021,7 +1003,7 @@ class CodeGenerator {
         this.emit('mov r8, [r12 + 4]');
         this.emit(`mov r13, r12 + ${layout.frameSize}`);
         this.emit('mov r12, r8');
-        this.emit('jmp r14');
+        this.emit(`jmp ${fn.name === IRQ_HANDLER_NAME ? 'r3' : 'r14'}`);
         this.current = undefined;
     }
 
@@ -1220,15 +1202,7 @@ class CodeGenerator {
             return type;
         }
         if (expr.op === '!') {
-            const trueLabel = this.newLabel('not_true');
-            const endLabel = this.newLabel('not_end');
-            this.emit(`cmp ${target}, 0`);
-            this.loadImm(target, 0);
-            this.emit(`brc ${trueLabel}, "=="`);
-            this.emit(`jmp ${endLabel}`);
-            this.emit(`${trueLabel}:`);
-            this.loadImm(target, 1);
-            this.emit(`${endLabel}:`);
+            this.emit(`cmp ${target}, ${target} == 0`);
             return intType();
         }
         throw new CompilerError(`unsupported unary operator '${expr.op}'`);
@@ -1306,23 +1280,14 @@ class CodeGenerator {
     }
 
     private emitComparisonValue(expr: BinaryExpr, target: string): CType {
-        const trueLabel = this.newLabel('cmp_true');
-        const endLabel = this.newLabel('cmp_end');
-        const cond = expr.op;
-        const unsigned = this.shouldUseUnsignedCompare(expr.left, expr.right);
+        const mnemonic = this.shouldUseUnsignedCompare(expr.left, expr.right) ? 'cmpu' : 'cmp';
         const temp = this.allocTemp();
         this.emitExpr(expr.left, 'r7');
         this.storeTemp(temp, 'r7');
         this.emitExpr(expr.right, 'r8');
         this.loadTemp(temp, 'r7');
         this.freeTemp();
-        this.emit('cmp r7, r8');
-        this.loadImm(target, 0);
-        this.emit(`${unsigned ? 'brcu' : 'brc'} ${trueLabel}, "${cond}"`);
-        this.emit(`jmp ${endLabel}`);
-        this.emit(`${trueLabel}:`);
-        this.loadImm(target, 1);
-        this.emit(`${endLabel}:`);
+        this.emit(`${mnemonic} ${target}, r7 ${expr.op} r8`);
         return intType();
     }
 
@@ -1406,14 +1371,12 @@ class CodeGenerator {
 
     private emitBranchIfFalse(expr: Expr, label: string): void {
         this.emitExpr(expr, 'r7');
-        this.emit('cmp r7, 0');
-        this.emit(`brc ${label}, "=="`);
+        this.emit(`bz r7, r0 + ${label}`);
     }
 
     private emitBranchIfTrue(expr: Expr, label: string): void {
         this.emitExpr(expr, 'r7');
-        this.emit('cmp r7, 0');
-        this.emit(`brc ${label}, "!="`);
+        this.emit(`bnz r7, r0 + ${label}`);
     }
 
     private loadVar(name: string, target: string): void {

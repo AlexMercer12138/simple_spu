@@ -147,26 +147,58 @@ assert.deepStrictEqual(hex(result.machineCodes), [
 ])
 
 result = assemble(`
-cmp r1, r2
-brc done, "eq"
-cmp r3, 7
-brcu r4 + 2, ">="
-cmp r5, r6
-brc done, ">"
-cmp r7, 9
-brcu r8, "<="
+cmp  r1, r2 == r3
+cmp  r1, r2 != r3
+cmp  r1, r2 >= r3
+cmp  r1, r2 <  r3
+cmp  r1, r2 >  r3
+cmp  r1, r2 <= r3
+cmpu r1, r2 >= r3
+cmpu r1, r2 <  r3
+cmpu r1, r2 >  r3
+cmpu r1, r2 <= r3
+`)
+assert.deepStrictEqual(hex(result.machineCodes), [
+    '0x00032140',
+    '0x00032141',
+    '0x00032142',
+    '0x00032143',
+    '0x00032144',
+    '0x00032145',
+    '0x00032146',
+    '0x00032147',
+    '0x00032148',
+    '0x00032149',
+])
+
+result = assemble(`
+cmp  r4, r5 > -1
+cmpu r4, r5 < -1
+cmpu r1, r2 == r3
+bz   r1, r2 + 0x8000
+bnz  r3, r4 + 0xffff
+bz   r1, r2 + r3
+bnz  r4, r5 + r6
+`)
+assert.deepStrictEqual(hex(result.machineCodes), [
+    '0xffff5434',
+    '0xffff5437',
+    '0x00032140',
+    '0x8000211b',
+    '0xffff431c',
+    '0x0003212b',
+    '0x0006542c',
+])
+
+result = assemble(`
+bz r1, r0 + done
+bnz r2, r0 + done
 done:
 mov r1, 1
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0x0002102b',
-    '0x0020001c',
-    '0x0007301b',
-    '0x0002461c',
-    '0x0006502b',
-    '0x0020041c',
-    '0x0009701b',
-    '0x0008092c',
+    '0x0008011b',
+    '0x0008021c',
     '0x00010110',
 ])
 
@@ -228,8 +260,18 @@ mustThrow('uppercase instruction still invalid', () => assemble('MOV r1, 1\n'), 
 mustThrow('missing entry target', () => assemble('.entry missing\nmov r1, 1\n'), /entry|missing/i)
 mustThrow('duplicate entry', () => assemble('.entry start\n.entry other\nstart:\nmov r1, 1\n'), /entry|already/i)
 mustThrow('entry cannot be register', () => assemble('.entry r1\nr1_label:\nmov r1, 1\n'), /entry|register/i)
-mustThrow('old brc suffix syntax invalid', () => assemble('brc.eq done\n'), /brc|未知|unknown/i)
-mustThrow('brc condition must be quoted', () => assemble('brc done, <\n'), /brc|引号|quote/i)
+mustThrow('cmp destination must be a register', () => assemble('cmp 1, r2 == r3\n'), /cmp|目标|寄存器/i)
+mustThrow('cmp lhs must be a register', () => assemble('cmp r1, 2 == r3\n'), /cmp|左|寄存器/i)
+mustThrow('cmp rhs must be a register or immediate', () => assemble('cmp r1, r2 == value\n'), /cmp|右|寄存器|立即数/i)
+mustThrow('cmp operator must be supported', () => assemble('cmp r1, r2 & r3\n'), /cmp|比较|运算符/i)
+mustThrow('cmp decimal immediate must fit signed 16 bits', () => assemble('cmp r1, r2 < 32768\n'), /cmp|立即数|越界/i)
+mustThrow('branch destination must be a register', () => assemble('bz 1, r0 + 4\n'), /bz|判断|寄存器/i)
+mustThrow('branch base must be present', () => assemble('bz r1, done\ndone:\nmov r1, 1\n'), /bz|目标|格式/i)
+mustThrow('branch immediate cannot be negative', () => assemble('bz r1, r0 + -4\n'), /bz|立即数|0.*65535/i)
+mustThrow('branch immediate must fit unsigned 16 bits', () => assemble('bz r1, r2 + 65536\n'), /bz|立即数|0.*65535/i)
+mustThrow('direct branch target must be aligned', () => assemble('bz r1, r0 + 3\n'), /bz|对齐/i)
+mustThrow('old brc syntax removed', () => assemble('brc done, "eq"\ndone:\nmov r1, 1\n'), /brc|未知|unknown/i)
+mustThrow('old brcu syntax removed', () => assemble('brcu done, "eq"\ndone:\nmov r1, 1\n'), /brcu|未知|unknown/i)
 mustThrow('if pseudo removed', () => assemble('if r1 < r2 goto done\ndone:\nmov r1, 1\n'), /if|未知|unknown/i)
 
 console.log('pseudo-instruction tests passed')

@@ -118,9 +118,10 @@ export enum InstructionType {
     SRA = 0x8,
     MWR = 0x9,
     MRD = 0xA,
-    CMP = 0xB,
-    BRC = 0xC,
+    BZ = 0xB,
+    BNZ = 0xC,
     JAL = 0xD,
+    CMP = 0xE,
 }
 
 enum CompareCondition {
@@ -233,6 +234,15 @@ export class SimpleCPUAssembler {
             return unsignedLimit + value;
         }
         return value;
+    }
+
+    parseUnsignedImmediate(immStr: string, bits: number = 16): number {
+        const parsed = parseNumericLiteral(immStr.trim());
+        const maxVal = (2 ** bits) - 1;
+        if (!parsed || parsed.value < 0 || parsed.value > maxVal) {
+            throw new Error(`Unsigned immediate out of range: ${immStr} (expected 0..${maxVal})`);
+        }
+        return parsed.value;
     }
 
     isImmediate(token: string): boolean {
@@ -550,109 +560,97 @@ export class SimpleCPUAssembler {
         return { instType: InstructionType.JAL, operands: [rd, base, offset], lineNum, lineContent };
     }
 
-    parseCmp(operands: string[], lineNum: number, lineContent: string): Instruction {
+    parseCmp(operands: string[], lineNum: number, lineContent: string, unsigned: boolean): Instruction {
         if (operands.length !== 2) {
-            throw new Error("cmp 指令格式错误，应为: cmp ra, rb 或 cmp ra, imm");
+            throw new Error("cmp format must be: cmp rd, rs2 <op> rhs");
         }
 
-        const lhs = operands[0].trim();
-        const rhs = operands[1].trim();
-        if (!this.isValidRegister(lhs)) {
-            throw new Error(`cmp 左操作数必须是寄存器: ${lhs}`);
+        const rd = operands[0].trim();
+        if (!this.isValidRegister(rd)) {
+            throw new Error(`cmp destination must be a register: ${rd}`);
         }
+
+        const expression = this.tokenizeOperands(operands[1]);
+        if (expression.length !== 3) {
+            throw new Error(`cmp expression format must be: rs2 <op> rhs: ${operands[1]}`);
+        }
+
+        const [rs2, operator, rhs] = expression;
+        if (!this.isValidRegister(rs2)) {
+            throw new Error(`cmp left operand must be a register: ${rs2}`);
+        }
+
+        const commonMap: Record<string, CompareCondition> = {
+            '==': CompareCondition.EQ,
+            '!=': CompareCondition.NE,
+        };
+        const signedMap: Record<string, CompareCondition> = {
+            ...commonMap,
+            '>=': CompareCondition.SGE,
+            '<': CompareCondition.SLT,
+            '>': CompareCondition.SGT,
+            '<=': CompareCondition.SLE,
+        };
+        const unsignedMap: Record<string, CompareCondition> = {
+            ...commonMap,
+            '>=': CompareCondition.UGE,
+            '<': CompareCondition.ULT,
+            '>': CompareCondition.UGT,
+            '<=': CompareCondition.ULE,
+        };
+        const condition = (unsigned ? unsignedMap : signedMap)[operator];
+        if (condition === undefined) {
+            throw new Error(`Unsupported cmp comparison operator: ${operator}`);
+        }
+
         if (!this.isValidRegister(rhs) && !this.isImmediate(rhs)) {
-            throw new Error(`cmp 右操作数必须是寄存器或立即数: ${rhs}`);
+            throw new Error(`cmp right operand must be a register or immediate: ${rhs}`);
+        }
+        if (this.isImmediate(rhs)) {
+            this.parseImmediate(rhs, 16);
         }
 
-        return { instType: InstructionType.CMP, operands: [lhs, rhs], lineNum, lineContent };
-    }
-
-    parseBrc(operands: string[], lineNum: number, lineContent: string, unsigned: boolean): Instruction {
-        if (operands.length !== 2) {
-            throw new Error('brc 指令格式错误，应为: brc target, "cond" 或 brcu target, "cond"');
-        }
-
-        const condCode = this.parseConditionSuffix(operands[1], unsigned);
-        const [base, offset] = this.parseBranchTarget(operands[0], unsigned ? "brcu" : "brc");
         return {
-            instType: InstructionType.BRC,
-            operands: [String(condCode), base, offset],
+            instType: InstructionType.CMP,
+            operands: [String(condition), rd, rs2, rhs],
             lineNum,
             lineContent,
         };
     }
 
-    parseBranchTarget(target: string, instName: string): [string, string] {
-        const targetTokens = this.tokenizeOperands(target);
-
-        if (targetTokens.length === 1) {
-            return ['r0', targetTokens[0]];
+    parseBranch(operands: string[], lineNum: number, lineContent: string, instType: InstructionType.BZ | InstructionType.BNZ): Instruction {
+        const mnemonic = instType === InstructionType.BZ ? 'bz' : 'bnz';
+        if (operands.length !== 2) {
+            throw new Error(`${mnemonic} format must be: ${mnemonic} rd, rs2 + target`);
         }
 
-        if (targetTokens.length === 3 && ['+', '-'].includes(targetTokens[1])) {
-            const base = targetTokens[0];
-            let offset = targetTokens[2];
-            if (targetTokens[1] === '-') {
-                if (!this.isImmediate(offset)) {
-                    throw new Error(`${instName} 只支持寄存器减立即数: ${instName} rx - imm`);
-                }
-                offset = this.negateImmediateToken(offset);
-            }
-            return [base, offset];
+        const rd = operands[0].trim();
+        if (!this.isValidRegister(rd)) {
+            throw new Error(`${mnemonic} tested operand must be a register: ${rd}`);
         }
 
-        throw new Error(`${instName} 目标格式错误，应为 imm、label、rx、rx + imm、rx - imm 或 rx1 + rx2`);
-    }
-
-    parseConditionSuffix(condition: string, unsigned: boolean): CompareCondition {
-        const quoted = condition.trim();
-        if (!/^".*"$/.test(quoted)) {
-            throw new Error(`brc 条件必须使用双引号: ${condition}`);
+        const targetTokens = this.tokenizeOperands(operands[1]);
+        if (targetTokens.length !== 3 || targetTokens[1] !== '+') {
+            throw new Error(`${mnemonic} target format must be: rs2 + (u16|label|rs1)`);
         }
-        const cond = quoted.slice(1, -1).toLowerCase();
-        const commonMap: Record<string, CompareCondition> = {
-            'eq': CompareCondition.EQ,
-            '==': CompareCondition.EQ,
-            'ne': CompareCondition.NE,
-            '!=': CompareCondition.NE,
-        };
-        const signedMap: Record<string, CompareCondition> = {
-            ...commonMap,
-            'ge': CompareCondition.SGE,
-            '>=': CompareCondition.SGE,
-            'sge': CompareCondition.SGE,
-            'lt': CompareCondition.SLT,
-            '<': CompareCondition.SLT,
-            'slt': CompareCondition.SLT,
-            'gt': CompareCondition.SGT,
-            '>': CompareCondition.SGT,
-            'sgt': CompareCondition.SGT,
-            'le': CompareCondition.SLE,
-            '<=': CompareCondition.SLE,
-            'sle': CompareCondition.SLE,
-        };
-        const unsignedMap: Record<string, CompareCondition> = {
-            ...commonMap,
-            'ge': CompareCondition.UGE,
-            '>=': CompareCondition.UGE,
-            'uge': CompareCondition.UGE,
-            'lt': CompareCondition.ULT,
-            '<': CompareCondition.ULT,
-            'ult': CompareCondition.ULT,
-            'gt': CompareCondition.UGT,
-            '>': CompareCondition.UGT,
-            'ugt': CompareCondition.UGT,
-            'le': CompareCondition.ULE,
-            '<=': CompareCondition.ULE,
-            'ule': CompareCondition.ULE,
-        };
 
-        const condMap = unsigned ? unsignedMap : signedMap;
-        const code = condMap[cond];
-        if (code === undefined) {
-            throw new Error(`不支持的 brc 条件: ${condition}`);
+        const [rs2, , target] = targetTokens;
+        if (!this.isValidRegister(rs2)) {
+            throw new Error(`${mnemonic} target base must be a register: ${rs2}`);
         }
-        return code;
+        if (this.isValidRegister(target)) {
+            return { instType, operands: [rd, rs2, target], lineNum, lineContent };
+        }
+
+        if (!this.isImmediate(target)) {
+            throw new Error(`${mnemonic} target must be a register, label, or unsigned 16-bit immediate: ${target}`);
+        }
+        const immediate = this.parseUnsignedImmediate(target, 16);
+        if (rs2 === 'r0' && (immediate & 0x3) !== 0) {
+            throw new Error(`${mnemonic} direct target must be 4-byte aligned: ${target}`);
+        }
+
+        return { instType, operands: [rd, rs2, target], lineNum, lineContent };
     }
 
     negateImmediateToken(token: string): string {
@@ -685,13 +683,15 @@ export class SimpleCPUAssembler {
         } else if (mnemonic === 'jmp') {
             inst = this.parseJmp(operands, lineNum, line);
         } else if (mnemonic === 'cmp') {
-            inst = this.parseCmp(operands, lineNum, line);
-        } else if (mnemonic === 'brc') {
-            inst = this.parseBrc(operands, lineNum, line, false);
-        } else if (mnemonic === 'brcu') {
-            inst = this.parseBrc(operands, lineNum, line, true);
+            inst = this.parseCmp(operands, lineNum, line, false);
+        } else if (mnemonic === 'cmpu') {
+            inst = this.parseCmp(operands, lineNum, line, true);
+        } else if (mnemonic === 'bz') {
+            inst = this.parseBranch(operands, lineNum, line, InstructionType.BZ);
+        } else if (mnemonic === 'bnz') {
+            inst = this.parseBranch(operands, lineNum, line, InstructionType.BNZ);
         } else {
-            throw new Error(`未知指令: ${mnemonic} (只支持 mov, cmp, jmp, brc, brcu)`);
+            throw new Error(`未知指令: ${mnemonic} (只支持 mov, jmp, cmp, cmpu, bz, bnz)`);
         }
 
         return { label, instruction: inst, lineContent: line };
@@ -820,32 +820,34 @@ export class SimpleCPUAssembler {
         }
 
         if (type === InstructionType.CMP) {
-            const rs2 = this.parseRegister(ops[0]);
-            const rhs = ops[1];
+            const condition = Number.parseInt(ops[0], 10);
+            const rd = this.parseRegister(ops[1]);
+            const rs2 = this.parseRegister(ops[2]);
+            const rhs = ops[3];
+            if (!Number.isInteger(condition) || condition < 0 || condition > 9) {
+                throw new Error(`Invalid comparison condition code: ${ops[0]}`);
+            }
             if (this.isImmediate(rhs)) {
                 const imm = this.parseImmediate(rhs, 16);
-                return (imm << 16) | (rs2 << 12) | (OPCODE_I << 4) | type;
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (0x3 << 4) | condition;
             } else {
                 const rs1 = this.parseRegister(rhs);
-                return (rs1 << 16) | (rs2 << 12) | (OPCODE_R << 4) | type;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (0x4 << 4) | condition;
             }
         }
 
-        if (type === InstructionType.BRC) {
-            const condition = Number.parseInt(ops[0], 10);
+        if (type === InstructionType.BZ || type === InstructionType.BNZ) {
+            const rd = this.parseRegister(ops[0]);
             const rs2 = this.parseRegister(ops[1]);
             const offset = ops[2];
-            if (!Number.isInteger(condition) || condition < 0 || condition > 15) {
-                throw new Error(`无效的分支条件码: ${ops[0]}`);
-            }
             if (this.isImmediate(offset)) {
-                const imm = this.parseImmediate(offset, 16);
-                return (imm << 16) | (rs2 << 12) | (condition << 8) | (OPCODE_I << 4) | type;
+                const imm = this.parseUnsignedImmediate(offset, 16);
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_I << 4) | type;
             } else if (this.isValidRegister(offset)) {
                 const rs1 = this.parseRegister(offset);
-                return (rs1 << 16) | (rs2 << 12) | (condition << 8) | (OPCODE_R << 4) | type;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_R << 4) | type;
             } else {
-                throw new Error(`无效的分支偏移: ${offset} (应为立即数或寄存器)`);
+                throw new Error(`Invalid branch target: ${offset} (expected immediate or register)`);
             }
         }
 

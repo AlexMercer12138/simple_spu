@@ -35,28 +35,35 @@
     "body": [
       "jmp ${1:target}, ${2:r14}"
     ],
-    "description": "jump to target and save PC+1"
+    "description": "jump to target and save PC+4"
   },
   "cmp": {
     "prefix": "cmp",
     "body": [
-      "cmp ${1:r1}, ${2:r0}"
+      "cmp ${1:r1}, ${2:r2} ${3|==,!=,<,<=,>,>=|} ${4:r3}"
     ],
-    "description": "compare register with register or immediate"
+    "description": "signed comparison producing 0 or 1"
   },
-  "brc": {
-    "prefix": "brc",
+  "cmpu": {
+    "prefix": "cmpu",
     "body": [
-      "brc ${1:target}, \"${2|==,!=,<,<=,>,>=|}\""
+      "cmpu ${1:r1}, ${2:r2} ${3|==,!=,<,<=,>,>=|} ${4:r3}"
     ],
-    "description": "conditional branch using cmp flags"
+    "description": "unsigned comparison producing 0 or 1"
   },
-  "brcu": {
-    "prefix": "brcu",
+  "bz": {
+    "prefix": "bz",
     "body": [
-      "brcu ${1:target}, \"${2|==,!=,<,<=,>,>=|}\""
+      "bz ${1:r1}, ${2:r0} + ${3:target}"
     ],
-    "description": "unsigned conditional branch using cmp flags"
+    "description": "branch when register is zero"
+  },
+  "bnz": {
+    "prefix": "bnz",
+    "body": [
+      "bnz ${1:r1}, ${2:r0} + ${3:target}"
+    ],
+    "description": "branch when register is nonzero"
   },
   "label": {
     "prefix": "label",

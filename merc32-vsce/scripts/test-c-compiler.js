@@ -22,6 +22,18 @@ int sum(int *p, int n) {
     return total;
 }
 
+int signed_compare(int a, int b) {
+    return a < b;
+}
+
+unsigned int unsigned_compare(unsigned int a, unsigned int b) {
+    return a >= b;
+}
+
+int logical_compare(int a, int b) {
+    return !a || (a < b && b != 0);
+}
+
 int main(void) {
     volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
     data[0] = 1;
@@ -43,6 +55,13 @@ assert.match(assembly, /jmp sum, r14/);
 assert.match(assembly, /mov r8, r8 << 2/);
 assert.doesNotMatch(assembly, /\br3\b/);
 assert.match(assembly, /mov r13, 0x84/);
+assert.match(assembly, /cmp r\d+, r7 < r8/);
+assert.match(assembly, /cmpu r\d+, r7 >= r8/);
+assert.match(assembly, /cmp r\d+, r\d+ == 0/);
+assert.match(assembly, /\bbz r7, r0 \+ /);
+assert.match(assembly, /\bbnz r7, r0 \+ /);
+assert.doesNotMatch(assembly, /\bbrcu?\b/);
+assert.doesNotMatch(assembly, /cmp_true|cmp_end/);
 
 const assembler = new SimpleCPUAssembler();
 const result = assembler.assemble(assembly, { sourceFileName: 'vsce_c_test.asm' });
@@ -75,25 +94,26 @@ const irqVectorInstructions = irqVectorMatch[1]
     .map((line) => line.trim())
     .filter(Boolean);
 assert.deepStrictEqual(irqVectorInstructions, [
-    'mov r13, r13 - 28',
-    'mov [r13 + 0], r4',
-    'mov [r13 + 4], r5',
-    'mov [r13 + 8], r6',
-    'mov [r13 + 12], r7',
-    'mov [r13 + 16], r8',
-    'mov [r13 + 20], r12',
-    'mov [r13 + 24], r14',
-    'jmp __irq_handler, r14',
-    'mov r14, [r13 + 24]',
-    'mov r12, [r13 + 20]',
-    'mov r8, [r13 + 16]',
-    'mov r7, [r13 + 12]',
-    'mov r6, [r13 + 8]',
-    'mov r5, [r13 + 4]',
-    'mov r4, [r13 + 0]',
-    'mov r13, r13 + 28',
-    'jmp r3',
+    'jmp __irq_handler',
 ]);
+assert.doesNotMatch(irqAssembly, /mov r13, r13 - 28/);
+
+const irqHandlerMatch = irqAssembly.match(
+    /^__irq_handler:[ \t]*\r?\n([\s\S]*?)^main:[ \t]*\r?$/m,
+);
+assert.ok(irqHandlerMatch);
+assert.match(irqHandlerMatch[1], /^mov \[r13 \+ 0\], r14$/m);
+assert.doesNotMatch(irqHandlerMatch[1], /^mov r1, 1$/m);
+
+const irqHandlerReturnMatch = irqAssembly.match(
+    /^____irq_handler_return:[ \t]*\r?\n([\s\S]*?)^main:[ \t]*\r?$/m,
+);
+assert.ok(irqHandlerReturnMatch);
+const irqHandlerReturnInstructions = irqHandlerReturnMatch[1]
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+assert.strictEqual(irqHandlerReturnInstructions.at(-1), 'jmp r3');
 
 const irqStartMatch = irqAssembly.match(
     /^__start:[ \t]*\r?\n([\s\S]*?)^__halt:[ \t]*\r?$/m,
