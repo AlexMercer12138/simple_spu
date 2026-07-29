@@ -163,9 +163,11 @@ target = R[rs2] + R[rs1]
 ```
 
 Labels resolve to absolute byte addresses, not PC-relative displacements.
-Immediate targets accept only `0..65535`. A statically known target must be
-four-byte aligned; dynamically generated misaligned targets have unspecified
-behavior and do not add exception hardware.
+Immediate targets accept only `0..65535`. When `rs2` is `r0`, the assembler
+must require the absolute target to be four-byte aligned. With a nonzero base,
+or with a register target, final alignment is a runtime software
+responsibility. Misaligned targets have unspecified behavior and do not add
+exception hardware.
 
 ### 4.2 Encoding
 
