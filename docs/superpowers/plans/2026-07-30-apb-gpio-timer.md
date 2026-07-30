@@ -35,7 +35,7 @@ component boundary without leaving either peripheral half-implemented.
 - Create: `rtl/sim/timer_channel_tb.v`
 - Create: `rtl/timer/timer_channel.v`
 
-- [ ] **Step 1: Write the failing `timer_channel` testbench**
+- [x] **Step 1: Write the failing `timer_channel` testbench**
 
 Create a Verilog-2005 self-checking testbench with this DUT contract:
 
@@ -137,7 +137,7 @@ count_max <= 32'd3;
 
 Also cover clear priority, `COUNT>MAX` recovery after changing `count_max` while disabled, zero duty, `pwm_compare>count_max` full duty, forced modes, active-low polarity, and inactive output while disabled. End with exactly one `TEST PASS` or `TEST FAIL`, include commented `$dumpfile/$dumpvars`, and add `initial #(20000) begin $display("TEST TIMEOUT"); $finish; end`.
 
-- [ ] **Step 2: Run the timer-channel test and verify RED**
+- [x] **Step 2: Run the timer-channel test and verify RED**
 
 Run:
 
@@ -148,7 +148,7 @@ iverilog -g2005 -Wall -s timer_channel_tb -o build\apb_gpio_timer\timer_channel_
 
 Expected: elaboration fails with `Unknown module type: timer_channel`. A syntax error in the testbench is not an acceptable RED result.
 
-- [ ] **Step 3: Implement `timer_channel`**
+- [x] **Step 3: Implement `timer_channel`**
 
 Create `rtl/timer/timer_channel.v` with this complete functional structure:
 
@@ -207,7 +207,7 @@ endmodule
 
 Do not add prescalers, one-shot mode, Gray-code state, or an APB dependency.
 
-- [ ] **Step 4: Run the timer-channel test and verify GREEN**
+- [x] **Step 4: Run the timer-channel test and verify GREEN**
 
 Run:
 
@@ -218,7 +218,7 @@ vvp build\apb_gpio_timer\timer_channel_tb.vvp
 
 Expected: one `TEST PASS`, no `TEST FAIL`, no `TEST TIMEOUT`, and zero compile errors.
 
-- [ ] **Step 5: Commit the timer channel**
+- [x] **Step 5: Commit the timer channel**
 
 ```powershell
 git add -- rtl/timer/timer_channel.v rtl/sim/timer_channel_tb.v
@@ -233,7 +233,7 @@ git commit -m "feat: add binary timer channel"
 - Create: `rtl/gpio/apb_gpio.v`
 - Create: `rtl/gpio/apb_gpio_manual.md`
 
-- [ ] **Step 1: Write the failing APB GPIO testbench**
+- [x] **Step 1: Write the failing APB GPIO testbench**
 
 Instantiate `apb_gpio` with all APB and GPIO ports. Use a 10 ns clock,
 synchronous reset release, APB read/write tasks, a self-checking `check_equal`
@@ -318,7 +318,7 @@ The test must verify:
 - Software reset restores all reset values.
 - Undefined reads return zero and undefined writes do nothing.
 
-- [ ] **Step 2: Run the APB GPIO test and verify RED**
+- [x] **Step 2: Run the APB GPIO test and verify RED**
 
 ```powershell
 iverilog -g2005 -Wall -s apb_gpio_tb -o build\apb_gpio_timer\apb_gpio_tb.vvp rtl\sim\apb_gpio_tb.v
@@ -326,7 +326,7 @@ iverilog -g2005 -Wall -s apb_gpio_tb -o build\apb_gpio_timer\apb_gpio_tb.vvp rtl
 
 Expected: elaboration fails only because `apb_gpio` is missing.
 
-- [ ] **Step 3: Implement APB timing, GPIO data, and synchronization**
+- [x] **Step 3: Implement APB timing, GPIO data, and synchronization**
 
 Create `rtl/gpio/apb_gpio.v` with the approved APB ports and register addresses.
 Use these exact core assignments and synchronous `PREADY` behavior:
@@ -399,7 +399,7 @@ case (word_addr)
 endcase
 ```
 
-- [ ] **Step 4: Implement GPIO interrupt detection and APB reads**
+- [x] **Step 4: Implement GPIO interrupt detection and APB reads**
 
 Use a combinational function, not `always @(*)`, for trigger decoding:
 
@@ -459,7 +459,7 @@ Reset `irq_type_reg` to `3'd7` and `irq_enable_reg` to zero. Read data during AP
 setup with exact word addresses 0 through 9. `CTRL`, SET, CLEAR, and TOGGLE read
 zero; undefined addresses read zero.
 
-- [ ] **Step 5: Run the APB GPIO test and verify GREEN**
+- [x] **Step 5: Run the APB GPIO test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -Wall -s apb_gpio_tb -o build\apb_gpio_timer\apb_gpio_tb.vvp rtl\gpio\apb_gpio.v rtl\sim\apb_gpio_tb.v
@@ -468,7 +468,7 @@ vvp build\apb_gpio_timer\apb_gpio_tb.vvp
 
 Expected: one `TEST PASS`, no failure/timeout markers, and zero compile errors.
 
-- [ ] **Step 6: Write the GPIO programming manual**
+- [x] **Step 6: Write the GPIO programming manual**
 
 Create `rtl/gpio/apb_gpio_manual.md`. Include the byte-offset register table,
 reset values, `gpio_t=~GPIO_DIR`, two-cycle synchronizer latency, type codes
@@ -484,7 +484,7 @@ mask, W1C set priority, type-write clearing, and this programming order:
 6. Service IRQ_STATUS and clear handled bits with W1C.
 ```
 
-- [ ] **Step 7: Commit the APB GPIO peripheral**
+- [x] **Step 7: Commit the APB GPIO peripheral**
 
 ```powershell
 git add -- rtl/gpio/apb_gpio.v rtl/gpio/apb_gpio_manual.md rtl/sim/apb_gpio_tb.v
@@ -500,7 +500,7 @@ git commit -m "feat: add APB GPIO peripheral"
 - Create: `rtl/timer/apb_timer_manual.md`
 - Reuse: `rtl/timer/timer_channel.v`
 
-- [ ] **Step 1: Write the failing APB timer testbench**
+- [x] **Step 1: Write the failing APB timer testbench**
 
 Instantiate `apb_timer`, use the same APB helper timing as Task 2, and define:
 
@@ -541,7 +541,7 @@ Required checks:
 End with one `TEST PASS` or `TEST FAIL`, commented VCD calls, and an explicit
 200 us timeout.
 
-- [ ] **Step 2: Run the APB timer test and verify RED**
+- [x] **Step 2: Run the APB timer test and verify RED**
 
 ```powershell
 iverilog -g2005 -Wall -s apb_timer_tb -o build\apb_gpio_timer\apb_timer_tb.vvp rtl\timer\timer_channel.v rtl\sim\apb_timer_tb.v
@@ -549,7 +549,7 @@ iverilog -g2005 -Wall -s apb_timer_tb -o build\apb_gpio_timer\apb_timer_tb.vvp r
 
 Expected: elaboration fails only because `apb_timer` is missing.
 
-- [ ] **Step 3: Implement APB registers and configuration protection**
+- [x] **Step 3: Implement APB registers and configuration protection**
 
 Create `rtl/timer/apb_timer.v` with the common APB contract and exact word
 addresses 0 through 10. Store:
@@ -604,7 +604,7 @@ assign timer1_clear = ctrl_write && !soft_reset_write && s_apb_pwdata[9];
 assign timer_core_rst_n = rst_n && !soft_reset_write;
 ```
 
-- [ ] **Step 4: Instantiate channels, route cascade, and implement interrupts**
+- [x] **Step 4: Instantiate channels, route cascade, and implement interrupts**
 
 Route only registered channel events:
 
@@ -652,7 +652,7 @@ end
 Implement setup-phase read data for CTRL, IRQ, both CONFIG/COUNT/MAX/COMPARE
 groups, and zero for undefined addresses. CTRL reads only stored enable bits.
 
-- [ ] **Step 5: Run the APB timer test and verify GREEN**
+- [x] **Step 5: Run the APB timer test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -Wall -s apb_timer_tb -o build\apb_gpio_timer\apb_timer_tb.vvp rtl\timer\timer_channel.v rtl\timer\apb_timer.v rtl\sim\apb_timer_tb.v
@@ -661,7 +661,7 @@ vvp build\apb_gpio_timer\apb_timer_tb.vvp
 
 Expected: one `TEST PASS`, no failure/timeout markers, and zero compile errors.
 
-- [ ] **Step 6: Write the timer programming manual**
+- [x] **Step 6: Write the timer programming manual**
 
 Create `rtl/timer/apb_timer_manual.md` with the exact register map, bit fields,
 reset values, protected-write rules, W1C behavior, inclusive `MAX+1` period,
@@ -681,7 +681,7 @@ disable channel -> write MAX and COMPARE -> choose normal/force mode and
 polarity -> clear -> enable
 ```
 
-- [ ] **Step 7: Commit the APB timer peripheral**
+- [x] **Step 7: Commit the APB timer peripheral**
 
 ```powershell
 git add -- rtl/timer/apb_timer.v rtl/timer/apb_timer_manual.md rtl/sim/apb_timer_tb.v
@@ -695,7 +695,7 @@ git commit -m "feat: add APB dual timer peripheral"
 - Verify: all files created in Tasks 1 through 3
 - Modify: `docs/superpowers/plans/2026-07-30-apb-gpio-timer.md`
 
-- [ ] **Step 1: Check vks availability and run the primary flow when present**
+- [x] **Step 1: Check vks availability and run the primary flow when present**
 
 Inspect the active tool inventory for `vks_lint`, `vks_compile`, and
 `vks_simulate`.
@@ -716,7 +716,7 @@ marker appears.
 If the tools remain unavailable, record that fact in the final report. Do not
 claim a vks pass and do not invent a vks bug result.
 
-- [ ] **Step 2: Run fresh Icarus compilation and simulation**
+- [x] **Step 2: Run fresh Icarus compilation and simulation**
 
 Compile from current source rather than reusing an old image:
 
@@ -732,7 +732,7 @@ vvp build\apb_gpio_timer\apb_timer_tb.vvp
 Expected for all three: compile exit 0, exactly one `TEST PASS`, no `TEST FAIL`,
 and no `TEST TIMEOUT`.
 
-- [ ] **Step 3: Cross-check all tests with ModelSim**
+- [x] **Step 3: Cross-check all tests with ModelSim**
 
 Use forward slashes in the ModelSim library path:
 
@@ -747,7 +747,7 @@ vsim -c -lib build/apb_gpio_timer/modelsim_work apb_timer_tb -do "run -all; quit
 Run the three `vsim` commands serially because they share the library and
 transcript. Expected: every test reports `TEST PASS` and `Errors: 0, Warnings: 0`.
 
-- [ ] **Step 4: Check RTL style and design scope**
+- [x] **Step 4: Check RTL style and design scope**
 
 Run literal style scans and Git checks:
 
@@ -762,7 +762,7 @@ Expected: both style scans return no matches; `git diff --check` has no errors.
 Confirm no CPU top-level, address decoder, existing peripheral, or unrelated
 dirty file was staged or modified by this task.
 
-- [ ] **Step 5: Clean only generated root-level simulator outputs**
+- [x] **Step 5: Clean only generated root-level simulator outputs**
 
 Check `apb_gpio_tb.vcd`, `timer_channel_tb.vcd`, `apb_timer_tb.vcd`, and
 `transcript`. For each existing file, resolve its absolute path and verify that
@@ -770,7 +770,7 @@ it is directly under `D:\Software\simple_cpu` before removing it. Keep
 `build/apb_gpio_timer/` because it is build cache, and do not recursively remove
 any broader directory.
 
-- [ ] **Step 6: Mark the execution checklist and commit the completion record**
+- [x] **Step 6: Mark the execution checklist and commit the completion record**
 
 Change each completed checkbox in this plan from `[ ]` to `[x]`. If vks is
 unavailable, Step 1 is still complete because availability was checked and the
@@ -782,7 +782,7 @@ git diff --cached --check
 git commit -m "docs: record APB GPIO and timer completion"
 ```
 
-- [ ] **Step 7: Prepare the final report**
+- [x] **Step 7: Prepare the final report**
 
 Report:
 
