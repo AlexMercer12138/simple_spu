@@ -421,7 +421,7 @@ test, the failure is observed, and only then is the minimum RTL added.
 
 Three testbenches provide layered coverage:
 
-### 10.1 `rtl/sim/tb_i2c_master_lite.v`
+### 10.1 `rtl/sim/i2c_master_lite_tb.v`
 
 A behavioral slave verifies:
 
@@ -434,7 +434,7 @@ A behavioral slave verifies:
 - Arbitration loss and immediate line release.
 - Software abort and programmable SCL period.
 
-### 10.2 `rtl/sim/tb_i2c_slave.v`
+### 10.2 `rtl/sim/i2c_slave_tb.v`
 
 A behavioral master verifies:
 
@@ -447,7 +447,7 @@ A behavioral master verifies:
 - Mid-read timeout and `8'hFF` fallback.
 - Completed RX/TX byte counts and all slave events.
 
-### 10.3 `rtl/sim/tb_apb_i2c.v`
+### 10.3 `rtl/sim/apb_i2c_tb.v`
 
 Two `apb_i2c` instances share resolved open-drain SCL/SDA lines. One is
 configured as master and the other as slave. This test verifies the complete
