@@ -13,9 +13,14 @@ module i2c_slave_tb;
     wire [7:0]  rx_data;
     wire        rx_valid;
     reg         rx_ready = 1'b1;
-    reg  [7:0]  tx_data = 8'h00;
-    reg         tx_valid = 1'b0;
-    wire        tx_ready;
+    reg         tx_fifo_rst_n = 1'b1;
+    reg         tx_fifo_wr_en = 1'b0;
+    reg  [7:0]  tx_fifo_din = 8'h00;
+    wire [7:0]  tx_fifo_dout;
+    wire        tx_fifo_rd_en;
+    wire        tx_fifo_empty;
+    wire        tx_fifo_full;
+    wire [3:0]  tx_fifo_count;
     wire        selected;
     wire        read_mode;
     wire        stretch_active;
@@ -40,10 +45,9 @@ module i2c_slave_tb;
 
     reg  [7:0]  received [0:15];
     reg  [7:0]  transmitted [0:15];
-    reg  [7:0]  tx_memory [0:15];
     integer     received_count = 0;
-    integer     tx_index = 0;
-    integer     tx_limit = 0;
+    reg  [7:0]  fifo_read_data [0:15];
+    integer     fifo_read_count = 0;
     integer     error_count = 0;
     reg         rx_done_seen = 1'b0;
     reg         read_done_seen = 1'b0;
@@ -58,6 +62,21 @@ module i2c_slave_tb;
     assign scl_line = (!master_scl_low && scl_t) ? 1'b1 : 1'b0;
     assign sda_line = (!master_sda_low && sda_t) ? 1'b1 : 1'b0;
 
+    sync_fifo #(
+        .DATA_WIDTH (8),
+        .FIFO_DEPTH (8)
+    ) tx_fifo_inst (
+        .clk      (clk),
+        .rst_n    (rst_n && tx_fifo_rst_n),
+        .wr_en    (tx_fifo_wr_en),
+        .din      (tx_fifo_din),
+        .rd_en    (tx_fifo_rd_en),
+        .dout     (tx_fifo_dout),
+        .empty    (tx_fifo_empty),
+        .full     (tx_fifo_full),
+        .data_cnt (tx_fifo_count)
+    );
+
     i2c_slave i2c_slave_inst (
         .clk             (clk),
         .rst_n           (rst_n),
@@ -67,9 +86,9 @@ module i2c_slave_tb;
         .rx_data         (rx_data),
         .rx_valid        (rx_valid),
         .rx_ready        (rx_ready),
-        .tx_data         (tx_data),
-        .tx_valid        (tx_valid),
-        .tx_ready        (tx_ready),
+        .tx_data         (tx_fifo_dout),
+        .tx_empty        (tx_fifo_empty),
+        .tx_rd_en        (tx_fifo_rd_en),
         .selected        (selected),
         .read_mode       (read_mode),
         .stretch_active  (stretch_active),
@@ -127,19 +146,12 @@ module i2c_slave_tb;
     end
 
     always @(posedge clk) begin
-        if (!rst_n) begin
-            tx_data <= 8'h00;
-            tx_valid <= 1'b0;
-            tx_index <= 0;
-        end else begin
-            if (tx_index < tx_limit) begin
-                tx_data <= tx_memory[tx_index];
-                tx_valid <= 1'b1;
-            end else begin
-                tx_valid <= 1'b0;
-            end
-            if (tx_ready && tx_valid)
-                tx_index <= tx_index + 1;
+        if (!rst_n || !tx_fifo_rst_n) begin
+            fifo_read_count <= 0;
+        end else if (tx_fifo_rd_en) begin
+            #1;
+            fifo_read_data[fifo_read_count] <= tx_fifo_dout;
+            fifo_read_count <= fifo_read_count + 1;
         end
     end
 
@@ -271,9 +283,25 @@ module i2c_slave_tb;
         end
     endtask
 
+    task fifo_push;
+        input [7:0] value;
+        begin
+            @(negedge clk);
+            tx_fifo_din <= value;
+            tx_fifo_wr_en <= 1'b1;
+            @(posedge clk);
+            #1;
+            @(negedge clk);
+            tx_fifo_wr_en <= 1'b0;
+            tx_fifo_din <= 8'd0;
+        end
+    endtask
+
     task clear_observation;
         begin
-            @(posedge clk);
+            @(negedge clk);
+            tx_fifo_wr_en <= 1'b0;
+            tx_fifo_rst_n <= 1'b0;
             received_count = 0;
             rx_done_seen = 1'b0;
             read_done_seen = 1'b0;
@@ -283,8 +311,12 @@ module i2c_slave_tb;
             bus_error_seen = 1'b0;
             selected_seen = 1'b0;
             stretch_observed_low = 1'b0;
-            tx_index = 0;
-            tx_limit = 0;
+            @(posedge clk);
+            #1;
+            @(negedge clk);
+            tx_fifo_rst_n <= 1'b1;
+            @(posedge clk);
+            #1;
         end
     endtask
 
@@ -302,8 +334,7 @@ module i2c_slave_tb;
             wait (stretch_active);
             stretch_observed_low = !scl_line;
             repeat (20) @(posedge clk);
-            tx_memory[0] = 8'hC7;
-            tx_limit = 1;
+            fifo_push(8'hC7);
         end
     endtask
 
@@ -377,22 +408,32 @@ module i2c_slave_tb;
 
         $display("========== Preloaded slave read ==========");
         clear_observation;
-        tx_memory[0] = 8'hA5;
-        tx_memory[1] = 8'h5A;
-        tx_limit = 2;
-        repeat (4) @(posedge clk);
-        i2c_start;
-        i2c_write_byte({7'h2D, 1'b1}, ack_sample);
-        check_equal("read address ACK", ack_sample, 0);
-        i2c_read_byte(1'b1, transmitted[0]);
-        i2c_read_byte(1'b0, transmitted[1]);
-        i2c_stop;
+        fifo_push(8'hA5);
+        fifo_push(8'h5A);
+        fork
+            begin
+                wait (stretch_active);
+                stretch_observed_low = !scl_line;
+            end
+            begin
+                i2c_start;
+                i2c_write_byte({7'h2D, 1'b1}, ack_sample);
+                check_equal("read address ACK", ack_sample, 0);
+                i2c_read_byte(1'b1, transmitted[0]);
+                i2c_read_byte(1'b0, transmitted[1]);
+                i2c_stop;
+            end
+        join
         repeat (8) @(posedge clk);
         check_equal("preloaded tx byte 0", transmitted[0], 8'hA5);
         check_equal("preloaded tx byte 1", transmitted[1], 8'h5A);
+        check_equal("preloaded FIFO read count", fifo_read_count, 2);
+        check_equal("preloaded FIFO byte 0", fifo_read_data[0], 8'hA5);
+        check_equal("preloaded FIFO byte 1", fifo_read_data[1], 8'h5A);
         check_equal("preloaded tx count", tx_count, 2);
         check_equal("preloaded read done", read_done_seen, 1);
         check_equal("preloaded no underflow", underflow_seen, 0);
+        check_equal("preloaded fetch stretches", stretch_observed_low, 1);
 
         $display("========== Address stretch and refill ==========");
         clear_observation;
@@ -425,9 +466,7 @@ module i2c_slave_tb;
         $display("========== Mid-read stretch timeout ==========");
         clear_observation;
         timeout_cycles <= 32'd20;
-        tx_memory[0] = 8'h3C;
-        tx_limit = 1;
-        repeat (4) @(posedge clk);
+        fifo_push(8'h3C);
         i2c_start;
         i2c_write_byte({7'h2D, 1'b1}, ack_sample);
         check_equal("mid-read address ACK", ack_sample, 0);
