@@ -47,6 +47,7 @@ module i2c_slave (
     localparam ST_TX_WAIT    = 4'd5;
     localparam ST_TX_BYTE    = 4'd6;
     localparam ST_TX_ACK     = 4'd7;
+    localparam ST_ADDR_RELEASE = 4'd8;
 
     reg     [3:0]   state;
     reg     [2:0]   scl_sync;
@@ -61,6 +62,9 @@ module i2c_slave (
     reg             address_read;
     reg             ack_phase;
     reg             rx_accept;
+    reg             tx_loaded;
+    reg             master_ack;
+    reg             wait_address_ack;
     reg     [31:0]  stretch_count;
 
     wire            scl_rise;
@@ -114,6 +118,9 @@ module i2c_slave (
             address_read <= 1'b0;
             ack_phase <= 1'b0;
             rx_accept <= 1'b0;
+            tx_loaded <= 1'b0;
+            master_ack <= 1'b0;
+            wait_address_ack <= 1'b0;
             stretch_count <= 32'd0;
             rx_valid <= 1'b0;
             tx_ready <= 1'b0;
@@ -147,6 +154,9 @@ module i2c_slave (
                 address_read <= 1'b0;
                 ack_phase <= 1'b0;
                 rx_accept <= 1'b0;
+                tx_loaded <= 1'b0;
+                master_ack <= 1'b0;
+                wait_address_ack <= 1'b0;
                 stretch_count <= 32'd0;
                 rx_valid <= 1'b0;
                 selected <= 1'b0;
@@ -169,6 +179,8 @@ module i2c_slave (
                 address_match <= 1'b0;
                 address_read <= 1'b0;
                 ack_phase <= 1'b0;
+                tx_loaded <= 1'b0;
+                wait_address_ack <= 1'b0;
                 rx_valid <= 1'b0;
                 selected <= 1'b0;
                 read_mode <= 1'b0;
@@ -186,6 +198,8 @@ module i2c_slave (
                 state <= ST_IDLE;
                 bit_count <= 4'd0;
                 ack_phase <= 1'b0;
+                tx_loaded <= 1'b0;
+                wait_address_ack <= 1'b0;
                 rx_valid <= 1'b0;
                 selected <= 1'b0;
                 read_mode <= 1'b0;
@@ -221,10 +235,27 @@ module i2c_slave (
                     ST_ADDR_ACK: begin
                         if (scl_fall) begin
                             if (!ack_phase) begin
-                                sda_t <= address_match ? 1'b0 : 1'b1;
-                                ack_phase <= 1'b1;
+                                if (address_match && address_read && tx_valid) begin
+                                    shift_reg <= tx_data;
+                                    tx_ready <= 1'b1;
+                                    tx_loaded <= 1'b1;
+                                    sda_t <= 1'b0;
+                                    ack_phase <= 1'b1;
+                                end else if (address_match && address_read) begin
+                                    selected <= 1'b1;
+                                    read_mode <= 1'b1;
+                                    stretch_active <= 1'b1;
+                                    tx_underflow <= 1'b1;
+                                    wait_address_ack <= 1'b1;
+                                    stretch_count <= 32'd0;
+                                    scl_t <= 1'b0;
+                                    sda_t <= 1'b1;
+                                    state <= ST_TX_WAIT;
+                                end else begin
+                                    sda_t <= address_match ? 1'b0 : 1'b1;
+                                    ack_phase <= 1'b1;
+                                end
                             end else begin
-                                sda_t <= 1'b1;
                                 ack_phase <= 1'b0;
                                 if (address_match) begin
                                     selected <= 1'b1;
@@ -232,12 +263,22 @@ module i2c_slave (
                                     bit_count <= 4'd0;
                                     if (address_read) begin
                                         tx_count <= 8'd0;
-                                        state <= ST_TX_WAIT;
+                                        bit_count <= 4'd7;
+                                        if (tx_loaded) begin
+                                            sda_t <= shift_reg[7];
+                                            state <= ST_TX_BYTE;
+                                        end else begin
+                                            sda_t <= 1'b1;
+                                            wait_address_ack <= 1'b0;
+                                            state <= ST_TX_WAIT;
+                                        end
                                     end else begin
+                                        sda_t <= 1'b1;
                                         rx_count <= 8'd0;
                                         state <= ST_RX_BYTE;
                                     end
                                 end else begin
+                                    sda_t <= 1'b1;
                                     selected <= 1'b0;
                                     read_mode <= 1'b0;
                                     state <= ST_IDLE;
@@ -277,6 +318,112 @@ module i2c_slave (
                                 sda_t <= 1'b1;
                                 ack_phase <= 1'b0;
                                 state <= ST_RX_BYTE;
+                            end
+                        end
+                    end
+
+                    ST_TX_WAIT: begin
+                        sda_t <= 1'b1;
+                        if (tx_valid) begin
+                            shift_reg <= tx_data;
+                            tx_ready <= 1'b1;
+                            tx_loaded <= 1'b1;
+                            bit_count <= 4'd7;
+                            stretch_count <= 32'd0;
+                            if (wait_address_ack) begin
+                                sda_t <= 1'b0;
+                                scl_t <= 1'b0;
+                                state <= ST_ADDR_RELEASE;
+                            end else begin
+                                stretch_active <= 1'b0;
+                                scl_t <= 1'b1;
+                                sda_t <= tx_data[7];
+                                state <= ST_TX_BYTE;
+                            end
+                        end else if (stretch_active &&
+                                     ((timeout_cycles == 0) ||
+                                      (stretch_count >= timeout_cycles - 1'b1))) begin
+                            scl_t <= 1'b1;
+                            sda_t <= 1'b1;
+                            stretch_active <= 1'b0;
+                            stretch_timeout <= 1'b1;
+                            stretch_count <= 32'd0;
+                            if (wait_address_ack) begin
+                                selected <= 1'b0;
+                                read_mode <= 1'b0;
+                                address_match <= 1'b0;
+                                ack_phase <= 1'b0;
+                                tx_loaded <= 1'b0;
+                                wait_address_ack <= 1'b0;
+                                state <= ST_IDLE;
+                            end else begin
+                                shift_reg <= 8'hFF;
+                                bit_count <= 4'd7;
+                                tx_loaded <= 1'b1;
+                                state <= ST_TX_BYTE;
+                            end
+                        end else if (stretch_active) begin
+                            stretch_count <= stretch_count + 1'b1;
+                        end
+                    end
+
+                    ST_ADDR_RELEASE: begin
+                        scl_t <= 1'b0;
+                        sda_t <= 1'b0;
+                        if (stretch_count >= 5) begin
+                            scl_t <= 1'b1;
+                            stretch_active <= 1'b0;
+                            stretch_count <= 32'd0;
+                            ack_phase <= 1'b1;
+                            wait_address_ack <= 1'b0;
+                            state <= ST_ADDR_ACK;
+                        end else begin
+                            stretch_count <= stretch_count + 1'b1;
+                        end
+                    end
+
+                    ST_TX_BYTE: begin
+                        if (scl_fall) begin
+                            if (bit_count == 0) begin
+                                sda_t <= 1'b1;
+                                tx_count <= tx_count + 1'b1;
+                                master_ack <= 1'b0;
+                                state <= ST_TX_ACK;
+                            end else begin
+                                bit_count <= bit_count - 1'b1;
+                                sda_t <= shift_reg[bit_count - 1'b1];
+                            end
+                        end
+                    end
+
+                    ST_TX_ACK: begin
+                        sda_t <= 1'b1;
+                        if (scl_rise) begin
+                            master_ack <= !sda_filtered;
+                        end else if (scl_fall) begin
+                            if (master_ack) begin
+                                if (tx_valid) begin
+                                    shift_reg <= tx_data;
+                                    tx_ready <= 1'b1;
+                                    tx_loaded <= 1'b1;
+                                    bit_count <= 4'd7;
+                                    sda_t <= tx_data[7];
+                                    state <= ST_TX_BYTE;
+                                end else begin
+                                    tx_loaded <= 1'b0;
+                                    wait_address_ack <= 1'b0;
+                                    stretch_active <= 1'b1;
+                                    tx_underflow <= 1'b1;
+                                    stretch_count <= 32'd0;
+                                    scl_t <= 1'b0;
+                                    state <= ST_TX_WAIT;
+                                end
+                            end else begin
+                                read_done <= 1'b1;
+                                selected <= 1'b0;
+                                read_mode <= 1'b0;
+                                tx_loaded <= 1'b0;
+                                state <= ST_IDLE;
                             end
                         end
                     end

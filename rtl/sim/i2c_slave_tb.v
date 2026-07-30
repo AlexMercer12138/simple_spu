@@ -39,7 +39,11 @@ module i2c_slave_tb;
     wire        sda_line;
 
     reg  [7:0]  received [0:15];
+    reg  [7:0]  transmitted [0:15];
+    reg  [7:0]  tx_memory [0:15];
     integer     received_count = 0;
+    integer     tx_index = 0;
+    integer     tx_limit = 0;
     integer     error_count = 0;
     reg         rx_done_seen = 1'b0;
     reg         read_done_seen = 1'b0;
@@ -49,6 +53,7 @@ module i2c_slave_tb;
     reg         bus_error_seen = 1'b0;
     reg         selected_seen = 1'b0;
     reg         ack_sample;
+    reg         stretch_observed_low = 1'b0;
 
     assign scl_line = (!master_scl_low && scl_t) ? 1'b1 : 1'b0;
     assign sda_line = (!master_sda_low && sda_t) ? 1'b1 : 1'b0;
@@ -118,6 +123,23 @@ module i2c_slave_tb;
                 stretch_timeout_seen <= 1'b1;
             if (bus_error)
                 bus_error_seen <= 1'b1;
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            tx_data <= 8'h00;
+            tx_valid <= 1'b0;
+            tx_index <= 0;
+        end else begin
+            if (tx_index < tx_limit) begin
+                tx_data <= tx_memory[tx_index];
+                tx_valid <= 1'b1;
+            end else begin
+                tx_valid <= 1'b0;
+            end
+            if (tx_ready && tx_valid)
+                tx_index <= tx_index + 1;
         end
     end
 
@@ -198,6 +220,42 @@ module i2c_slave_tb;
         end
     endtask
 
+    task i2c_read_bit;
+        output bit_value;
+        begin
+            master_scl_low <= 1'b1;
+            master_sda_low <= 1'b0;
+            #(I2C_HALF_PERIOD);
+            master_scl_low <= 1'b0;
+            wait (scl_line);
+            #(I2C_HALF_PERIOD/2);
+            bit_value = sda_line;
+            #(I2C_HALF_PERIOD/2);
+            master_scl_low <= 1'b1;
+        end
+    endtask
+
+    task i2c_read_byte;
+        input send_ack;
+        output [7:0] value;
+        integer bit_index;
+        reg sampled_bit;
+        begin
+            for (bit_index = 7; bit_index >= 0; bit_index = bit_index - 1) begin
+                i2c_read_bit(sampled_bit);
+                value[bit_index] = sampled_bit;
+            end
+            master_scl_low <= 1'b1;
+            master_sda_low <= send_ack;
+            #(I2C_HALF_PERIOD);
+            master_scl_low <= 1'b0;
+            wait (scl_line);
+            #(I2C_HALF_PERIOD);
+            master_scl_low <= 1'b1;
+            master_sda_low <= 1'b0;
+        end
+    endtask
+
     task check_equal;
         input [8*48-1:0] test_name;
         input [31:0] actual;
@@ -224,6 +282,28 @@ module i2c_slave_tb;
             stretch_timeout_seen = 1'b0;
             bus_error_seen = 1'b0;
             selected_seen = 1'b0;
+            stretch_observed_low = 1'b0;
+            tx_index = 0;
+            tx_limit = 0;
+        end
+    endtask
+
+    task run_master_read_one;
+        begin
+            i2c_start;
+            i2c_write_byte({7'h2D, 1'b1}, ack_sample);
+            i2c_read_byte(1'b0, transmitted[0]);
+            i2c_stop;
+        end
+    endtask
+
+    task refill_slave_tx_during_stretch;
+        begin
+            wait (stretch_active);
+            stretch_observed_low = !scl_line;
+            repeat (20) @(posedge clk);
+            tx_memory[0] = 8'hC7;
+            tx_limit = 1;
         end
     endtask
 
@@ -294,6 +374,87 @@ module i2c_slave_tb;
         check_equal("overflow event", overflow_seen, 1);
         check_equal("overflow no data", received_count, 0);
         rx_ready <= 1'b1;
+
+        $display("========== Preloaded slave read ==========");
+        clear_observation;
+        tx_memory[0] = 8'hA5;
+        tx_memory[1] = 8'h5A;
+        tx_limit = 2;
+        repeat (4) @(posedge clk);
+        i2c_start;
+        i2c_write_byte({7'h2D, 1'b1}, ack_sample);
+        check_equal("read address ACK", ack_sample, 0);
+        i2c_read_byte(1'b1, transmitted[0]);
+        i2c_read_byte(1'b0, transmitted[1]);
+        i2c_stop;
+        repeat (8) @(posedge clk);
+        check_equal("preloaded tx byte 0", transmitted[0], 8'hA5);
+        check_equal("preloaded tx byte 1", transmitted[1], 8'h5A);
+        check_equal("preloaded tx count", tx_count, 2);
+        check_equal("preloaded read done", read_done_seen, 1);
+        check_equal("preloaded no underflow", underflow_seen, 0);
+
+        $display("========== Address stretch and refill ==========");
+        clear_observation;
+        timeout_cycles <= 32'd1000;
+        fork
+            run_master_read_one;
+            refill_slave_tx_during_stretch;
+        join
+        repeat (8) @(posedge clk);
+        check_equal("refill address ACK", ack_sample, 0);
+        check_equal("refill stretched byte", transmitted[0], 8'hC7);
+        check_equal("refill underflow event", underflow_seen, 1);
+        check_equal("refill stretch held SCL", stretch_observed_low, 1);
+        check_equal("refill no timeout", stretch_timeout_seen, 0);
+        check_equal("refill read done", read_done_seen, 1);
+
+        $display("========== Address stretch timeout ==========");
+        clear_observation;
+        timeout_cycles <= 32'd20;
+        i2c_start;
+        i2c_write_byte({7'h2D, 1'b1}, ack_sample);
+        check_equal("timeout address NACK", ack_sample, 1);
+        i2c_stop;
+        repeat (8) @(posedge clk);
+        check_equal("timeout underflow event", underflow_seen, 1);
+        check_equal("timeout stretch event", stretch_timeout_seen, 1);
+        check_equal("timeout no read done", read_done_seen, 0);
+        check_equal("timeout releases lines", {scl_t, sda_t}, 2'b11);
+
+        $display("========== Mid-read stretch timeout ==========");
+        clear_observation;
+        timeout_cycles <= 32'd20;
+        tx_memory[0] = 8'h3C;
+        tx_limit = 1;
+        repeat (4) @(posedge clk);
+        i2c_start;
+        i2c_write_byte({7'h2D, 1'b1}, ack_sample);
+        check_equal("mid-read address ACK", ack_sample, 0);
+        i2c_read_byte(1'b1, transmitted[0]);
+        fork
+            begin
+                i2c_read_byte(1'b0, transmitted[1]);
+                i2c_stop;
+            end
+            begin
+                repeat (100) begin
+                    @(posedge clk);
+                    if (stretch_active && !scl_line)
+                        stretch_observed_low = 1'b1;
+                end
+            end
+        join
+        repeat (8) @(posedge clk);
+        check_equal("mid-read first byte", transmitted[0], 8'h3C);
+        check_equal("mid-read timeout fallback", transmitted[1], 8'hFF);
+        check_equal("mid-read tx count", tx_count, 2);
+        check_equal("mid-read underflow event", underflow_seen, 1);
+        check_equal("mid-read stretch event", stretch_timeout_seen, 1);
+        check_equal("mid-read stretch held SCL", stretch_observed_low, 1);
+        check_equal("mid-read read done", read_done_seen, 1);
+        check_equal("mid-read releases lines", {scl_t, sda_t}, 2'b11);
+        timeout_cycles <= 32'd1000;
 
         if (error_count == 0)
             $display("TEST PASS");
