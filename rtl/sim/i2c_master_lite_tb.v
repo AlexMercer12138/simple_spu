@@ -14,9 +14,14 @@ module i2c_master_lite_tb;
     reg  [7:0]  cmd_rx_len = 8'd0;
     reg  [15:0] scl_prescale = 16'd1;
     reg  [31:0] timeout_cycles = 32'd1000;
-    reg  [7:0]  tx_data = 8'h00;
-    reg         tx_valid = 1'b0;
-    wire        tx_ready;
+    reg         tx_fifo_rst_n = 1'b1;
+    reg         tx_fifo_wr_en = 1'b0;
+    reg  [7:0]  tx_fifo_din = 8'h00;
+    wire [7:0]  tx_fifo_dout;
+    wire        tx_fifo_rd_en;
+    wire        tx_fifo_empty;
+    wire        tx_fifo_full;
+    wire [3:0]  tx_fifo_count;
     wire [7:0]  rx_data;
     wire        rx_valid;
     reg         rx_ready = 1'b1;
@@ -42,7 +47,8 @@ module i2c_master_lite_tb;
     wire        sda_line;
 
     reg  [7:0]  tx_memory [0:2];
-    integer     tx_index = 0;
+    reg  [7:0]  fifo_read_data [0:15];
+    integer     fifo_read_count = 0;
     reg  [7:0]  slave_rx [0:15];
     reg  [7:0]  master_rx [0:15];
     integer     slave_rx_count = 0;
@@ -72,6 +78,21 @@ module i2c_master_lite_tb;
     assign scl_line = (scl_t && !force_scl_low) ? 1'b1 : scl_o;
     assign sda_line = (sda_t && !slave_sda_low && !force_sda_low) ? 1'b1 : 1'b0;
 
+    sync_fifo #(
+        .DATA_WIDTH (8),
+        .FIFO_DEPTH (8)
+    ) tx_fifo_inst (
+        .clk      (clk),
+        .rst_n    (rst_n && tx_fifo_rst_n),
+        .wr_en    (tx_fifo_wr_en),
+        .din      (tx_fifo_din),
+        .rd_en    (tx_fifo_rd_en),
+        .dout     (tx_fifo_dout),
+        .empty    (tx_fifo_empty),
+        .full     (tx_fifo_full),
+        .data_cnt (tx_fifo_count)
+    );
+
     i2c_master_lite i2c_master_lite_inst (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -83,9 +104,9 @@ module i2c_master_lite_tb;
         .cmd_rx_len       (cmd_rx_len),
         .scl_prescale     (scl_prescale),
         .timeout_cycles   (timeout_cycles),
-        .tx_data          (tx_data),
-        .tx_valid         (tx_valid),
-        .tx_ready         (tx_ready),
+        .tx_data          (tx_fifo_dout),
+        .tx_empty         (tx_fifo_empty),
+        .tx_rd_en         (tx_fifo_rd_en),
         .rx_data          (rx_data),
         .rx_valid         (rx_valid),
         .rx_ready         (rx_ready),
@@ -115,19 +136,12 @@ module i2c_master_lite_tb;
     initial #(CLK_PERIOD*5) rst_n = 1'b1;
 
     always @(posedge clk) begin
-        if (!rst_n) begin
-            tx_index <= 0;
-            tx_data <= 8'h00;
-            tx_valid <= 1'b0;
-        end else begin
-            if (enable && (tx_index < 3)) begin
-                tx_data <= tx_memory[tx_index];
-                tx_valid <= 1'b1;
-            end else begin
-                tx_valid <= 1'b0;
-            end
-            if (tx_ready && tx_valid)
-                tx_index <= tx_index + 1;
+        if (!rst_n || !tx_fifo_rst_n) begin
+            fifo_read_count <= 0;
+        end else if (tx_fifo_rd_en) begin
+            #1;
+            fifo_read_data[fifo_read_count] <= tx_fifo_dout;
+            fifo_read_count <= fifo_read_count + 1;
         end
     end
 
@@ -362,8 +376,40 @@ module i2c_master_lite_tb;
         end
     endtask
 
+    task clear_tx_fifo;
+        begin
+            @(negedge clk);
+            tx_fifo_wr_en <= 1'b0;
+            tx_fifo_rst_n <= 1'b0;
+            @(posedge clk);
+            #1;
+            @(negedge clk);
+            tx_fifo_rst_n <= 1'b1;
+            @(posedge clk);
+            #1;
+        end
+    endtask
+
+    task fifo_push;
+        input [7:0] value;
+        begin
+            @(negedge clk);
+            tx_fifo_din <= value;
+            tx_fifo_wr_en <= 1'b1;
+            @(posedge clk);
+            #1;
+            @(negedge clk);
+            tx_fifo_wr_en <= 1'b0;
+            tx_fifo_din <= 8'd0;
+        end
+    endtask
+
     task start_write_command;
         begin
+            clear_tx_fifo;
+            fifo_push(tx_memory[0]);
+            fifo_push(tx_memory[1]);
+            fifo_push(tx_memory[2]);
             @(posedge clk);
             enable <= 1'b1;
             cmd_op <= 2'b00;
@@ -379,6 +425,7 @@ module i2c_master_lite_tb;
 
     task start_read_command;
         begin
+            clear_tx_fifo;
             @(posedge clk);
             cmd_op <= 2'b01;
             cmd_addr <= 7'h52;
@@ -393,6 +440,9 @@ module i2c_master_lite_tb;
 
     task start_write_read_command;
         begin
+            clear_tx_fifo;
+            fifo_push(tx_memory[0]);
+            fifo_push(tx_memory[1]);
             @(posedge clk);
             cmd_op <= 2'b10;
             cmd_addr <= 7'h52;
@@ -407,6 +457,8 @@ module i2c_master_lite_tb;
 
     task start_single_write_command;
         begin
+            clear_tx_fifo;
+            fifo_push(tx_memory[0]);
             @(posedge clk);
             cmd_op <= 2'b00;
             cmd_addr <= 7'h52;
@@ -421,6 +473,9 @@ module i2c_master_lite_tb;
 
     task start_two_byte_write_command;
         begin
+            clear_tx_fifo;
+            fifo_push(tx_memory[0]);
+            fifo_push(tx_memory[1]);
             @(posedge clk);
             cmd_op <= 2'b00;
             cmd_addr <= 7'h52;
@@ -435,6 +490,10 @@ module i2c_master_lite_tb;
 
     task start_three_byte_write_command;
         begin
+            clear_tx_fifo;
+            fifo_push(tx_memory[0]);
+            fifo_push(tx_memory[1]);
+            fifo_push(tx_memory[2]);
             @(posedge clk);
             cmd_op <= 2'b00;
             cmd_addr <= 7'h52;
@@ -521,7 +580,6 @@ module i2c_master_lite_tb;
             master_rx_count = 0;
             master_ack_count = 0;
             master_nack_count = 0;
-            tx_index = 0;
             force_sda_low = 1'b0;
             force_scl_low = 1'b0;
             done_seen = 1'b0;
@@ -562,6 +620,10 @@ module i2c_master_lite_tb;
         check_equal("write byte 0", slave_rx[0], 8'h12);
         check_equal("write byte 1", slave_rx[1], 8'h34);
         check_equal("write byte 2", slave_rx[2], 8'h56);
+        check_equal("write FIFO read count", fifo_read_count, 3);
+        check_equal("write FIFO byte 0", fifo_read_data[0], 8'h12);
+        check_equal("write FIFO byte 1", fifo_read_data[1], 8'h34);
+        check_equal("write FIFO byte 2", fifo_read_data[2], 8'h56);
         check_equal("write count", tx_count, 8'd3);
         check_equal("write starts", start_count, 1);
         check_equal("write stops", stop_count, 1);
@@ -626,6 +688,9 @@ module i2c_master_lite_tb;
         check_equal("combined write byte count", slave_rx_count, 2);
         check_equal("combined write byte 0", slave_rx[0], 8'h0A);
         check_equal("combined write byte 1", slave_rx[1], 8'h0B);
+        check_equal("combined FIFO read count", fifo_read_count, 2);
+        check_equal("combined FIFO byte 0", fifo_read_data[0], 8'h0A);
+        check_equal("combined FIFO byte 1", fifo_read_data[1], 8'h0B);
         check_equal("combined read byte count", master_rx_count, 3);
         check_equal("combined read byte 0", master_rx[0], 8'h91);
         check_equal("combined read byte 1", master_rx[1], 8'h92);

@@ -18,8 +18,8 @@ module i2c_master_lite (
     input   wire [31:0] timeout_cycles,
 
     input   wire [7:0]  tx_data,
-    input   wire        tx_valid,
-    output  reg         tx_ready,
+    input   wire        tx_empty,
+    output  wire        tx_rd_en,
     output  reg  [7:0]  rx_data,
     output  reg         rx_valid,
     input   wire        rx_ready,
@@ -57,6 +57,7 @@ module i2c_master_lite (
     localparam ST_SEND_ACK   = 5'd11;
     localparam ST_WAIT_RX    = 5'd12;
     localparam ST_ARB_LOST   = 5'd13;
+    localparam ST_LATCH_TX   = 5'd14;
 
     reg     [4:0]   state;
     reg     [1:0]   phase;
@@ -94,6 +95,7 @@ module i2c_master_lite (
                              (scl_waiting && !scl_i);
     assign timeout_expired = (timeout_reg == 0) ||
                              (timeout_count + 1'b1 >= timeout_reg);
+    assign tx_rd_en = enable && (state == ST_LOAD_TX) && !tx_empty;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -123,7 +125,6 @@ module i2c_master_lite (
             timeout_count <= 32'd0;
             abort_pending <= 1'b0;
             ack_received <= 1'b0;
-            tx_ready <= 1'b0;
             rx_valid <= 1'b0;
             busy <= 1'b0;
             done <= 1'b0;
@@ -137,7 +138,6 @@ module i2c_master_lite (
             scl_t <= 1'b1;
             sda_t <= 1'b1;
         end else begin
-            tx_ready <= 1'b0;
             done <= 1'b0;
             addr_nack <= 1'b0;
             data_nack <= 1'b0;
@@ -336,14 +336,17 @@ module i2c_master_lite (
                         if (abort_pending) begin
                             phase <= 2'd0;
                             state <= ST_STOP;
-                        end else if (tx_valid) begin
-                            shift_reg <= tx_data;
-                            bit_index <= 3'd7;
-                            address_byte <= 1'b0;
-                            tx_ready <= 1'b1;
-                            phase <= 2'd0;
-                            state <= ST_SEND_BIT;
+                        end else if (!tx_empty) begin
+                            state <= ST_LATCH_TX;
                         end
+                    end
+
+                    ST_LATCH_TX: begin
+                        shift_reg <= tx_data;
+                        bit_index <= 3'd7;
+                        address_byte <= 1'b0;
+                        phase <= 2'd0;
+                        state <= ST_SEND_BIT;
                     end
 
                     ST_RECV_BIT: begin
