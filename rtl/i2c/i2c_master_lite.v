@@ -76,10 +76,24 @@ module i2c_master_lite (
     reg             ack_received;
 
     wire            phase_tick;
+    wire            scl_waiting;
+    wire            timeout_waiting;
+    wire            timeout_expired;
 
     assign scl_o = 1'b0;
     assign sda_o = 1'b0;
     assign phase_tick = prescale_count >= prescale_reg;
+    assign scl_waiting = (phase == 2'd2) &&
+                         ((state == ST_SEND_BIT) ||
+                          (state == ST_RECV_ACK) ||
+                          (state == ST_RECV_BIT) ||
+                          (state == ST_SEND_ACK) ||
+                          (state == ST_RESTART) ||
+                          (state == ST_STOP));
+    assign timeout_waiting = ((state == ST_BUS_CHECK) && !(scl_i && sda_i)) ||
+                             (scl_waiting && !scl_i);
+    assign timeout_expired = (timeout_reg == 0) ||
+                             (timeout_count + 1'b1 >= timeout_reg);
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -143,14 +157,28 @@ module i2c_master_lite (
                 scl_t <= 1'b1;
                 sda_t <= 1'b1;
             end else begin
+                if (timeout_waiting && !timeout_expired)
+                    timeout_count <= timeout_count + 1'b1;
+                else
+                    timeout_count <= 32'd0;
+
                 if (abort && busy)
                     abort_pending <= 1'b1;
 
-                case (state)
+                if (scl_waiting && !scl_i && timeout_expired) begin
+                    timeout <= 1'b1;
+                    phase <= 2'd0;
+                    if (state == ST_STOP) begin
+                        scl_t <= 1'b1;
+                        sda_t <= 1'b1;
+                        state <= ST_DONE;
+                    end else begin
+                        state <= ST_STOP;
+                    end
+                end else case (state)
                     ST_IDLE: begin
                         scl_t <= 1'b1;
                         sda_t <= 1'b1;
-                        timeout_count <= 32'd0;
                         abort_pending <= 1'b0;
                         if (cmd_start) begin
                             op_reg <= cmd_op;
@@ -170,16 +198,11 @@ module i2c_master_lite (
                         scl_t <= 1'b1;
                         sda_t <= 1'b1;
                         if (scl_i && sda_i) begin
-                            timeout_count <= 32'd0;
                             phase <= 2'd0;
                             state <= ST_START;
-                        end else if ((timeout_reg == 0) ||
-                                     (timeout_count + 1'b1 >= timeout_reg)) begin
+                        end else if (timeout_expired) begin
                             timeout <= 1'b1;
-                            timeout_count <= 32'd0;
                             state <= ST_DONE;
-                        end else begin
-                            timeout_count <= timeout_count + 1'b1;
                         end
                     end
 
@@ -229,16 +252,15 @@ module i2c_master_lite (
                                 end
                                 2'd2: begin
                                     if (scl_i) begin
-                                        phase <= 2'd3;
-                                        timeout_count <= 32'd0;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_STOP;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
+                                        if (shift_reg[bit_index] && !sda_i) begin
+                                            scl_t <= 1'b1;
+                                            sda_t <= 1'b1;
+                                            arbitration_lost <= 1'b1;
+                                            phase <= 2'd0;
+                                            state <= ST_ARB_LOST;
+                                        end else begin
+                                            phase <= 2'd3;
+                                        end
                                     end
                                 end
                                 default: begin
@@ -269,7 +291,6 @@ module i2c_master_lite (
                                 end
                                 2'd2: begin
                                     if (scl_i) begin
-                                        timeout_count <= 32'd0;
                                         ack_received <= ~sda_i;
                                         if (sda_i) begin
                                             if (address_byte)
@@ -278,14 +299,6 @@ module i2c_master_lite (
                                                 data_nack <= 1'b1;
                                         end
                                         phase <= 2'd3;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_STOP;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
                                     end
                                 end
                                 default: begin
@@ -348,16 +361,7 @@ module i2c_master_lite (
                                 2'd2: begin
                                     if (scl_i) begin
                                         shift_reg[bit_index] <= sda_i;
-                                        timeout_count <= 32'd0;
                                         phase <= 2'd3;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_STOP;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
                                     end
                                 end
                                 default: begin
@@ -400,16 +404,7 @@ module i2c_master_lite (
                                 end
                                 2'd2: begin
                                     if (scl_i) begin
-                                        timeout_count <= 32'd0;
                                         phase <= 2'd3;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_STOP;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
                                     end
                                 end
                                 default: begin
@@ -443,16 +438,7 @@ module i2c_master_lite (
                                 2'd2: begin
                                     if (scl_i) begin
                                         sda_t <= 1'b0;
-                                        timeout_count <= 32'd0;
                                         phase <= 2'd3;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_STOP;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
                                     end
                                 end
                                 default: begin
@@ -467,6 +453,13 @@ module i2c_master_lite (
                                 end
                             endcase
                         end
+                    end
+
+                    ST_ARB_LOST: begin
+                        scl_t <= 1'b1;
+                        sda_t <= 1'b1;
+                        phase <= 2'd0;
+                        state <= ST_DONE;
                     end
 
                     ST_STOP: begin
@@ -484,18 +477,7 @@ module i2c_master_lite (
                                 2'd2: begin
                                     if (scl_i) begin
                                         sda_t <= 1'b1;
-                                        timeout_count <= 32'd0;
                                         phase <= 2'd3;
-                                    end else if ((timeout_reg == 0) ||
-                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
-                                        scl_t <= 1'b1;
-                                        sda_t <= 1'b1;
-                                        timeout <= 1'b1;
-                                        timeout_count <= 32'd0;
-                                        phase <= 2'd0;
-                                        state <= ST_DONE;
-                                    end else begin
-                                        timeout_count <= timeout_count + 1'b1;
                                     end
                                 end
                                 default: begin

@@ -36,6 +36,8 @@ module i2c_master_lite_tb;
     wire        sda_t;
 
     reg         slave_sda_low = 1'b0;
+    reg         force_sda_low = 1'b0;
+    reg         force_scl_low = 1'b0;
     wire        scl_line;
     wire        sda_line;
 
@@ -49,10 +51,16 @@ module i2c_master_lite_tb;
     integer     master_nack_count = 0;
     integer     start_count = 0;
     integer     stop_count = 0;
+    integer     dut_stop_count = 0;
     integer     restart_count = 0;
     reg         bus_active = 1'b0;
     integer     error_count = 0;
     integer     wait_count;
+    integer     clock_count = 0;
+    integer     stretch_start_clock = 0;
+    integer     stretch_wait_clocks = 0;
+    integer     measured_scl_period = 0;
+    integer     first_scl_clock = 0;
     reg         done_seen = 1'b0;
     reg         addr_nack_seen = 1'b0;
     reg         data_nack_seen = 1'b0;
@@ -61,8 +69,8 @@ module i2c_master_lite_tb;
     reg         bus_error_seen = 1'b0;
     reg  [7:0]  sampled_byte;
 
-    assign scl_line = scl_t ? 1'b1 : scl_o;
-    assign sda_line = (sda_t && !slave_sda_low) ? 1'b1 : 1'b0;
+    assign scl_line = (scl_t && !force_scl_low) ? 1'b1 : scl_o;
+    assign sda_line = (sda_t && !slave_sda_low && !force_sda_low) ? 1'b1 : 1'b0;
 
     i2c_master_lite i2c_master_lite_inst (
         .clk              (clk),
@@ -100,6 +108,9 @@ module i2c_master_lite_tb;
     );
 
     always #(CLK_PERIOD/2) clk = ~clk;
+
+    always @(posedge clk)
+        clock_count <= clock_count + 1;
 
     initial #(CLK_PERIOD*5) rst_n = 1'b1;
 
@@ -167,6 +178,11 @@ module i2c_master_lite_tb;
             stop_count <= stop_count + 1;
             bus_active <= 1'b0;
         end
+    end
+
+    always @(posedge sda_t) begin
+        if (scl_line)
+            dut_stop_count <= dut_stop_count + 1;
     end
 
     task sample_i2c_byte;
@@ -286,6 +302,51 @@ module i2c_master_lite_tb;
         end
     endtask
 
+    task run_behavioral_address_nack;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            wait (done);
+        end
+    endtask
+
+    task run_behavioral_second_data_nack;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            drive_ack;
+            sample_i2c_byte(sampled_byte);
+            slave_rx[0] = sampled_byte;
+            drive_ack;
+            sample_i2c_byte(sampled_byte);
+            slave_rx[1] = sampled_byte;
+            wait (done);
+        end
+    endtask
+
+    task run_behavioral_single_write;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            drive_ack;
+            sample_i2c_byte(sampled_byte);
+            slave_rx[0] = sampled_byte;
+            drive_ack;
+        end
+    endtask
+
+    task run_behavioral_abort_write;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            drive_ack;
+            sample_i2c_byte(sampled_byte);
+            slave_rx[0] = sampled_byte;
+            drive_ack;
+            wait (done);
+        end
+    endtask
+
     task check_equal;
         input [8*48-1:0] test_name;
         input [31:0] actual;
@@ -344,17 +405,125 @@ module i2c_master_lite_tb;
         end
     endtask
 
+    task start_single_write_command;
+        begin
+            @(posedge clk);
+            cmd_op <= 2'b00;
+            cmd_addr <= 7'h52;
+            cmd_tx_len <= 8'd1;
+            cmd_rx_len <= 8'd0;
+            @(posedge clk);
+            cmd_start <= 1'b1;
+            @(posedge clk);
+            cmd_start <= 1'b0;
+        end
+    endtask
+
+    task start_two_byte_write_command;
+        begin
+            @(posedge clk);
+            cmd_op <= 2'b00;
+            cmd_addr <= 7'h52;
+            cmd_tx_len <= 8'd2;
+            cmd_rx_len <= 8'd0;
+            @(posedge clk);
+            cmd_start <= 1'b1;
+            @(posedge clk);
+            cmd_start <= 1'b0;
+        end
+    endtask
+
+    task start_three_byte_write_command;
+        begin
+            @(posedge clk);
+            cmd_op <= 2'b00;
+            cmd_addr <= 7'h52;
+            cmd_tx_len <= 8'd3;
+            cmd_rx_len <= 8'd0;
+            @(posedge clk);
+            cmd_start <= 1'b1;
+            @(posedge clk);
+            cmd_start <= 1'b0;
+        end
+    endtask
+
+    task inject_arbitration_loss;
+        begin
+            wait ((i2c_master_lite_inst.state == 5'd4) &&
+                  (i2c_master_lite_inst.phase == 2'd1) && sda_t);
+            force_sda_low <= 1'b1;
+            repeat (6) @(posedge clk);
+            force_sda_low <= 1'b0;
+        end
+    endtask
+
+    task stretch_master_until_timeout;
+        begin
+            wait ((i2c_master_lite_inst.state == 5'd4) &&
+                  (i2c_master_lite_inst.phase == 2'd1) && !scl_t);
+            force_scl_low <= 1'b1;
+            wait ((i2c_master_lite_inst.state == 5'd4) &&
+                  (i2c_master_lite_inst.phase == 2'd2) && scl_t);
+            stretch_start_clock = clock_count;
+            wait (timeout);
+            stretch_wait_clocks = clock_count - stretch_start_clock;
+            force_scl_low <= 1'b0;
+        end
+    endtask
+
+    task stretch_master_briefly;
+        begin
+            wait ((i2c_master_lite_inst.state == 5'd4) &&
+                  (i2c_master_lite_inst.phase == 2'd1) && !scl_t);
+            force_scl_low <= 1'b1;
+            repeat (8) @(posedge clk);
+            force_scl_low <= 1'b0;
+        end
+    endtask
+
+    task hold_bus_busy_until_timeout;
+        begin
+            force_sda_low <= 1'b1;
+            wait (timeout);
+            force_sda_low <= 1'b0;
+        end
+    endtask
+
+    task request_abort_during_data_ack;
+        begin
+            wait ((i2c_master_lite_inst.state == 5'd5) &&
+                  !i2c_master_lite_inst.address_byte &&
+                  (i2c_master_lite_inst.phase == 2'd1));
+            abort <= 1'b1;
+            repeat (4) @(posedge clk);
+            abort <= 1'b0;
+        end
+    endtask
+
+    task measure_data_scl_period;
+        begin
+            wait (i2c_master_lite_inst.state == 5'd4);
+            @(posedge scl_line);
+            first_scl_clock = clock_count;
+            @(posedge scl_line);
+            measured_scl_period = clock_count - first_scl_clock;
+        end
+    endtask
+
     task clear_observation;
         begin
             @(posedge clk);
             start_count = 0;
             stop_count = 0;
+            dut_stop_count = 0;
             restart_count = 0;
             slave_rx_count = 0;
             master_rx_count = 0;
             master_ack_count = 0;
             master_nack_count = 0;
             tx_index = 0;
+            force_sda_low = 1'b0;
+            force_scl_low = 1'b0;
             done_seen = 1'b0;
             addr_nack_seen = 1'b0;
             data_nack_seen = 1'b0;
@@ -471,6 +640,143 @@ module i2c_master_lite_tb;
         check_equal("combined errors",
                     {26'd0, bus_error_seen, timeout_seen, arbitration_seen,
                      data_nack_seen, addr_nack_seen}, 0);
+
+        $display("========== Arbitration loss ==========");
+        tx_memory[0] = 8'h55;
+        clear_observation;
+        fork
+            inject_arbitration_loss;
+            start_single_write_command;
+        join
+
+        wait_count = 0;
+        while (!done_seen && (wait_count < 5000)) begin
+            @(posedge clk);
+            wait_count = wait_count + 1;
+        end
+        if (!done_seen) begin
+            $display("[FAIL] arbitration command timed out");
+            error_count = error_count + 1;
+        end
+
+        repeat (4) @(posedge clk);
+        check_equal("arbitration event", arbitration_seen, 1);
+        check_equal("arbitration no address nack", addr_nack_seen, 0);
+        check_equal("arbitration no data nack", data_nack_seen, 0);
+        check_equal("arbitration no DUT stop", dut_stop_count, 0);
+        check_equal("arbitration releases lines", {scl_t, sda_t}, 2'b11);
+
+        $display("========== SCL stretch timeout ==========");
+        clear_observation;
+        scl_prescale <= 16'd3;
+        timeout_cycles <= 32'd5;
+        fork
+            stretch_master_until_timeout;
+            start_single_write_command;
+        join
+
+        wait_count = 0;
+        while (!done_seen && (wait_count < 5000)) begin
+            @(posedge clk);
+            wait_count = wait_count + 1;
+        end
+        if (!done_seen) begin
+            $display("[FAIL] stretch timeout command did not complete");
+            error_count = error_count + 1;
+        end
+
+        repeat (4) @(posedge clk);
+        check_equal("stretch timeout event", timeout_seen, 1);
+        if ((stretch_wait_clocks < 5) || (stretch_wait_clocks > 6)) begin
+            $display("[FAIL] stretch timeout clocks expected=5..6 actual=%0d",
+                     stretch_wait_clocks);
+            error_count = error_count + 1;
+        end else begin
+            $display("[PASS] stretch timeout clocks value=%0d", stretch_wait_clocks);
+        end
+        check_equal("stretch timeout releases lines", {scl_t, sda_t}, 2'b11);
+        scl_prescale <= 16'd1;
+        timeout_cycles <= 32'd1000;
+
+        $display("========== Address NACK ==========");
+        clear_observation;
+        fork
+            run_behavioral_address_nack;
+            start_single_write_command;
+        join
+        repeat (4) @(posedge clk);
+        check_equal("address nack event", addr_nack_seen, 1);
+        check_equal("address nack done", done_seen, 1);
+        check_equal("address nack no data nack", data_nack_seen, 0);
+
+        $display("========== Data NACK ==========");
+        tx_memory[0] = 8'h11;
+        tx_memory[1] = 8'h22;
+        clear_observation;
+        fork
+            run_behavioral_second_data_nack;
+            start_two_byte_write_command;
+        join
+        repeat (4) @(posedge clk);
+        check_equal("data nack event", data_nack_seen, 1);
+        check_equal("data nack count", tx_count, 1);
+        check_equal("data nack no address nack", addr_nack_seen, 0);
+
+        $display("========== Short SCL stretch ==========");
+        tx_memory[0] = 8'h7E;
+        clear_observation;
+        fork
+            run_behavioral_single_write;
+            stretch_master_briefly;
+            start_single_write_command;
+        join
+        wait (done_seen);
+        repeat (4) @(posedge clk);
+        check_equal("short stretch done", done_seen, 1);
+        check_equal("short stretch no timeout", timeout_seen, 0);
+        check_equal("short stretch tx count", tx_count, 1);
+
+        $display("========== Bus busy timeout ==========");
+        clear_observation;
+        timeout_cycles <= 32'd5;
+        fork
+            hold_bus_busy_until_timeout;
+            start_single_write_command;
+        join
+        wait (done_seen);
+        repeat (4) @(posedge clk);
+        check_equal("bus busy timeout event", timeout_seen, 1);
+        check_equal("bus busy releases lines", {scl_t, sda_t}, 2'b11);
+        timeout_cycles <= 32'd1000;
+
+        $display("========== Software abort ==========");
+        tx_memory[0] = 8'h31;
+        tx_memory[1] = 8'h32;
+        tx_memory[2] = 8'h33;
+        clear_observation;
+        fork
+            run_behavioral_abort_write;
+            request_abort_during_data_ack;
+            start_three_byte_write_command;
+        join
+        repeat (4) @(posedge clk);
+        check_equal("abort completes", done_seen, 1);
+        check_equal("abort no nack", {addr_nack_seen, data_nack_seen}, 0);
+        check_equal("abort releases lines", {scl_t, sda_t}, 2'b11);
+
+        $display("========== SCL timing ==========");
+        tx_memory[0] = 8'h42;
+        clear_observation;
+        scl_prescale <= 16'd2;
+        fork
+            run_behavioral_single_write;
+            measure_data_scl_period;
+            start_single_write_command;
+        join
+        wait (done_seen);
+        repeat (4) @(posedge clk);
+        check_equal("SCL period clocks", measured_scl_period, 12);
+        scl_prescale <= 16'd1;
 
         if (error_count == 0)
             $display("TEST PASS");
