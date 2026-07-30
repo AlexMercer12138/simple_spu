@@ -77,15 +77,12 @@ module apb_i2c #(
     reg  [15:0] active_prescale;
     reg  [31:0] active_timeout;
 
-    reg  [ADDR_WIDTH-1:0] tx_wr_ptr;
-    reg  [ADDR_WIDTH-1:0] tx_rd_ptr;
-    reg  [ADDR_WIDTH:0]   tx_fifo_count;
-    reg  [7:0]            tx_fifo [0:FIFO_DEPTH-1];
-    reg  [ADDR_WIDTH-1:0] rx_wr_ptr;
-    reg  [ADDR_WIDTH-1:0] rx_rd_ptr;
-    reg  [ADDR_WIDTH:0]   rx_fifo_count;
-    reg  [7:0]            rx_fifo [0:FIFO_DEPTH-1];
-
+    wire                    tx_fifo_rst_n;
+    wire                    rx_fifo_rst_n;
+    wire [ADDR_WIDTH:0]     tx_fifo_count;
+    wire [ADDR_WIDTH:0]     rx_fifo_count;
+    wire [7:0]              tx_fifo_data;
+    wire [7:0]              rx_fifo_data;
     wire        tx_empty;
     wire        tx_full;
     wire        rx_empty;
@@ -93,15 +90,16 @@ module apb_i2c #(
     wire [7:0]  tx_level;
     wire [7:0]  rx_level;
 
-    wire [7:0]  tx_core_data;
-    wire        tx_core_pop;
+    wire        master_tx_rd_en;
+    wire        slave_tx_rd_en;
+    wire        tx_fifo_rd_en;
     wire [7:0]  rx_core_data;
     wire        rx_core_push;
-    wire        tx_pop_accepted;
     wire        rx_push_accepted;
     wire        tx_apb_push;
     wire        tx_apb_overflow;
     wire        rx_apb_pop;
+    reg         rx_read_valid;
 
     wire        ctrl_write;
     wire        soft_reset_write;
@@ -137,7 +135,6 @@ module apb_i2c #(
     wire        master_bus_error_event;
     wire [7:0]  master_tx_count;
     wire [7:0]  master_rx_count;
-    wire        master_tx_ready;
     wire [7:0]  master_rx_data;
     wire        master_rx_valid;
     wire        master_scl_t;
@@ -157,7 +154,6 @@ module apb_i2c #(
     wire [7:0]  slave_tx_count;
     wire [7:0]  slave_rx_data;
     wire        slave_rx_valid;
-    wire        slave_tx_ready;
     wire        slave_scl_t;
     wire        slave_sda_t;
 
@@ -174,26 +170,21 @@ module apb_i2c #(
     assign s_apb_pslverr = 1'b0;
     assign s_apb_prdata = apb_prdata;
 
-    assign tx_empty = tx_fifo_count == 0;
-    assign tx_full = tx_fifo_count == FIFO_DEPTH;
-    assign rx_empty = rx_fifo_count == 0;
-    assign rx_full = rx_fifo_count == FIFO_DEPTH;
     assign tx_level = tx_fifo_count;
     assign rx_level = rx_fifo_count;
 
-    assign tx_core_data = tx_fifo[tx_rd_ptr];
-    assign tx_core_pop = enable_reg &&
-                         (master_mode_reg ? master_tx_ready : slave_tx_ready);
+    assign tx_fifo_rd_en = enable_reg &&
+                           (master_mode_reg ? master_tx_rd_en :
+                                              slave_tx_rd_en);
     assign rx_core_data = master_mode_reg ? master_rx_data : slave_rx_data;
     assign rx_core_push = enable_reg &&
                           (master_mode_reg ? master_rx_valid : slave_rx_valid);
-    assign tx_pop_accepted = tx_core_pop && !tx_empty;
     assign rx_apb_pop = apb_read_access && (word_addr == 10'd5) && !rx_empty;
-    assign rx_push_accepted = rx_core_push && (!rx_full || rx_apb_pop);
+    assign rx_push_accepted = rx_core_push && !rx_full;
     assign tx_apb_push = apb_write_access && (word_addr == 10'd4) &&
-                         (!tx_full || tx_pop_accepted);
+                         !tx_full;
     assign tx_apb_overflow = apb_write_access && (word_addr == 10'd4) &&
-                             tx_full && !tx_pop_accepted;
+                             tx_full;
 
     assign ctrl_write = apb_write_access && (word_addr == 10'd0);
     assign soft_reset_write = ctrl_write && s_apb_pwdata[31];
@@ -231,6 +222,10 @@ module apb_i2c #(
                                s_apb_pwdata[4] && !peripheral_active;
     assign rx_clear_accepted = ctrl_write && !soft_reset_write &&
                                s_apb_pwdata[5] && !peripheral_active;
+    assign tx_fifo_rst_n = rst_n && !soft_reset_write &&
+                           !mode_change_accepted && !tx_clear_accepted;
+    assign rx_fifo_rst_n = rst_n && !soft_reset_write &&
+                           !mode_change_accepted && !rx_clear_accepted;
 
     assign master_busy = command_active;
     assign bus_busy = master_mode_reg ? master_busy_core : slave_bus_busy_core;
@@ -277,8 +272,8 @@ module apb_i2c #(
                                       tx_empty, stretch_active, slave_read,
                                       slave_selected, bus_busy, master_busy};
                 10'd4: apb_prdata <= 32'd0;
-                10'd5: apb_prdata <= rx_empty ? 32'd0 :
-                                      {24'd0, rx_fifo[rx_rd_ptr]};
+                10'd5: apb_prdata <= rx_read_valid ?
+                                      {24'd0, rx_fifo_data} : 32'd0;
                 10'd6: apb_prdata <= {12'd0, rx_full, rx_empty, tx_full,
                                       tx_empty, rx_level, tx_level};
                 10'd7: apb_prdata <= {25'd0, slave_addr_reg};
@@ -429,48 +424,41 @@ module apb_i2c #(
     end
 
     always @(posedge clk) begin
-        if (!rst_n || soft_reset_write || mode_change_accepted ||
-            tx_clear_accepted) begin
-            tx_wr_ptr <= {ADDR_WIDTH{1'b0}};
-            tx_rd_ptr <= {ADDR_WIDTH{1'b0}};
-            tx_fifo_count <= {(ADDR_WIDTH+1){1'b0}};
-        end else begin
-            if (tx_apb_push) begin
-                tx_fifo[tx_wr_ptr] <= s_apb_pwdata[7:0];
-                tx_wr_ptr <= tx_wr_ptr + 1'b1;
-            end
-            if (tx_pop_accepted)
-                tx_rd_ptr <= tx_rd_ptr + 1'b1;
-
-            case ({tx_apb_push, tx_pop_accepted})
-                2'b10: tx_fifo_count <= tx_fifo_count + 1'b1;
-                2'b01: tx_fifo_count <= tx_fifo_count - 1'b1;
-                default: tx_fifo_count <= tx_fifo_count;
-            endcase
-        end
+        if (!rx_fifo_rst_n)
+            rx_read_valid <= 1'b0;
+        else if (rx_apb_pop)
+            rx_read_valid <= 1'b1;
     end
 
-    always @(posedge clk) begin
-        if (!rst_n || soft_reset_write || mode_change_accepted ||
-            rx_clear_accepted) begin
-            rx_wr_ptr <= {ADDR_WIDTH{1'b0}};
-            rx_rd_ptr <= {ADDR_WIDTH{1'b0}};
-            rx_fifo_count <= {(ADDR_WIDTH+1){1'b0}};
-        end else begin
-            if (rx_push_accepted) begin
-                rx_fifo[rx_wr_ptr] <= rx_core_data;
-                rx_wr_ptr <= rx_wr_ptr + 1'b1;
-            end
-            if (rx_apb_pop)
-                rx_rd_ptr <= rx_rd_ptr + 1'b1;
+    sync_fifo #(
+        .DATA_WIDTH (8),
+        .FIFO_DEPTH (FIFO_DEPTH)
+    ) tx_fifo_inst (
+        .clk      (clk),
+        .rst_n    (tx_fifo_rst_n),
+        .wr_en    (tx_apb_push),
+        .din      (s_apb_pwdata[7:0]),
+        .rd_en    (tx_fifo_rd_en),
+        .dout     (tx_fifo_data),
+        .empty    (tx_empty),
+        .full     (tx_full),
+        .data_cnt (tx_fifo_count)
+    );
 
-            case ({rx_push_accepted, rx_apb_pop})
-                2'b10: rx_fifo_count <= rx_fifo_count + 1'b1;
-                2'b01: rx_fifo_count <= rx_fifo_count - 1'b1;
-                default: rx_fifo_count <= rx_fifo_count;
-            endcase
-        end
-    end
+    sync_fifo #(
+        .DATA_WIDTH (8),
+        .FIFO_DEPTH (FIFO_DEPTH)
+    ) rx_fifo_inst (
+        .clk      (clk),
+        .rst_n    (rx_fifo_rst_n),
+        .wr_en    (rx_push_accepted),
+        .din      (rx_core_data),
+        .rd_en    (rx_apb_pop),
+        .dout     (rx_fifo_data),
+        .empty    (rx_empty),
+        .full     (rx_full),
+        .data_cnt (rx_fifo_count)
+    );
 
     i2c_master_lite i2c_master_lite_inst (
         .clk              (clk),
@@ -483,9 +471,9 @@ module apb_i2c #(
         .cmd_rx_len       (active_cmd_rx_len),
         .scl_prescale     (active_prescale),
         .timeout_cycles   (active_timeout),
-        .tx_data          (tx_core_data),
-        .tx_valid         (!tx_empty),
-        .tx_ready         (master_tx_ready),
+        .tx_data          (tx_fifo_data),
+        .tx_empty         (tx_empty),
+        .tx_rd_en         (master_tx_rd_en),
         .rx_data          (master_rx_data),
         .rx_valid         (master_rx_valid),
         .rx_ready         (!rx_full || rx_apb_pop),
@@ -516,9 +504,9 @@ module apb_i2c #(
         .rx_data         (slave_rx_data),
         .rx_valid        (slave_rx_valid),
         .rx_ready        (!rx_full || rx_apb_pop),
-        .tx_data         (tx_core_data),
-        .tx_valid        (!tx_empty),
-        .tx_ready        (slave_tx_ready),
+        .tx_data         (tx_fifo_data),
+        .tx_empty        (tx_empty),
+        .tx_rd_en        (slave_tx_rd_en),
         .selected        (slave_selected_core),
         .read_mode       (slave_read_core),
         .stretch_active  (slave_stretch_core),

@@ -21,7 +21,7 @@ to the TX FIFO are sent in FIFO order.
 | Parameter | Default | Requirement |
 |---|---:|---|
 | `SYS_CLK_FREQ` | `50_000_000` | APB/core clock frequency in Hz |
-| `FIFO_DEPTH` | `16` | Power of two from 2 through 128 bytes |
+| `FIFO_DEPTH` | `16` | Power of two from 8 through 128 bytes |
 
 FIFO storage arrays are not reset. Reset, FIFO clear, and mode change reset the
 FIFO pointers and levels only.
@@ -161,8 +161,12 @@ latched at RESTART and the TX count is latched when the read ends.
 ### 5.5 TX_DATA, RX_DATA, and FIFO_STATUS
 
 Writing `TX_DATA[7:0]` pushes one byte. A full write is ignored and sets
-`CMD_ERROR`. Reading `RX_DATA` returns the oldest byte in `[7:0]` and pops it
-exactly once. An empty read returns zero without an error or pointer change.
+`CMD_ERROR`. The RX FIFO uses synchronous registered reads. Software must first
+save `RX_LEVEL=N`, read `RX_DATA` once and discard that value, then read
+`RX_DATA` another `N` times to consume the saved number of bytes. Each nonempty
+read request pops exactly once, and the next APB read returns the updated FIFO
+`dout`. A reset-time empty read returns zero. Additional empty reads after a
+completed drain return the last registered `dout` without changing pointers.
 
 `FIFO_STATUS` fields are:
 
@@ -175,9 +179,11 @@ exactly once. An empty read returns zero without an error or pointer change.
 | 18 | `RX_EMPTY` |
 | 19 | `RX_FULL` |
 
-APB and protocol-core FIFO operations may complete in the same clock. A
-simultaneous accepted push and pop keeps the corresponding level unchanged,
-including the full-FIFO pop-and-replace case.
+APB and protocol-core FIFO operations may occur in the same clock. When the
+FIFO is not full, a simultaneous accepted push and pop keeps its level
+unchanged. When the FIFO is full at the start of the clock, the read is accepted
+and the write is rejected, so the level decreases by one. A rejected full TX
+write sets `CMD_ERROR`.
 
 ### 5.6 SLAVE_CFG and STRETCH_TIMEOUT
 
@@ -251,7 +257,8 @@ enabled slave mode.
 2. Program timing, timeout, target address, read OP, and `RX_LEN`.
 3. Enable and write `START`.
 4. Wait for `MASTER_DONE` and inspect `IRQ_STATUS`.
-5. Read `RX_DATA` until `RX_LEVEL` reaches zero.
+5. Save `RX_LEVEL=N`, discard one `RX_DATA` read, then consume the next `N`
+   `RX_DATA` reads.
 
 ### 6.3 Master Write Then Read
 
@@ -268,7 +275,9 @@ enabled slave mode.
 2. Program `SLAVE_CFG`, timeout, IRQ thresholds, and IRQ enables.
 3. Preload TX when response data is already available.
 4. Enable slave mode.
-5. Service `SLAVE_RX_DONE` and RX threshold events by draining raw RX bytes.
+5. Service `SLAVE_RX_DONE` and RX threshold events by saving `RX_LEVEL`, doing
+   one discarded `RX_DATA` read, and then consuming the saved number of raw RX
+   bytes.
 6. Service TX threshold/underflow events by writing raw response bytes to TX.
 7. Treat stretch timeout as a completed error condition; an address timeout
    produces NACK, while a mid-read timeout transmits `0xFF`.

@@ -3,7 +3,7 @@
 module apb_i2c_tb;
 
     localparam SYS_CLK_FREQ = 1_000_000;
-    localparam FIFO_DEPTH   = 4;
+    localparam FIFO_DEPTH   = 8;
     localparam CLK_PERIOD   = 10;
 
     localparam ADDR_CTRL            = 32'h0000_0000;
@@ -243,10 +243,10 @@ module apb_i2c_tb;
     task core_pop_tx;
         begin
             @(negedge clk);
-            force apb_i2c_inst.tx_core_pop = 1'b1;
+            force apb_i2c_inst.tx_fifo_rd_en = 1'b1;
             @(posedge clk);
             #1;
-            release apb_i2c_inst.tx_core_pop;
+            release apb_i2c_inst.tx_fifo_rd_en;
         end
     endtask
 
@@ -263,10 +263,10 @@ module apb_i2c_tb;
             #1;
             @(negedge clk);
             s_apb_penable <= 1'b1;
-            force apb_i2c_inst.tx_core_pop = 1'b1;
+            force apb_i2c_inst.tx_fifo_rd_en = 1'b1;
             @(posedge clk);
             #1;
-            release apb_i2c_inst.tx_core_pop;
+            release apb_i2c_inst.tx_fifo_rd_en;
             @(negedge clk);
             s_apb_psel <= 1'b0;
             s_apb_penable <= 1'b0;
@@ -414,7 +414,7 @@ module apb_i2c_tb;
         input [1:0] operation;
         input [7:0] tx_length;
         input [7:0] rx_length;
-        input [2:0] preload_tx;
+        input [3:0] preload_tx;
         begin
             prepare_master;
             if (preload_tx > 0)
@@ -425,6 +425,14 @@ module apb_i2c_tb;
                 apb_write(ADDR_TX_DATA, 32'h0000_0033);
             if (preload_tx > 3)
                 apb_write(ADDR_TX_DATA, 32'h0000_0044);
+            if (preload_tx > 4)
+                apb_write(ADDR_TX_DATA, 32'h0000_0055);
+            if (preload_tx > 5)
+                apb_write(ADDR_TX_DATA, 32'h0000_0066);
+            if (preload_tx > 6)
+                apb_write(ADDR_TX_DATA, 32'h0000_0077);
+            if (preload_tx > 7)
+                apb_write(ADDR_TX_DATA, 32'h0000_0088);
             apb_write(ADDR_MASTER_CMD,
                       {rx_length, tx_length, 1'b0, 7'h52, 6'd0, operation});
             clear_irq_status;
@@ -619,6 +627,8 @@ module apb_i2c_tb;
             slave_apb_read(ADDR_FIFO_STATUS, read_data);
             check_equal("integration write RX level",
                         {24'd0, read_data[15:8]}, length);
+            slave_apb_read(ADDR_RX_DATA, read_data);
+            check_equal("integration write RX prime", read_data, 0);
             for (integration_index = 0; integration_index < length;
                  integration_index = integration_index + 1) begin
                 slave_apb_read(ADDR_RX_DATA, read_data);
@@ -662,6 +672,8 @@ module apb_i2c_tb;
             master_apb_read(ADDR_FIFO_STATUS, read_data);
             check_equal("integration read RX level",
                         {24'd0, read_data[15:8]}, length);
+            master_apb_read(ADDR_RX_DATA, read_data);
+            check_equal("integration read RX prime", read_data, 0);
             for (integration_index = 0; integration_index < length;
                  integration_index = integration_index + 1) begin
                 master_apb_read(ADDR_RX_DATA, read_data);
@@ -711,12 +723,16 @@ module apb_i2c_tb;
             check_equal("combined slave RX level",
                         {24'd0, read_data[15:8]}, 2);
             slave_apb_read(ADDR_RX_DATA, read_data);
+            check_equal("combined slave RX prime", read_data, 0);
+            slave_apb_read(ADDR_RX_DATA, read_data);
             check_equal("combined slave RX byte 0", read_data, 8'h0A);
             slave_apb_read(ADDR_RX_DATA, read_data);
             check_equal("combined slave RX byte 1", read_data, 8'h0B);
             master_apb_read(ADDR_FIFO_STATUS, read_data);
             check_equal("combined master RX level",
                         {24'd0, read_data[15:8]}, 3);
+            master_apb_read(ADDR_RX_DATA, read_data);
+            check_equal("combined master RX prime", read_data, 0);
             master_apb_read(ADDR_RX_DATA, read_data);
             check_equal("combined master RX byte 0", read_data, 8'hC1);
             master_apb_read(ADDR_RX_DATA, read_data);
@@ -873,6 +889,8 @@ module apb_i2c_tb;
             master_apb_read(ADDR_IRQ_STATUS, read_data);
             check_equal("mid-read timeout master errors",
                         read_data & 32'h0000_003E, 0);
+            master_apb_read(ADDR_RX_DATA, read_data);
+            check_equal("mid-read RX prime", read_data, 0);
             master_apb_read(ADDR_RX_DATA, read_data);
             check_equal("mid-read first data", read_data, 8'hA6);
             master_apb_read(ADDR_RX_DATA, read_data);
@@ -1070,14 +1088,18 @@ module apb_i2c_tb;
 
         $display("========== TX FIFO ==========");
         apb_write(ADDR_TX_DATA, 32'h0000_00A1);
-        apb_write(ADDR_TX_DATA, 32'h0000_00B2);
-        apb_write(ADDR_TX_DATA, 32'h0000_00C3);
-        apb_write(ADDR_TX_DATA, 32'h0000_00D4);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A2);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A3);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A4);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A5);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A6);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A7);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A8);
         apb_read(ADDR_FIFO_STATUS, read_data);
-        check_equal("TX FIFO full", read_data, 32'h0006_0004);
-        apb_write(ADDR_TX_DATA, 32'h0000_00E5);
+        check_equal("TX FIFO full", read_data, 32'h0006_0008);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A9);
         apb_read(ADDR_FIFO_STATUS, read_data);
-        check_equal("full write ignored", read_data, 32'h0006_0004);
+        check_equal("full write ignored", read_data, 32'h0006_0008);
         apb_read(ADDR_IRQ_STATUS, read_data);
         check_equal("full write CMD_ERROR", read_data, 32'h0000_0020);
         apb_write(ADDR_IRQ_STATUS, 32'h0000_0020);
@@ -1093,32 +1115,38 @@ module apb_i2c_tb;
         apb_read(ADDR_FIFO_STATUS, read_data);
         check_equal("RX FIFO level two", read_data, 32'h0001_0200);
         apb_read(ADDR_RX_DATA, read_data);
-        check_equal("RX first byte", read_data, 32'h0000_00E1);
+        check_equal("RX prime read", read_data, 32'h0000_0000);
         apb_read(ADDR_FIFO_STATUS, read_data);
         check_equal("RX pop once", read_data, 32'h0001_0100);
         apb_read(ADDR_RX_DATA, read_data);
+        check_equal("RX first byte", read_data, 32'h0000_00E1);
+        apb_read(ADDR_RX_DATA, read_data);
         check_equal("RX second byte", read_data, 32'h0000_00E2);
         apb_read(ADDR_RX_DATA, read_data);
-        check_equal("RX empty read", read_data, 32'h0000_0000);
+        check_equal("RX empty repeats dout", read_data, 32'h0000_00E2);
         apb_write(ADDR_CTRL, 32'h0000_0020);
         apb_read(ADDR_FIFO_STATUS, read_data);
         check_equal("RX clear", read_data, 32'h0005_0000);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("RX clear invalidates dout", read_data, 32'h0000_0000);
 
         $display("========== Simultaneous FIFO operations ==========");
         apb_write(ADDR_TX_DATA, 32'h0000_0011);
-        check_equal("TX core sees oldest byte",
-                    {24'd0, apb_i2c_inst.tx_core_data}, 32'h0000_0011);
         apb_write_with_tx_pop(8'h22);
         apb_read(ADDR_FIFO_STATUS, read_data);
         check_equal("TX simultaneous level", read_data, 32'h0004_0001);
-        check_equal("TX simultaneous next byte",
-                    {24'd0, apb_i2c_inst.tx_core_data}, 32'h0000_0022);
+        check_equal("TX simultaneous popped byte",
+                    {24'd0, apb_i2c_inst.tx_fifo_data}, 32'h0000_0011);
         core_pop_tx;
+        check_equal("TX simultaneous next byte",
+                    {24'd0, apb_i2c_inst.tx_fifo_data}, 32'h0000_0022);
         core_push_rx(8'h31);
         apb_read_with_rx_push(8'h32, read_data);
-        check_equal("RX simultaneous read", read_data, 32'h0000_0031);
+        check_equal("RX simultaneous prime", read_data, 32'h0000_0000);
         apb_read(ADDR_FIFO_STATUS, read_data);
         check_equal("RX simultaneous level", read_data, 32'h0001_0100);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("RX simultaneous first byte", read_data, 32'h0000_0031);
         apb_read(ADDR_RX_DATA, read_data);
         check_equal("RX simultaneous next byte", read_data, 32'h0000_0032);
 
@@ -1127,25 +1155,36 @@ module apb_i2c_tb;
         apb_write(ADDR_TX_DATA, 32'h0000_00A2);
         apb_write(ADDR_TX_DATA, 32'h0000_00A3);
         apb_write(ADDR_TX_DATA, 32'h0000_00A4);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A5);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A6);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A7);
+        apb_write(ADDR_TX_DATA, 32'h0000_00A8);
         clear_irq_status;
-        apb_write_with_tx_pop(8'hA5);
+        apb_write_with_tx_pop(8'hA9);
         apb_read(ADDR_FIFO_STATUS, read_data);
-        check_equal("full TX simultaneous level", read_data, 32'h0006_0004);
-        check_equal("full TX simultaneous front",
-                    {24'd0, apb_i2c_inst.tx_core_data}, 32'h0000_00A2);
+        check_equal("full TX simultaneous level", read_data, 32'h0004_0007);
+        check_equal("full TX simultaneous popped",
+                    {24'd0, apb_i2c_inst.tx_fifo_data}, 32'h0000_00A1);
         apb_read(ADDR_IRQ_STATUS, read_data);
-        check_equal("full TX simultaneous no error",
-                    {31'd0, read_data[5]}, 0);
+        check_equal("full TX simultaneous error",
+                    {31'd0, read_data[5]}, 1);
         apb_write(ADDR_CTRL, 32'h0000_0010);
+        apb_write(ADDR_CTRL, 32'h0000_0020);
 
         core_push_rx(8'hB1);
         core_push_rx(8'hB2);
         core_push_rx(8'hB3);
         core_push_rx(8'hB4);
-        apb_read_with_rx_push(8'hB5, read_data);
-        check_equal("full RX simultaneous first", read_data, 32'h0000_00B1);
+        core_push_rx(8'hB5);
+        core_push_rx(8'hB6);
+        core_push_rx(8'hB7);
+        core_push_rx(8'hB8);
+        apb_read_with_rx_push(8'hB9, read_data);
+        check_equal("full RX simultaneous prime", read_data, 32'h0000_0000);
         apb_read(ADDR_FIFO_STATUS, read_data);
-        check_equal("full RX simultaneous level", read_data, 32'h0009_0400);
+        check_equal("full RX simultaneous level", read_data, 32'h0001_0700);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("full RX simultaneous byte 0", read_data, 32'h0000_00B1);
         apb_read(ADDR_RX_DATA, read_data);
         check_equal("full RX simultaneous byte 1", read_data, 32'h0000_00B2);
         apb_read(ADDR_RX_DATA, read_data);
@@ -1153,7 +1192,13 @@ module apb_i2c_tb;
         apb_read(ADDR_RX_DATA, read_data);
         check_equal("full RX simultaneous byte 3", read_data, 32'h0000_00B4);
         apb_read(ADDR_RX_DATA, read_data);
-        check_equal("full RX simultaneous new tail", read_data, 32'h0000_00B5);
+        check_equal("full RX simultaneous byte 4", read_data, 32'h0000_00B5);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("full RX simultaneous byte 5", read_data, 32'h0000_00B6);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("full RX simultaneous byte 6", read_data, 32'h0000_00B7);
+        apb_read(ADDR_RX_DATA, read_data);
+        check_equal("full RX simultaneous byte 7", read_data, 32'h0000_00B8);
 
         $display("========== Soft reset ==========");
         apb_write(ADDR_MASTER_CMD, 32'h1234_5602);
@@ -1189,31 +1234,35 @@ module apb_i2c_tb;
         $display("---------- Invalid OP ----------");
         run_rejected_command(2'b11, 8'd0, 8'd0, 3'd0);
         $display("---------- Write zero length ----------");
-        run_rejected_command(2'b00, 8'd0, 8'd0, 3'd0);
+        run_rejected_command(2'b00, 8'd0, 8'd0, 4'd0);
         $display("---------- Write with RX length ----------");
-        run_rejected_command(2'b00, 8'd1, 8'd1, 3'd1);
+        run_rejected_command(2'b00, 8'd1, 8'd1, 4'd1);
         $display("---------- Read zero length ----------");
-        run_rejected_command(2'b01, 8'd0, 8'd0, 3'd0);
+        run_rejected_command(2'b01, 8'd0, 8'd0, 4'd0);
         $display("---------- Read with TX length ----------");
-        run_rejected_command(2'b01, 8'd1, 8'd1, 3'd1);
+        run_rejected_command(2'b01, 8'd1, 8'd1, 4'd1);
         $display("---------- Combined missing TX ----------");
-        run_rejected_command(2'b10, 8'd0, 8'd1, 3'd0);
+        run_rejected_command(2'b10, 8'd0, 8'd1, 4'd0);
         $display("---------- Combined missing RX ----------");
-        run_rejected_command(2'b10, 8'd1, 8'd0, 3'd1);
+        run_rejected_command(2'b10, 8'd1, 8'd0, 4'd1);
         $display("---------- Length above FIFO depth ----------");
-        run_rejected_command(2'b00, 8'd5, 8'd0, 3'd4);
+        run_rejected_command(2'b00, 8'd9, 8'd0, 4'd8);
         $display("---------- Insufficient TX data ----------");
-        run_rejected_command(2'b00, 8'd2, 8'd0, 3'd1);
+        run_rejected_command(2'b00, 8'd2, 8'd0, 4'd1);
 
         $display("---------- Insufficient RX space ----------");
         prepare_master;
         core_push_rx(8'h41);
         core_push_rx(8'h42);
         core_push_rx(8'h43);
+        core_push_rx(8'h44);
+        core_push_rx(8'h45);
+        core_push_rx(8'h46);
+        core_push_rx(8'h47);
         apb_write(ADDR_MASTER_CMD, 32'h0200_5201);
         clear_irq_status;
         apb_write(ADDR_CTRL, 32'h0000_0007);
-        check_idle_rejection(16'h0300);
+        check_idle_rejection(16'h0700);
 
         $display("========== Illegal enabled reconfiguration ==========");
         apb_write(ADDR_CTRL, 32'h8000_0000);
