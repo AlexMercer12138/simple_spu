@@ -42,7 +42,11 @@ module i2c_master_lite_tb;
     reg  [7:0]  tx_memory [0:2];
     integer     tx_index = 0;
     reg  [7:0]  slave_rx [0:15];
+    reg  [7:0]  master_rx [0:15];
     integer     slave_rx_count = 0;
+    integer     master_rx_count = 0;
+    integer     master_ack_count = 0;
+    integer     master_nack_count = 0;
     integer     start_count = 0;
     integer     stop_count = 0;
     integer     restart_count = 0;
@@ -118,6 +122,15 @@ module i2c_master_lite_tb;
 
     always @(posedge clk) begin
         if (!rst_n) begin
+            master_rx_count <= 0;
+        end else if (rx_valid && rx_ready) begin
+            master_rx[master_rx_count] <= rx_data;
+            master_rx_count <= master_rx_count + 1;
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
             done_seen <= 1'b0;
             addr_nack_seen <= 1'b0;
             data_nack_seen <= 1'b0;
@@ -176,6 +189,29 @@ module i2c_master_lite_tb;
         end
     endtask
 
+    task drive_i2c_byte;
+        input [7:0] value;
+        integer bit_index;
+        begin
+            for (bit_index = 7; bit_index >= 0; bit_index = bit_index - 1) begin
+                slave_sda_low <= ~value[bit_index];
+                @(negedge scl_line);
+            end
+            slave_sda_low <= 1'b0;
+        end
+    endtask
+
+    task sample_master_ack;
+        begin
+            @(posedge scl_line);
+            if (sda_line)
+                master_nack_count = master_nack_count + 1;
+            else
+                master_ack_count = master_ack_count + 1;
+            @(negedge scl_line);
+        end
+    endtask
+
     task run_behavioral_slave_write;
         integer byte_index;
         begin
@@ -193,6 +229,60 @@ module i2c_master_lite_tb;
                 slave_rx_count = slave_rx_count + 1;
                 drive_ack;
             end
+        end
+    endtask
+
+    task run_behavioral_slave_read;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            if (sampled_byte !== {7'h52, 1'b1}) begin
+                $display("[FAIL] read address expected=%02h actual=%02h",
+                         {7'h52, 1'b1}, sampled_byte);
+                error_count = error_count + 1;
+            end
+            drive_ack;
+            drive_i2c_byte(8'hA1);
+            sample_master_ack;
+            drive_i2c_byte(8'hB2);
+            sample_master_ack;
+            drive_i2c_byte(8'hC3);
+            sample_master_ack;
+        end
+    endtask
+
+    task run_behavioral_slave_write_read;
+        integer byte_index;
+        begin
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            if (sampled_byte !== {7'h52, 1'b0}) begin
+                $display("[FAIL] combined write address expected=%02h actual=%02h",
+                         {7'h52, 1'b0}, sampled_byte);
+                error_count = error_count + 1;
+            end
+            drive_ack;
+            for (byte_index = 0; byte_index < 2; byte_index = byte_index + 1) begin
+                sample_i2c_byte(sampled_byte);
+                slave_rx[byte_index] = sampled_byte;
+                slave_rx_count = slave_rx_count + 1;
+                drive_ack;
+            end
+
+            @(negedge sda_line);
+            sample_i2c_byte(sampled_byte);
+            if (sampled_byte !== {7'h52, 1'b1}) begin
+                $display("[FAIL] combined read address expected=%02h actual=%02h",
+                         {7'h52, 1'b1}, sampled_byte);
+                error_count = error_count + 1;
+            end
+            drive_ack;
+            drive_i2c_byte(8'h91);
+            sample_master_ack;
+            drive_i2c_byte(8'h92);
+            sample_master_ack;
+            drive_i2c_byte(8'h93);
+            sample_master_ack;
         end
     endtask
 
@@ -223,6 +313,54 @@ module i2c_master_lite_tb;
             cmd_start <= 1'b1;
             @(posedge clk);
             cmd_start <= 1'b0;
+        end
+    endtask
+
+    task start_read_command;
+        begin
+            @(posedge clk);
+            cmd_op <= 2'b01;
+            cmd_addr <= 7'h52;
+            cmd_tx_len <= 8'd0;
+            cmd_rx_len <= 8'd3;
+            @(posedge clk);
+            cmd_start <= 1'b1;
+            @(posedge clk);
+            cmd_start <= 1'b0;
+        end
+    endtask
+
+    task start_write_read_command;
+        begin
+            @(posedge clk);
+            cmd_op <= 2'b10;
+            cmd_addr <= 7'h52;
+            cmd_tx_len <= 8'd2;
+            cmd_rx_len <= 8'd3;
+            @(posedge clk);
+            cmd_start <= 1'b1;
+            @(posedge clk);
+            cmd_start <= 1'b0;
+        end
+    endtask
+
+    task clear_observation;
+        begin
+            @(posedge clk);
+            start_count = 0;
+            stop_count = 0;
+            restart_count = 0;
+            slave_rx_count = 0;
+            master_rx_count = 0;
+            master_ack_count = 0;
+            master_nack_count = 0;
+            tx_index = 0;
+            done_seen = 1'b0;
+            addr_nack_seen = 1'b0;
+            data_nack_seen = 1'b0;
+            arbitration_seen = 1'b0;
+            timeout_seen = 1'b0;
+            bus_error_seen = 1'b0;
         end
     endtask
 
@@ -260,6 +398,77 @@ module i2c_master_lite_tb;
         check_equal("write stops", stop_count, 1);
         check_equal("write restarts", restart_count, 0);
         check_equal("write errors",
+                    {26'd0, bus_error_seen, timeout_seen, arbitration_seen,
+                     data_nack_seen, addr_nack_seen}, 0);
+
+        $display("========== Direct read ==========");
+        clear_observation;
+        fork
+            run_behavioral_slave_read;
+            start_read_command;
+        join
+
+        wait_count = 0;
+        while (!done_seen && (wait_count < 5000)) begin
+            @(posedge clk);
+            wait_count = wait_count + 1;
+        end
+
+        if (!done_seen) begin
+            $display("[FAIL] direct read timed out");
+            error_count = error_count + 1;
+        end
+
+        repeat (4) @(posedge clk);
+        check_equal("read byte count", master_rx_count, 3);
+        check_equal("read byte 0", master_rx[0], 8'hA1);
+        check_equal("read byte 1", master_rx[1], 8'hB2);
+        check_equal("read byte 2", master_rx[2], 8'hC3);
+        check_equal("read count", rx_count, 8'd3);
+        check_equal("read master ACK count", master_ack_count, 2);
+        check_equal("read final NACK count", master_nack_count, 1);
+        check_equal("read starts", start_count, 1);
+        check_equal("read stops", stop_count, 1);
+        check_equal("read errors",
+                    {26'd0, bus_error_seen, timeout_seen, arbitration_seen,
+                     data_nack_seen, addr_nack_seen}, 0);
+
+        $display("========== Write then read ==========");
+        tx_memory[0] = 8'h0A;
+        tx_memory[1] = 8'h0B;
+        clear_observation;
+        fork
+            run_behavioral_slave_write_read;
+            start_write_read_command;
+        join
+
+        wait_count = 0;
+        while (!done_seen && (wait_count < 5000)) begin
+            @(posedge clk);
+            wait_count = wait_count + 1;
+        end
+
+        if (!done_seen) begin
+            $display("[FAIL] write then read timed out");
+            error_count = error_count + 1;
+        end
+
+        repeat (4) @(posedge clk);
+        check_equal("combined write byte count", slave_rx_count, 2);
+        check_equal("combined write byte 0", slave_rx[0], 8'h0A);
+        check_equal("combined write byte 1", slave_rx[1], 8'h0B);
+        check_equal("combined read byte count", master_rx_count, 3);
+        check_equal("combined read byte 0", master_rx[0], 8'h91);
+        check_equal("combined read byte 1", master_rx[1], 8'h92);
+        check_equal("combined read byte 2", master_rx[2], 8'h93);
+        check_equal("combined write count", tx_count, 8'd2);
+        check_equal("combined read count", rx_count, 8'd3);
+        check_equal("combined master ACK count", master_ack_count, 2);
+        check_equal("combined final NACK count", master_nack_count, 1);
+        check_equal("combined starts", start_count, 2);
+        check_equal("combined stops", stop_count, 1);
+        check_equal("combined restarts", restart_count, 1);
+        check_equal("combined errors",
                     {26'd0, bus_error_seen, timeout_seen, arbitration_seen,
                      data_nack_seen, addr_nack_seen}, 0);
 

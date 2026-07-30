@@ -63,6 +63,7 @@ module i2c_master_lite (
     reg     [2:0]   bit_index;
     reg     [7:0]   shift_reg;
     reg             address_byte;
+    reg             address_read;
     reg     [1:0]   op_reg;
     reg     [6:0]   addr_reg;
     reg     [7:0]   tx_len_reg;
@@ -72,6 +73,7 @@ module i2c_master_lite (
     reg     [15:0]  prescale_count;
     reg     [31:0]  timeout_count;
     reg             abort_pending;
+    reg             ack_received;
 
     wire            phase_tick;
 
@@ -97,6 +99,7 @@ module i2c_master_lite (
             phase <= 2'd0;
             bit_index <= 3'd0;
             address_byte <= 1'b0;
+            address_read <= 1'b0;
             op_reg <= 2'b00;
             addr_reg <= 7'd0;
             tx_len_reg <= 8'd0;
@@ -105,6 +108,7 @@ module i2c_master_lite (
             timeout_reg <= 32'd0;
             timeout_count <= 32'd0;
             abort_pending <= 1'b0;
+            ack_received <= 1'b0;
             tx_ready <= 1'b0;
             rx_valid <= 1'b0;
             busy <= 1'b0;
@@ -203,9 +207,10 @@ module i2c_master_lite (
                     end
 
                     ST_LOAD_ADDR: begin
-                        shift_reg <= {addr_reg, 1'b0};
+                        shift_reg <= {addr_reg, op_reg == 2'b01};
                         bit_index <= 3'd7;
                         address_byte <= 1'b1;
+                        address_read <= op_reg == 2'b01;
                         phase <= 2'd0;
                         state <= ST_SEND_BIT;
                     end
@@ -265,6 +270,7 @@ module i2c_master_lite (
                                 2'd2: begin
                                     if (scl_i) begin
                                         timeout_count <= 32'd0;
+                                        ack_received <= ~sda_i;
                                         if (sda_i) begin
                                             if (address_byte)
                                                 addr_nack <= 1'b1;
@@ -285,16 +291,27 @@ module i2c_master_lite (
                                 default: begin
                                     scl_t <= 1'b0;
                                     phase <= 2'd0;
-                                    if (sda_i) begin
+                                    if (!ack_received) begin
                                         state <= ST_STOP;
                                     end else if (address_byte) begin
-                                        state <= ST_LOAD_TX;
+                                        if (address_read) begin
+                                            bit_index <= 3'd7;
+                                            state <= ST_RECV_BIT;
+                                        end else begin
+                                            state <= ST_LOAD_TX;
+                                        end
                                     end else begin
                                         tx_count <= tx_count + 1'b1;
-                                        if ((tx_count + 1'b1 >= tx_len_reg) || abort_pending)
+                                        if (abort_pending) begin
                                             state <= ST_STOP;
-                                        else
+                                        end else if (tx_count + 1'b1 >= tx_len_reg) begin
+                                            if (op_reg == 2'b10)
+                                                state <= ST_RESTART;
+                                            else
+                                                state <= ST_STOP;
+                                        end else begin
                                             state <= ST_LOAD_TX;
+                                        end
                                     end
                                 end
                             endcase
@@ -313,6 +330,142 @@ module i2c_master_lite (
                             tx_ready <= 1'b1;
                             phase <= 2'd0;
                             state <= ST_SEND_BIT;
+                        end
+                    end
+
+                    ST_RECV_BIT: begin
+                        if (phase_tick) begin
+                            case (phase)
+                                2'd0: begin
+                                    scl_t <= 1'b0;
+                                    sda_t <= 1'b1;
+                                    phase <= 2'd1;
+                                end
+                                2'd1: begin
+                                    scl_t <= 1'b1;
+                                    phase <= 2'd2;
+                                end
+                                2'd2: begin
+                                    if (scl_i) begin
+                                        shift_reg[bit_index] <= sda_i;
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd3;
+                                    end else if ((timeout_reg == 0) ||
+                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
+                                        timeout <= 1'b1;
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd0;
+                                        state <= ST_STOP;
+                                    end else begin
+                                        timeout_count <= timeout_count + 1'b1;
+                                    end
+                                end
+                                default: begin
+                                    scl_t <= 1'b0;
+                                    phase <= 2'd0;
+                                    if (bit_index == 0) begin
+                                        rx_data <= shift_reg;
+                                        rx_valid <= 1'b1;
+                                        state <= ST_WAIT_RX;
+                                    end else begin
+                                        bit_index <= bit_index - 1'b1;
+                                    end
+                                end
+                            endcase
+                        end
+                    end
+
+                    ST_WAIT_RX: begin
+                        scl_t <= 1'b0;
+                        sda_t <= 1'b1;
+                        if (rx_valid && rx_ready) begin
+                            rx_valid <= 1'b0;
+                            rx_count <= rx_count + 1'b1;
+                            phase <= 2'd0;
+                            state <= ST_SEND_ACK;
+                        end
+                    end
+
+                    ST_SEND_ACK: begin
+                        if (phase_tick) begin
+                            case (phase)
+                                2'd0: begin
+                                    scl_t <= 1'b0;
+                                    sda_t <= rx_count < rx_len_reg ? 1'b0 : 1'b1;
+                                    phase <= 2'd1;
+                                end
+                                2'd1: begin
+                                    scl_t <= 1'b1;
+                                    phase <= 2'd2;
+                                end
+                                2'd2: begin
+                                    if (scl_i) begin
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd3;
+                                    end else if ((timeout_reg == 0) ||
+                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
+                                        timeout <= 1'b1;
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd0;
+                                        state <= ST_STOP;
+                                    end else begin
+                                        timeout_count <= timeout_count + 1'b1;
+                                    end
+                                end
+                                default: begin
+                                    scl_t <= 1'b0;
+                                    sda_t <= 1'b1;
+                                    phase <= 2'd0;
+                                    if ((rx_count >= rx_len_reg) || abort_pending) begin
+                                        state <= ST_STOP;
+                                    end else begin
+                                        bit_index <= 3'd7;
+                                        state <= ST_RECV_BIT;
+                                    end
+                                end
+                            endcase
+                        end
+                    end
+
+                    ST_RESTART: begin
+                        if (phase_tick) begin
+                            case (phase)
+                                2'd0: begin
+                                    scl_t <= 1'b0;
+                                    sda_t <= 1'b1;
+                                    phase <= 2'd1;
+                                end
+                                2'd1: begin
+                                    scl_t <= 1'b1;
+                                    sda_t <= 1'b1;
+                                    phase <= 2'd2;
+                                end
+                                2'd2: begin
+                                    if (scl_i) begin
+                                        sda_t <= 1'b0;
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd3;
+                                    end else if ((timeout_reg == 0) ||
+                                                 (timeout_count + 1'b1 >= timeout_reg)) begin
+                                        timeout <= 1'b1;
+                                        timeout_count <= 32'd0;
+                                        phase <= 2'd0;
+                                        state <= ST_STOP;
+                                    end else begin
+                                        timeout_count <= timeout_count + 1'b1;
+                                    end
+                                end
+                                default: begin
+                                    scl_t <= 1'b0;
+                                    sda_t <= 1'b0;
+                                    shift_reg <= {addr_reg, 1'b1};
+                                    bit_index <= 3'd7;
+                                    address_byte <= 1'b1;
+                                    address_read <= 1'b1;
+                                    phase <= 2'd0;
+                                    state <= ST_SEND_BIT;
+                                end
+                            endcase
                         end
                     end
 
