@@ -35,7 +35,7 @@ Generated simulator outputs go under `build/apb_sync_fifo/` and are removed afte
 - Preserve and stage: `rtl/misc/sync_fifo.v`
 - Create: `rtl/sim/sync_fifo_tb.v`
 
-- [ ] **Step 1: Write the independent FIFO characterization test**
+- [x] **Step 1: Write the independent FIFO characterization test**
 
 Create a Verilog-2005 self-checking test with `FIFO_DEPTH=8`. The test shall prove that `dout` changes only after an accepted `rd_en`, FIFO order is preserved, an empty read does not change the level, and a full simultaneous read/write rejects the write while accepting the read.
 
@@ -58,7 +58,7 @@ endtask
 
 For the full simultaneous case, fill all eight entries, assert both enables for one clock, then require `data_cnt==7` and require the attempted replacement byte not to appear while draining.
 
-- [ ] **Step 2: Run the characterization test**
+- [x] **Step 2: Run the characterization test**
 
 Run:
 
@@ -70,7 +70,7 @@ vvp build\apb_sync_fifo\sync_fifo_tb.vvp
 
 Expected: `TEST PASS`. This is a characterization of user-provided production code, not a new behavior test, so it is expected to pass immediately.
 
-- [ ] **Step 3: Verify that the shared FIFO was not rewritten**
+- [x] **Step 3: Verify that the shared FIFO was not rewritten**
 
 Run:
 
@@ -81,7 +81,7 @@ git diff -- rtl/misc/sync_fifo.v
 
 Expected: the `sync_fifo.v` diff is exactly the user's width-converter-to-simple-FIFO change already present before this task; no additional timing or interface change is introduced.
 
-- [ ] **Step 4: Commit the shared FIFO baseline**
+- [x] **Step 4: Commit the shared FIFO baseline**
 
 ```powershell
 git add -- rtl/misc/sync_fifo.v rtl/sim/sync_fifo_tb.v
@@ -94,7 +94,7 @@ git commit -m "refactor: adopt byte-wide synchronous FIFO"
 - Modify: `rtl/sim/i2c_master_lite_tb.v:1`
 - Modify: `rtl/i2c/i2c_master_lite.v:6`
 
-- [ ] **Step 1: Replace the testbench TX source with a real FIFO**
+- [x] **Step 1: Replace the testbench TX source with a real FIFO**
 
 Remove `tx_valid`, `tx_ready`, and the same-cycle `tx_memory` driver. Connect the desired interface and instantiate the dependency:
 
@@ -125,7 +125,7 @@ sync_fifo #(
 
 Connect `tx_data`, `tx_empty`, and `tx_rd_en` on the DUT. Add a `fifo_push` task and preload bytes before every write or write-read command. Record the cycle of each `tx_fifo_rd_en` and assert that the data byte is consumed from `dout` on the next cycle. Keep all existing protocol, timeout, arbitration, NACK, abort, RESTART, and SCL timing checks.
 
-- [ ] **Step 2: Run the new master test and verify RED**
+- [x] **Step 2: Run the new master test and verify RED**
 
 Run:
 
@@ -135,7 +135,7 @@ iverilog -g2005 -s i2c_master_lite_tb -o build\apb_sync_fifo\i2c_master_lite_tb.
 
 Expected: compile failure reporting that the old master has no `tx_empty` or `tx_rd_en` ports. The failure must be interface-related, not a testbench syntax error.
 
-- [ ] **Step 3: Implement the synchronous master fetch states**
+- [x] **Step 3: Implement the synchronous master fetch states**
 
 Change the TX ports to:
 
@@ -177,7 +177,7 @@ end
 
 Remove all assignments to `tx_ready`. Do not alter the master RX ready/valid path.
 
-- [ ] **Step 4: Run the master test and verify GREEN**
+- [x] **Step 4: Run the master test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -s i2c_master_lite_tb -o build\apb_sync_fifo\i2c_master_lite_tb.vvp rtl\misc\sync_fifo.v rtl\i2c\i2c_master_lite.v rtl\sim\i2c_master_lite_tb.v
@@ -186,7 +186,7 @@ vvp build\apb_sync_fifo\i2c_master_lite_tb.vvp
 
 Expected: `TEST PASS`, including correct first TX byte, direct read, RESTART write-read, NACK, arbitration, timeout, abort, and SCL period checks.
 
-- [ ] **Step 5: Commit the master interface**
+- [x] **Step 5: Commit the master interface**
 
 ```powershell
 git add -- rtl/i2c/i2c_master_lite.v rtl/sim/i2c_master_lite_tb.v
@@ -199,7 +199,7 @@ git commit -m "refactor: use synchronous FIFO reads in I2C master"
 - Modify: `rtl/sim/i2c_slave_tb.v:1`
 - Modify: `rtl/i2c/i2c_slave.v:6`
 
-- [ ] **Step 1: Drive the slave with a real synchronous FIFO**
+- [x] **Step 1: Drive the slave with a real synchronous FIFO**
 
 Replace the ready/valid TX model with an 8-entry `sync_fifo`, using the same signal layout as Task 2. Refill tests shall call a `fifo_push` task rather than changing `tx_valid`.
 
@@ -214,7 +214,7 @@ check_equal("empty refill data", transmitted[0], 8'hC7);
 
 Keep the address mismatch, raw RX, RESTART, RX overflow, address timeout, and mid-read `8'hFF` tests.
 
-- [ ] **Step 2: Run the new slave test and verify RED**
+- [x] **Step 2: Run the new slave test and verify RED**
 
 ```powershell
 iverilog -g2005 -s i2c_slave_tb -o build\apb_sync_fifo\i2c_slave_tb.vvp rtl\misc\sync_fifo.v rtl\i2c\i2c_slave.v rtl\sim\i2c_slave_tb.v
@@ -222,7 +222,7 @@ iverilog -g2005 -s i2c_slave_tb -o build\apb_sync_fifo\i2c_slave_tb.vvp rtl\misc
 
 Expected: compile failure because the old slave lacks `tx_empty` and `tx_rd_en`.
 
-- [ ] **Step 3: Implement slave fetch and latch states**
+- [x] **Step 3: Implement slave fetch and latch states**
 
 Change the TX ports to the FIFO interface and add:
 
@@ -260,7 +260,7 @@ end
 Preserve address-stage NACK timeout and mid-read fallback behavior. Remove all
 `tx_valid` and `tx_ready` logic.
 
-- [ ] **Step 4: Run the slave test and verify GREEN**
+- [x] **Step 4: Run the slave test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -s i2c_slave_tb -o build\apb_sync_fifo\i2c_slave_tb.vvp rtl\misc\sync_fifo.v rtl\i2c\i2c_slave.v rtl\sim\i2c_slave_tb.v
@@ -269,7 +269,7 @@ vvp build\apb_sync_fifo\i2c_slave_tb.vvp
 
 Expected: `TEST PASS`; preloaded bytes cause only routine fetch stretch, while an empty request alone sets underflow and starts the programmable timeout.
 
-- [ ] **Step 5: Commit the slave interface**
+- [x] **Step 5: Commit the slave interface**
 
 ```powershell
 git add -- rtl/i2c/i2c_slave.v rtl/sim/i2c_slave_tb.v
@@ -283,7 +283,7 @@ git commit -m "refactor: use synchronous FIFO reads in I2C slave"
 - Modify: `rtl/i2c/apb_i2c.v:1`
 - Modify: `rtl/i2c/apb_i2c_manual.md:1`
 
-- [ ] **Step 1: Update APB I2C tests for the approved FIFO contract**
+- [x] **Step 1: Update APB I2C tests for the approved FIFO contract**
 
 Set the unit-test FIFO depth to 8. Replace direct private-array checks with
 instance outputs and update RX helpers for the dummy-first sequence:
@@ -313,7 +313,7 @@ Because the unit FIFO depth changes from 4 to 8, change the above-depth command
 case from length 5 to length 9 and preload all eight legal entries before that
 rejection check.
 
-- [ ] **Step 2: Run APB I2C test and verify RED**
+- [x] **Step 2: Run APB I2C test and verify RED**
 
 ```powershell
 iverilog -g2005 -s apb_i2c_tb -o build\apb_sync_fifo\apb_i2c_tb.vvp rtl\misc\sync_fifo.v rtl\i2c\i2c_master_lite.v rtl\i2c\i2c_slave.v rtl\i2c\apb_i2c.v rtl\sim\apb_i2c_tb.v
@@ -323,7 +323,7 @@ Expected: compile failure at the old ready/valid I2C core connections or failed
 dummy-first FIFO assertions. Confirm the failure is caused by the missing APB
 FIFO refactor.
 
-- [ ] **Step 3: Instantiate TX and RX `sync_fifo` modules**
+- [x] **Step 3: Instantiate TX and RX `sync_fifo` modules**
 
 Delete private RAM arrays, pointers, and count-update blocks. Add separate FIFO
 resets and instances:
@@ -354,7 +354,7 @@ Instantiate RX identically with core data on `din`, core valid on `wr_en`, and
 the completed APB RX read on `rd_en`. Select `tx_fifo_rd_en` from the active
 master or slave core. Connect each core's new `tx_empty/tx_rd_en/tx_data` ports.
 
-- [ ] **Step 4: Implement registered APB RX reads**
+- [x] **Step 4: Implement registered APB RX reads**
 
 Track only output validity:
 
@@ -378,7 +378,7 @@ The read mux uses current `dout` during APB setup:
 Derive levels and command validation directly from `data_cnt`. Do not restore
 the old full pop-and-replace exception.
 
-- [ ] **Step 5: Run APB I2C test and verify GREEN**
+- [x] **Step 5: Run APB I2C test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -s apb_i2c_tb -o build\apb_sync_fifo\apb_i2c_tb.vvp rtl\misc\sync_fifo.v rtl\i2c\i2c_master_lite.v rtl\i2c\i2c_slave.v rtl\i2c\apb_i2c.v rtl\sim\apb_i2c_tb.v
@@ -388,7 +388,7 @@ vvp build\apb_sync_fifo\apb_i2c_tb.vvp
 Expected: `TEST PASS` for register/FIFO unit checks and all two-controller
 master, slave, error, IRQ, and RESTART integration tests.
 
-- [ ] **Step 6: Update the I2C programming guide**
+- [x] **Step 6: Update the I2C programming guide**
 
 In `apb_i2c_manual.md`, change supported FIFO depths to `8/16/32/64/128`,
 replace the old same-cycle replacement guarantee with current `sync_fifo`
@@ -400,7 +400,7 @@ discard read(RX_DATA)
 repeat N times: consume read(RX_DATA)
 ```
 
-- [ ] **Step 7: Commit the APB I2C integration**
+- [x] **Step 7: Commit the APB I2C integration**
 
 ```powershell
 git add -- rtl/i2c/apb_i2c.v rtl/sim/apb_i2c_tb.v rtl/i2c/apb_i2c_manual.md
@@ -414,7 +414,7 @@ git commit -m "refactor: use shared FIFOs in APB I2C"
 - Modify: `rtl/uart/apb_uart.v:1`
 - Delete after migration: `rtl/sim/tb_apb_uart.v`
 
-- [ ] **Step 1: Write the new UART APB test before changing RTL**
+- [x] **Step 1: Write the new UART APB test before changing RTL**
 
 Create `apb_uart_tb.v` with the approved offsets and fields:
 
@@ -445,7 +445,7 @@ Required tests:
 Preserve the user's explicit timeout block and enabled VCD block from
 `tb_apb_uart.v` in the new file.
 
-- [ ] **Step 2: Run the new UART test and verify RED**
+- [x] **Step 2: Run the new UART test and verify RED**
 
 ```powershell
 iverilog -g2005 -s apb_uart_tb -o build\apb_sync_fifo\apb_uart_tb.vvp rtl\misc\sync_fifo.v rtl\uart\apb_uart.v rtl\sim\apb_uart_tb.v
@@ -456,7 +456,7 @@ Expected: `TEST FAIL` because the old UART still expects grouped 32-bit buffers
 and start/count control pulses. If the test instead has a syntax error, fix the
 test until it runs and fails on behavior.
 
-- [ ] **Step 3: Replace UART register and FIFO control**
+- [x] **Step 3: Replace UART register and FIFO control**
 
 Keep APB registered-ready behavior and CONFIG fields. Define control from
 stored enable bits plus write pulses:
@@ -481,7 +481,7 @@ On CTRL writes, store only `PWDATA[1:0]`. Instantiate byte-wide RX and TX
 Writing address 4 pushes `PWDATA[7:0]` only when TX is not full. Reading address
 2 triggers one RX `rd_en` at APB completion only when RX is nonempty.
 
-- [ ] **Step 4: Convert the UART transmitter to demand-read timing**
+- [x] **Step 4: Convert the UART transmitter to demand-read timing**
 
 Use one metadata flag and the FIFO output register, with no data prefetch
 register:
@@ -502,7 +502,7 @@ When `tx_load_pending` is observed on the following clock, load `tx_ff` and its
 parity from `tx_fifo_data`, initialize bit counters, and set `tx_busy`. TX disable
 blocks new FIFO requests but does not abort an active frame.
 
-- [ ] **Step 5: Convert the UART receiver to direct FIFO writes**
+- [x] **Step 5: Convert the UART receiver to direct FIFO writes**
 
 Reset receiver protocol state when RX is disabled, without clearing the RX
 FIFO. Make the completed valid-byte indication a one-clock pulse and connect:
@@ -514,7 +514,7 @@ assign rx_fifo_din = uart_rx_data;
 
 If full, drop the completed byte. Do not add an overflow register or interrupt.
 
-- [ ] **Step 6: Adapt existing interrupt encoding**
+- [x] **Step 6: Adapt existing interrupt encoding**
 
 Retain the enable, source selector, sticky observed flag, and threshold fields.
 Use:
@@ -530,7 +530,7 @@ endcase
 
 Keep `PSLVERR` low and preserve invalid-read behavior.
 
-- [ ] **Step 7: Run UART test and verify GREEN**
+- [x] **Step 7: Run UART test and verify GREEN**
 
 ```powershell
 iverilog -g2005 -s apb_uart_tb -o build\apb_sync_fifo\apb_uart_tb.vvp rtl\misc\sync_fifo.v rtl\uart\apb_uart.v rtl\sim\apb_uart_tb.v
@@ -540,7 +540,7 @@ vvp build\apb_sync_fifo\apb_uart_tb.vvp
 Expected: `TEST PASS` for control, FIFO timing, loopback framing modes,
 interrupts, clears, and soft reset.
 
-- [ ] **Step 8: Remove the obsolete grouped-buffer test and commit**
+- [x] **Step 8: Remove the obsolete grouped-buffer test and commit**
 
 Delete `rtl/sim/tb_apb_uart.v` only after confirming its user-enabled VCD and
 timeout behavior are present in `apb_uart_tb.v`.
@@ -556,14 +556,14 @@ git commit -m "refactor: use byte FIFOs in APB UART"
 - Verify: all files changed in Tasks 1 through 5
 - Remove generated outputs only: `build/apb_sync_fifo/`
 
-- [ ] **Step 1: Confirm vks availability**
+- [x] **Step 1: Confirm vks availability**
 
 Check the active tool list for `vks_lint`, `vks_compile`, and `vks_simulate`.
 The current session exposes none, so record that no vks run is possible unless
 the tools become available before this step. This is an environment limitation,
 not a passing vks result.
 
-- [ ] **Step 2: Run the complete Icarus regression from fresh outputs**
+- [x] **Step 2: Run the complete Icarus regression from fresh outputs**
 
 Compile and run these top modules with `-g2005`:
 
@@ -578,7 +578,7 @@ apb_uart_tb
 Use exactly the dependency lists from Tasks 1 through 5. Expected for every
 test: `TEST PASS`, no `TEST FAIL`, no `TEST TIMEOUT`, and zero compile errors.
 
-- [ ] **Step 3: Run the same five tests with ModelSim**
+- [x] **Step 3: Run the same five tests with ModelSim**
 
 Create an isolated library:
 
@@ -596,7 +596,7 @@ vsim -c -lib build\apb_sync_fifo\modelsim_work <top_module> -do "run -all; quit 
 Expected: five `TEST PASS` results and zero ModelSim errors. Review warnings;
 there must be no new warning attributable to the changed RTL or tests.
 
-- [ ] **Step 4: Review diffs and repository state**
+- [x] **Step 4: Review diffs and repository state**
 
 ```powershell
 git diff --check
@@ -614,7 +614,7 @@ Resolve `build/apb_sync_fifo` to its absolute path under
 `D:\Software\simple_cpu`, verify that boundary, then remove only that generated
 directory. Do not remove existing user build outputs elsewhere.
 
-- [ ] **Step 6: Final completion report**
+- [x] **Step 6: Final completion report**
 
 Report changed files, register behavior, FIFO read sequence, Icarus and
 ModelSim commands/results, the absence of vks tools, any simulator warnings,
