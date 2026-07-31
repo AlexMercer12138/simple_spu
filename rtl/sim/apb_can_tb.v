@@ -83,6 +83,7 @@ module apb_can_tb;
     reg  [18:0] crc_bits;
     reg         monitor_loopback;
     reg         loopback_dominant_seen;
+    reg         loopback_parser_seen;
     reg         monitor_error_flag_a;
     reg         monitor_error_flag_b;
     integer     dominant_run_a;
@@ -172,6 +173,9 @@ module apb_can_tb;
         cycle_count <= cycle_count + 1;
         if (monitor_loopback && !can_tx_a)
             loopback_dominant_seen <= 1'b1;
+        if (monitor_loopback &&
+            (apb_can_inst_a.can_core_inst.rx_phase != 3'd0))
+            loopback_parser_seen <= 1'b1;
     end
 
     always @(negedge clk) begin
@@ -910,6 +914,7 @@ module apb_can_tb;
             apb_write_a(ADDR_CTRL, 32'h0000_000d);
             monitor_loopback = 1'b1;
             loopback_dominant_seen = 1'b0;
+            loopback_parser_seen = 1'b0;
 
             push_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd0, 64'd0);
             wait_irq_a(16'h0003);
@@ -948,6 +953,8 @@ module apb_can_tb;
             monitor_loopback = 1'b0;
             check_true("loopback keeps external CAN TX recessive",
                        !loopback_dominant_seen);
+            check_true("loopback frame traverses RX parser",
+                       loopback_parser_seen);
             apb_write_a(ADDR_CTRL, 32'h0000_000c);
             $display("[PASS] LOOPBACK_FRAMES");
         end
@@ -1504,6 +1511,7 @@ module apb_can_tb;
         poll_count = 0;
         monitor_loopback = 1'b0;
         loopback_dominant_seen = 1'b0;
+        loopback_parser_seen = 1'b0;
         monitor_error_flag_a = 1'b0;
         monitor_error_flag_b = 1'b0;
         dominant_run_a = 0;

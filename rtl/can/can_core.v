@@ -260,9 +260,6 @@ module can_core (
     wire        next_raw_bit;
     wire        raw_bit_repeats;
     wire        raw_bit_needs_stuff;
-    wire [30:0] active_filter_key;
-    wire        active_filter_match;
-    wire [98:0] loopback_frame;
     wire [7:0]  payload_bit_count;
     wire [7:0]  frame_crc_start;
     wire        rx_crc_clear;
@@ -312,12 +309,6 @@ module can_core (
     assign raw_bit_repeats = next_raw_bit == stuff_last_bit;
     assign raw_bit_needs_stuff = raw_bit_repeats &&
                                  (stuff_run_count == 3'd4);
-    assign active_filter_key = {active_frame[98:70], active_frame[69],
-                                active_frame[68]};
-    assign active_filter_match = !filter_enable ||
-        (((active_filter_key ^ accept_code) & accept_mask) == 31'd0);
-    assign loopback_frame = active_frame[68] ?
-                            {active_frame[98:64], 64'd0} : active_frame;
     assign payload_bit_count = active_frame[68] ? 8'd0 :
                                {active_frame[67:64], 3'b000};
     assign frame_crc_start = (active_frame[69] ? 8'd39 : 8'd19) +
@@ -891,10 +882,6 @@ module can_core (
                                     tx_done_event <= 1'b1;
                                     if (tec_reg != 9'd0)
                                         tec_reg <= tec_reg - 9'd1;
-                                    if (loopback && active_filter_match) begin
-                                        rx_frame <= loopback_frame;
-                                        rx_frame_valid <= 1'b1;
-                                    end
                                 end
                                 tail_count <= 4'd0;
                             end else begin
@@ -1012,7 +999,7 @@ module can_core (
             rx_commit_valid <= 1'b0;
             rx_success_valid <= 1'b0;
 
-            if (!running_reg || loopback || error_recovery_active) begin
+            if (!running_reg || error_recovery_active) begin
                 ack_drive_reg <= 1'b1;
                 rx_phase <= RX_IDLE;
                 rx_raw_index <= 8'd0;
@@ -1191,8 +1178,9 @@ module can_core (
                                 rx_frame_good <= 1'b0;
                             if (rx_tail_count == 4'd2) begin
                                 if (rx_frame_good && timing_rx_bit &&
-                                    !rx_origin_local) begin
-                                    rx_success_valid <= 1'b1;
+                                    (loopback || !rx_origin_local)) begin
+                                    if (!loopback)
+                                        rx_success_valid <= 1'b1;
                                     if (rx_filter_match) begin
                                         rx_commit_frame <= rx_complete_frame;
                                         rx_commit_valid <= 1'b1;
