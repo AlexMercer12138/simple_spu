@@ -36,11 +36,23 @@ module apb_can_tb;
     reg         crc_data_bit;
     wire [14:0] crc_value;
     wire [14:0] crc_next_value;
+    reg         timing_enable;
+    reg         timing_hard_sync_enable;
+    reg         timing_resync_enable;
+    reg         timing_can_rx;
+    wire        timing_rx_bit;
+    wire        timing_bit_start;
+    wire        timing_sample_point;
+    wire        timing_bit_end;
 
     integer     failures;
     integer     wait_cycles;
     integer     i;
     integer     crc_i;
+    integer     cycle_count;
+    integer     timing_start_cycle;
+    integer     timing_sample_cycle;
+    integer     timing_next_cycle;
     reg  [31:0] read_data;
     reg  [18:0] crc_bits;
 
@@ -75,7 +87,28 @@ module apb_can_tb;
         .crc_next_value (crc_next_value)
     );
 
+    can_bit_timing can_bit_timing_inst (
+        .clk              (clk                    ),
+        .rst_n            (rst_n                  ),
+        .enable           (timing_enable          ),
+        .hard_sync_enable (timing_hard_sync_enable),
+        .resync_enable    (timing_resync_enable   ),
+        .brp              (10'd1                  ),
+        .sjw              (2'd1                   ),
+        .tseg1            (4'd6                   ),
+        .tseg2            (3'd1                   ),
+        .can_rx           (timing_can_rx          ),
+        .rx_bit           (timing_rx_bit          ),
+        .bit_start        (timing_bit_start       ),
+        .sample_point     (timing_sample_point    ),
+        .bit_end          (timing_bit_end         )
+    );
+
     always #(CLK_PERIOD / 2) clk = ~clk;
+
+    always @(posedge clk) begin
+        cycle_count <= cycle_count + 1;
+    end
 
     initial #(CLK_PERIOD * 10) rst_n = 1'b1;
 
@@ -224,6 +257,87 @@ module apb_can_tb;
         end
     endtask
 
+    task wait_timing_pulse;
+        input [1:0] pulse_select;
+        integer timeout_count;
+        reg pulse_value;
+        begin
+            timeout_count = 0;
+            pulse_value = 1'b0;
+            while (!pulse_value && (timeout_count < 80)) begin
+                @(negedge clk);
+                case (pulse_select)
+                    2'd0: pulse_value = timing_bit_start;
+                    2'd1: pulse_value = timing_sample_point;
+                    default: pulse_value = timing_bit_end;
+                endcase
+                timeout_count = timeout_count + 1;
+            end
+            check_true("timing pulse arrives before timeout", pulse_value);
+        end
+    endtask
+
+    task test_bit_timing;
+        begin
+            @(negedge clk);
+            timing_enable <= 1'b1;
+            wait_timing_pulse(2'd0);
+            timing_start_cycle = cycle_count;
+            wait_timing_pulse(2'd1);
+            timing_sample_cycle = cycle_count;
+            check32("sample point is eight TQ after bit start",
+                    timing_sample_cycle - timing_start_cycle, 32'd16);
+            wait_timing_pulse(2'd0);
+            timing_next_cycle = cycle_count;
+            check32("nominal bit is ten TQ",
+                    timing_next_cycle - timing_start_cycle, 32'd20);
+            check_true("bit end coincides with next start", timing_bit_end);
+
+            timing_hard_sync_enable <= 1'b1;
+            timing_can_rx <= 1'b1;
+            repeat (4) @(negedge clk);
+            timing_can_rx <= 1'b0;
+            wait_timing_pulse(2'd0);
+            timing_start_cycle = cycle_count;
+            wait_timing_pulse(2'd1);
+            timing_sample_cycle = cycle_count;
+            check32("hard-sync sample offset",
+                    timing_sample_cycle - timing_start_cycle, 32'd16);
+
+            @(negedge clk);
+            timing_enable <= 1'b0;
+            timing_hard_sync_enable <= 1'b0;
+            timing_can_rx <= 1'b1;
+            repeat (4) @(negedge clk);
+
+            timing_enable <= 1'b1;
+            wait_timing_pulse(2'd0);
+            timing_start_cycle = cycle_count;
+            repeat (4) @(negedge clk);
+            timing_can_rx <= 1'b0;
+            wait_timing_pulse(2'd0);
+            timing_next_cycle = cycle_count;
+            check32("positive resync is limited by SJW",
+                    timing_next_cycle - timing_start_cycle, 32'd24);
+
+            timing_can_rx <= 1'b1;
+            repeat (4) @(negedge clk);
+            wait_timing_pulse(2'd0);
+            timing_start_cycle = cycle_count;
+            repeat (14) @(negedge clk);
+            timing_can_rx <= 1'b0;
+            wait_timing_pulse(2'd0);
+            timing_next_cycle = cycle_count;
+            check32("negative resync shortens TSEG2",
+                    timing_next_cycle - timing_start_cycle, 32'd18);
+
+            @(negedge clk);
+            timing_enable <= 1'b0;
+            timing_can_rx <= 1'b1;
+            $display("[PASS] BIT_TIMING");
+        end
+    endtask
+
     task test_apb_fifo;
         begin
             apb_read_a(ADDR_CTRL, read_data);
@@ -288,13 +402,19 @@ module apb_can_tb;
         crc_clear  = 1'b0;
         crc_enable = 1'b0;
         crc_data_bit = 1'b0;
+        timing_enable = 1'b0;
+        timing_hard_sync_enable = 1'b0;
+        timing_resync_enable = 1'b1;
+        timing_can_rx = 1'b1;
         failures   = 0;
         wait_cycles = 0;
+        cycle_count = 0;
         read_data  = 32'd0;
 
         @(posedge rst_n);
         repeat (2) @(posedge clk);
         test_crc15;
+        test_bit_timing;
         test_apb_fifo;
 
         if (failures == 0)
