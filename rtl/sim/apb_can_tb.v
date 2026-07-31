@@ -36,6 +36,17 @@ module apb_can_tb;
     wire [31:0] prdata_a;
     wire        interrupt_a;
     wire        can_tx_a;
+    reg         psel_b;
+    reg         penable_b;
+    reg         pwrite_b;
+    reg  [31:0] paddr_b;
+    reg  [31:0] pwdata_b;
+    wire        pready_b;
+    wire        pslverr_b;
+    wire [31:0] prdata_b;
+    wire        interrupt_b;
+    wire        can_tx_b;
+    wire        can_bus;
     reg         crc_clear;
     reg         crc_enable;
     reg         crc_data_bit;
@@ -81,9 +92,32 @@ module apb_can_tb;
         .s_apb_pslverr    (pslverr_a  ),
         .s_apb_prdata     (prdata_a   ),
         .interrupt        (interrupt_a),
-        .can_rx           (can_tx_a   ),
+        .can_rx           (can_bus    ),
         .can_tx           (can_tx_a   )
     );
+
+    apb_can #(
+        .SYS_CLK_FREQ     (50_000_000),
+        .DEFAULT_BIT_RATE (500_000   ),
+        .TX_FIFO_DEPTH    (8         ),
+        .RX_FIFO_DEPTH    (8         )
+    ) apb_can_inst_b (
+        .s_apb_pclk       (clk        ),
+        .s_apb_presetn    (rst_n      ),
+        .s_apb_psel       (psel_b     ),
+        .s_apb_penable    (penable_b  ),
+        .s_apb_pwrite     (pwrite_b   ),
+        .s_apb_paddr      (paddr_b    ),
+        .s_apb_pwdata     (pwdata_b   ),
+        .s_apb_pready     (pready_b   ),
+        .s_apb_pslverr    (pslverr_b  ),
+        .s_apb_prdata     (prdata_b   ),
+        .interrupt        (interrupt_b),
+        .can_rx           (can_bus    ),
+        .can_tx           (can_tx_b   )
+    );
+
+    assign can_bus = can_tx_a & can_tx_b;
 
     can_crc can_crc_inst (
         .clk            (clk           ),
@@ -156,6 +190,16 @@ module apb_can_tb;
         end
     endtask
 
+    task apb_idle_b;
+        begin
+            psel_b    <= 1'b0;
+            penable_b <= 1'b0;
+            pwrite_b  <= 1'b0;
+            paddr_b   <= 32'd0;
+            pwdata_b  <= 32'd0;
+        end
+    endtask
+
     task apb_write_a;
         input [31:0] address;
         input [31:0] data;
@@ -217,6 +261,65 @@ module apb_can_tb;
         end
     endtask
 
+    task apb_write_b;
+        input [31:0] address;
+        input [31:0] data;
+        begin
+            @(negedge clk);
+            psel_b    <= 1'b1;
+            penable_b <= 1'b0;
+            pwrite_b  <= 1'b1;
+            paddr_b   <= address;
+            pwdata_b  <= data;
+            @(negedge clk);
+            penable_b <= 1'b1;
+            wait_cycles = 0;
+            while (!pready_b && (wait_cycles < 16)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!pready_b) begin
+                failures = failures + 1;
+                $display("[%0t] [FAIL] APB-B write timeout address=%08x",
+                         $time, address);
+            end
+            check_true("APB-B PSLVERR remains low", !pslverr_b);
+            @(negedge clk);
+            apb_idle_b;
+            @(negedge clk);
+        end
+    endtask
+
+    task apb_read_b;
+        input  [31:0] address;
+        output [31:0] data;
+        begin
+            @(negedge clk);
+            psel_b    <= 1'b1;
+            penable_b <= 1'b0;
+            pwrite_b  <= 1'b0;
+            paddr_b   <= address;
+            pwdata_b  <= 32'd0;
+            @(negedge clk);
+            penable_b <= 1'b1;
+            wait_cycles = 0;
+            while (!pready_b && (wait_cycles < 16)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!pready_b) begin
+                failures = failures + 1;
+                $display("[%0t] [FAIL] APB-B read timeout address=%08x",
+                         $time, address);
+            end
+            data = prdata_b;
+            check_true("APB-B PSLVERR remains low", !pslverr_b);
+            @(negedge clk);
+            apb_idle_b;
+            @(negedge clk);
+        end
+    endtask
+
     task push_standard_frame_a;
         input [10:0] identifier;
         input [3:0] dlc;
@@ -261,6 +364,21 @@ module apb_can_tb;
         end
     endtask
 
+    task wait_irq_b;
+        input [15:0] mask;
+        begin
+            poll_count = 0;
+            apb_read_b(ADDR_IRQ_STATUS, read_data);
+            while (((read_data[15:0] & mask) == 0) &&
+                   (poll_count < 5000)) begin
+                poll_count = poll_count + 1;
+                apb_read_b(ADDR_IRQ_STATUS, read_data);
+            end
+            check_true("IRQ-B arrives before timeout",
+                       (read_data[15:0] & mask) != 0);
+        end
+    endtask
+
     task pop_and_check_frame_a;
         input [28:0] expected_id;
         input expected_ide;
@@ -279,6 +397,28 @@ module apb_can_tb;
                     expected_payload[31:0]);
             apb_read_a(ADDR_RX_DATA1, read_data);
             check32("loopback RX data bytes 4-7", read_data,
+                    expected_payload[63:32]);
+        end
+    endtask
+
+    task pop_and_check_frame_b;
+        input [28:0] expected_id;
+        input expected_ide;
+        input expected_rtr;
+        input [3:0] expected_dlc;
+        input [63:0] expected_payload;
+        begin
+            apb_write_b(ADDR_RX_CMD, 32'h0000_0001);
+            apb_read_b(ADDR_RX_ID, read_data);
+            check32("node B RX ID", read_data, {3'd0, expected_id});
+            apb_read_b(ADDR_RX_CTRL, read_data);
+            check32("node B RX control", read_data,
+                    {26'd0, expected_ide, expected_rtr, expected_dlc});
+            apb_read_b(ADDR_RX_DATA0, read_data);
+            check32("node B RX data bytes 0-3", read_data,
+                    expected_payload[31:0]);
+            apb_read_b(ADDR_RX_DATA1, read_data);
+            check32("node B RX data bytes 4-7", read_data,
                     expected_payload[63:32]);
         end
     endtask
@@ -458,7 +598,7 @@ module apb_can_tb;
         begin
             apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
             apb_write_a(ADDR_ERROR_STATUS, 32'h0000_03ff);
-            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
             apb_write_a(ADDR_CTRL, 32'h0000_000d);
             monitor_loopback = 1'b1;
             loopback_dominant_seen = 1'b0;
@@ -505,6 +645,77 @@ module apb_can_tb;
         end
     endtask
 
+    task test_two_node_ack_filter;
+        begin
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(32'h0000_003c, 32'h0000_048c);
+            apb_write_b(32'h0000_0040, 32'h0000_1fff);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_a(ADDR_CTRL, 32'h0000_0009);
+            apb_write_b(ADDR_CTRL, 32'h0000_0019);
+            push_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd8,
+                         64'h0807_0605_0403_0201);
+            wait_irq_a(16'h0002);
+            wait_irq_b(16'h0001);
+            pop_and_check_frame_b(29'h0000_0123, 1'b0, 1'b0, 4'd8,
+                                  64'h0807_0605_0403_0201);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0002);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_0001);
+
+            push_frame_a(29'h0000_0124, 1'b0, 1'b0, 4'd1, 64'h5a);
+            wait_irq_a(16'h0002);
+            apb_read_b(ADDR_FIFO_STATUS, read_data);
+            check32("filtered frame does not enter RX FIFO",
+                    read_data & 32'h0000_ff00, 32'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0002);
+
+            apb_write_b(ADDR_CTRL, 32'h0000_0018);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+            apb_write_b(ADDR_CTRL, 32'h0000_0209);
+
+            push_frame_a(29'h01ab_cdef, 1'b1, 1'b0, 4'd2,
+                         64'h0000_0000_0000_a55a);
+            wait_irq_a(16'h0002);
+            wait_irq_b(16'h0001);
+            pop_and_check_frame_b(29'h01ab_cdef, 1'b1, 1'b0, 4'd2,
+                                  64'h0000_0000_0000_a55a);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0002);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_0001);
+
+            push_frame_a(29'h0000_0321, 1'b0, 1'b1, 4'd4,
+                         64'hffff_ffff_ffff_ffff);
+            wait_irq_a(16'h0002);
+            wait_irq_b(16'h0001);
+            pop_and_check_frame_b(29'h0000_0321, 1'b0, 1'b1, 4'd4,
+                                  64'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0002);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_0001);
+
+            for (i = 0; i < 8; i = i + 1) begin
+                push_frame_a(29'h0000_0200 + i, 1'b0, 1'b0, 4'd1, i);
+                wait_irq_a(16'h0002);
+                apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0002);
+            end
+            apb_read_b(ADDR_FIFO_STATUS, read_data);
+            check32("node B RX FIFO reaches depth eight",
+                    read_data & 32'h000c_ff00, 32'h0008_0800);
+
+            push_frame_a(29'h0000_0300, 1'b0, 1'b0, 4'd1, 64'hff);
+            wait_irq_a(16'h0002);
+            wait_irq_b(16'h0800);
+            apb_read_b(ADDR_FIFO_STATUS, read_data);
+            check32("RX overflow keeps existing FIFO contents",
+                    read_data & 32'h000c_ff00, 32'h0008_0800);
+
+            apb_write_a(ADDR_CTRL, 32'h0000_0008);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+            $display("[PASS] TWO_NODE_ACK");
+            $display("[PASS] ACCEPT_FILTER");
+        end
+    endtask
+
     initial begin
         // $dumpfile("apb_can_tb.vcd");
         // $dumpvars(0, apb_can_tb);
@@ -513,6 +724,11 @@ module apb_can_tb;
         pwrite_a   = 1'b0;
         paddr_a    = 32'd0;
         pwdata_a   = 32'd0;
+        psel_b     = 1'b0;
+        penable_b  = 1'b0;
+        pwrite_b   = 1'b0;
+        paddr_b    = 32'd0;
+        pwdata_b   = 32'd0;
         crc_clear  = 1'b0;
         crc_enable = 1'b0;
         crc_data_bit = 1'b0;
@@ -534,6 +750,7 @@ module apb_can_tb;
         test_bit_timing;
         test_apb_fifo;
         test_loopback_frames;
+        test_two_node_ack_filter;
 
         if (failures == 0)
             $display("APB CAN TEST PASS");

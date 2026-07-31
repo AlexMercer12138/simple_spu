@@ -60,6 +60,14 @@ module can_core (
     localparam ST_EOF          = 4'd6;
     localparam ST_INTERMISSION = 4'd7;
 
+    localparam RX_IDLE         = 3'd0;
+    localparam RX_STUFFED      = 3'd1;
+    localparam RX_CRC_DELIM    = 3'd2;
+    localparam RX_ACK_SLOT     = 3'd3;
+    localparam RX_ACK_DELIM    = 3'd4;
+    localparam RX_EOF          = 3'd5;
+    localparam RX_INTERMISSION = 3'd6;
+
     function frame_raw_bit;
         input [98:0] frame_value;
         input [7:0]  raw_index_value;
@@ -144,6 +152,30 @@ module can_core (
     reg         tx_crc_clear;
     reg         tx_crc_enable;
     reg         tx_crc_data_bit;
+    reg         ack_drive_reg;
+
+    reg  [2:0]  rx_phase;
+    reg  [7:0]  rx_raw_index;
+    reg  [7:0]  rx_crc_start_index;
+    reg  [7:0]  rx_raw_last_index;
+    reg         rx_raw_complete;
+    reg         rx_expect_stuff;
+    reg         rx_stuff_last_bit;
+    reg  [2:0]  rx_stuff_run_count;
+    reg  [10:0] rx_base_id;
+    reg  [17:0] rx_extended_id;
+    reg         rx_ide_work;
+    reg         rx_rtr_work;
+    reg  [3:0]  rx_dlc_work;
+    reg  [63:0] rx_data_work;
+    reg  [14:0] rx_crc_received;
+    reg         rx_frame_good;
+    reg         rx_origin_local;
+    reg  [3:0]  rx_tail_count;
+    reg         rx_crc_enable;
+    reg         rx_crc_data_bit;
+    reg         rx_commit_valid;
+    reg  [98:0] rx_commit_frame;
 
     wire        timing_rx_input;
     wire        timing_rx_bit;
@@ -152,6 +184,8 @@ module can_core (
     wire        timing_bit_end;
     wire [14:0] tx_crc_value;
     wire [14:0] tx_crc_next_value;
+    wire [14:0] rx_crc_value;
+    wire [14:0] rx_crc_next_value;
     wire        next_raw_bit;
     wire        raw_bit_repeats;
     wire        raw_bit_needs_stuff;
@@ -160,11 +194,23 @@ module can_core (
     wire [98:0] loopback_frame;
     wire [7:0]  payload_bit_count;
     wire [7:0]  frame_crc_start;
+    wire        rx_crc_clear;
+    wire        rx_bit_repeats;
+    wire        rx_bit_needs_stuff;
+    wire [3:0]  rx_dlc_next;
+    wire [7:0]  rx_payload_bit_count;
+    wire [7:0]  rx_data_start_index;
+    wire [7:0]  rx_data_offset;
+    wire [6:0]  rx_data_bit_index;
+    wire [28:0] rx_identifier;
+    wire [30:0] rx_filter_key;
+    wire        rx_filter_match;
+    wire [98:0] rx_complete_frame;
 
     assign running = enable_req;
     assign bus_idle = enable_req && (state == ST_IDLE);
     assign tx_active = active_frame_valid;
-    assign rx_active = 1'b0;
+    assign rx_active = rx_phase != RX_IDLE;
     assign retry_pending = 1'b0;
     assign tx_abort_pending = 1'b0;
     assign error_warning = 1'b0;
@@ -173,7 +219,7 @@ module can_core (
     assign tec = 9'd0;
     assign rec = 8'd0;
     assign can_tx = (!running || listen_only || loopback) ? 1'b1 :
-                    tx_drive_reg;
+                    (tx_drive_reg & ack_drive_reg);
     assign timing_rx_input = loopback ?
                              ((state == ST_ACK_SLOT) ? 1'b0 : tx_drive_reg) :
                              can_rx;
@@ -192,13 +238,34 @@ module can_core (
                                {active_frame[67:64], 3'b000};
     assign frame_crc_start = (active_frame[69] ? 8'd39 : 8'd19) +
                              payload_bit_count;
+    assign rx_crc_clear = rx_phase == RX_IDLE;
+    assign rx_bit_repeats = timing_rx_bit == rx_stuff_last_bit;
+    assign rx_bit_needs_stuff = rx_bit_repeats &&
+                                (rx_stuff_run_count == 3'd4);
+    assign rx_dlc_next = {rx_dlc_work[2:0], timing_rx_bit};
+    assign rx_payload_bit_count = rx_rtr_work ? 8'd0 :
+                                  {rx_dlc_work, 3'b000};
+    assign rx_data_start_index = rx_ide_work ? 8'd39 : 8'd19;
+    assign rx_data_offset = rx_raw_index - rx_data_start_index;
+    assign rx_data_bit_index = ((rx_data_offset >> 3) << 3) +
+                               (7 - rx_data_offset[2:0]);
+    assign rx_identifier = rx_ide_work ?
+                           {rx_base_id, rx_extended_id} :
+                           {18'd0, rx_base_id};
+    assign rx_filter_key = {rx_identifier, rx_ide_work, rx_rtr_work};
+    assign rx_filter_match = !filter_enable ||
+        (((rx_filter_key ^ accept_code) & accept_mask) == 31'd0);
+    assign rx_complete_frame = {rx_identifier, rx_ide_work, rx_rtr_work,
+                                rx_dlc_work, rx_data_work};
 
     can_bit_timing can_bit_timing_inst (
         .clk              (clk                              ),
         .rst_n            (rst_n                            ),
         .enable           (enable_req                       ),
-        .hard_sync_enable (!loopback && (state == ST_IDLE)  ),
-        .resync_enable    (state != ST_IDLE                 ),
+        .hard_sync_enable (!loopback && (state == ST_IDLE) &&
+                           (rx_phase == RX_IDLE)              ),
+        .resync_enable    ((state != ST_IDLE) ||
+                           (rx_phase != RX_IDLE)             ),
         .brp              (brp                              ),
         .sjw              (sjw                              ),
         .tseg1            (tseg1                            ),
@@ -220,6 +287,16 @@ module can_core (
         .crc_next_value (tx_crc_next_value)
     );
 
+    can_crc rx_can_crc_inst (
+        .clk            (clk              ),
+        .rst_n          (rst_n            ),
+        .clear          (rx_crc_clear     ),
+        .enable         (rx_crc_enable    ),
+        .data_bit       (rx_crc_data_bit  ),
+        .crc_value      (rx_crc_value     ),
+        .crc_next_value (rx_crc_next_value)
+    );
+
     always @(posedge clk) begin
         if (!rst_n) begin
             state <= ST_STOP;
@@ -238,6 +315,7 @@ module can_core (
             ack_seen <= 1'b0;
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
+
             tx_crc_data_bit <= 1'b0;
             tx_frame_request <= 1'b0;
             rx_frame_valid <= 1'b0;
@@ -268,6 +346,11 @@ module can_core (
             bus_recovered_event <= 1'b0;
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
+
+            if (rx_commit_valid) begin
+                rx_frame <= rx_commit_frame;
+                rx_frame_valid <= 1'b1;
+            end
 
             if (!enable_req) begin
                 state <= ST_STOP;
@@ -367,8 +450,17 @@ module can_core (
                         end
 
                         ST_ACK_SLOT: begin
-                            state <= ST_ACK_DELIM;
                             tx_drive_reg <= 1'b1;
+                            if (!loopback && !ack_seen) begin
+                                state <= ST_IDLE;
+                                active_frame_valid <= 1'b0;
+                                tx_failed_event <= 1'b1;
+                                protocol_error_event <= 1'b1;
+                                last_error_type <= 3'd4;
+                                last_error_field <= 4'd6;
+                            end else begin
+                                state <= ST_ACK_DELIM;
+                            end
                         end
 
                         ST_ACK_DELIM: begin
@@ -406,6 +498,232 @@ module can_core (
                         default: begin
                             state <= ST_IDLE;
                             tx_drive_reg <= 1'b1;
+                        end
+                    endcase
+                end
+            end
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            ack_drive_reg <= 1'b1;
+            rx_phase <= RX_IDLE;
+            rx_raw_index <= 8'd0;
+            rx_crc_start_index <= 8'hff;
+            rx_raw_last_index <= 8'hff;
+            rx_raw_complete <= 1'b0;
+            rx_expect_stuff <= 1'b0;
+            rx_stuff_last_bit <= 1'b1;
+            rx_stuff_run_count <= 3'd0;
+            rx_base_id <= 11'd0;
+            rx_extended_id <= 18'd0;
+            rx_ide_work <= 1'b0;
+            rx_rtr_work <= 1'b0;
+            rx_dlc_work <= 4'd0;
+            rx_data_work <= 64'd0;
+            rx_crc_received <= 15'd0;
+            rx_frame_good <= 1'b0;
+            rx_origin_local <= 1'b0;
+            rx_tail_count <= 4'd0;
+            rx_crc_enable <= 1'b0;
+            rx_crc_data_bit <= 1'b0;
+            rx_commit_valid <= 1'b0;
+            rx_commit_frame <= 99'd0;
+        end else begin
+            rx_crc_enable <= 1'b0;
+            rx_commit_valid <= 1'b0;
+
+            if (!enable_req || loopback) begin
+                ack_drive_reg <= 1'b1;
+                rx_phase <= RX_IDLE;
+                rx_raw_index <= 8'd0;
+                rx_crc_start_index <= 8'hff;
+                rx_raw_last_index <= 8'hff;
+                rx_raw_complete <= 1'b0;
+                rx_expect_stuff <= 1'b0;
+                rx_stuff_run_count <= 3'd0;
+                rx_frame_good <= 1'b0;
+                rx_origin_local <= 1'b0;
+            end else begin
+                if (timing_bit_start) begin
+                    if ((rx_phase == RX_ACK_SLOT) && rx_frame_good &&
+                        !rx_origin_local && !listen_only)
+                        ack_drive_reg <= 1'b0;
+                    else
+                        ack_drive_reg <= 1'b1;
+                end
+
+                if (timing_sample_point) begin
+                    case (rx_phase)
+                        RX_IDLE: begin
+                            if (!timing_rx_bit) begin
+                                rx_phase <= RX_STUFFED;
+                                rx_raw_index <= 8'd1;
+                                rx_crc_start_index <= 8'hff;
+                                rx_raw_last_index <= 8'hff;
+                                rx_raw_complete <= 1'b0;
+                                rx_expect_stuff <= 1'b0;
+                                rx_stuff_last_bit <= 1'b0;
+                                rx_stuff_run_count <= 3'd1;
+                                rx_base_id <= 11'd0;
+                                rx_extended_id <= 18'd0;
+                                rx_ide_work <= 1'b0;
+                                rx_rtr_work <= 1'b0;
+                                rx_dlc_work <= 4'd0;
+                                rx_data_work <= 64'd0;
+                                rx_crc_received <= 15'd0;
+                                rx_frame_good <= 1'b1;
+                                rx_origin_local <= active_frame_valid &&
+                                                   (state == ST_FRAME);
+                                rx_tail_count <= 4'd0;
+                                rx_crc_enable <= 1'b1;
+                                rx_crc_data_bit <= 1'b0;
+                            end
+                        end
+
+                        RX_STUFFED: begin
+                            if (rx_expect_stuff) begin
+                                if (timing_rx_bit == rx_stuff_last_bit) begin
+                                    rx_frame_good <= 1'b0;
+                                    rx_phase <= RX_IDLE;
+                                end else begin
+                                    rx_stuff_last_bit <= timing_rx_bit;
+                                    rx_stuff_run_count <= 3'd1;
+                                    rx_expect_stuff <= 1'b0;
+                                    if (rx_raw_complete)
+                                        rx_phase <= RX_CRC_DELIM;
+                                end
+                            end else begin
+                                if (rx_raw_index < rx_crc_start_index) begin
+                                    rx_crc_enable <= 1'b1;
+                                    rx_crc_data_bit <= timing_rx_bit;
+                                end else begin
+                                    rx_crc_received <=
+                                        {rx_crc_received[13:0], timing_rx_bit};
+                                end
+
+                                if ((rx_raw_index >= 8'd1) &&
+                                    (rx_raw_index <= 8'd11)) begin
+                                    rx_base_id <=
+                                        {rx_base_id[9:0], timing_rx_bit};
+                                end else if (rx_raw_index == 8'd12) begin
+                                    rx_rtr_work <= timing_rx_bit;
+                                end else if (rx_raw_index == 8'd13) begin
+                                    rx_ide_work <= timing_rx_bit;
+                                end else if (!rx_ide_work) begin
+                                    if ((rx_raw_index >= 8'd15) &&
+                                        (rx_raw_index <= 8'd18)) begin
+                                        rx_dlc_work <= rx_dlc_next;
+                                        if (rx_raw_index == 8'd18) begin
+                                            rx_crc_start_index <= 8'd19 +
+                                                (rx_rtr_work ? 8'd0 :
+                                                 {rx_dlc_next, 3'b000});
+                                            rx_raw_last_index <= 8'd33 +
+                                                (rx_rtr_work ? 8'd0 :
+                                                 {rx_dlc_next, 3'b000});
+                                        end
+                                    end else if ((rx_raw_index >= 8'd19) &&
+                                                 (rx_raw_index <
+                                                  rx_crc_start_index)) begin
+                                        rx_data_work[rx_data_bit_index] <=
+                                            timing_rx_bit;
+                                    end
+                                end else begin
+                                    if ((rx_raw_index >= 8'd14) &&
+                                        (rx_raw_index <= 8'd31)) begin
+                                        rx_extended_id <=
+                                            {rx_extended_id[16:0],
+                                             timing_rx_bit};
+                                    end else if (rx_raw_index == 8'd32) begin
+                                        rx_rtr_work <= timing_rx_bit;
+                                    end else if ((rx_raw_index >= 8'd35) &&
+                                                 (rx_raw_index <= 8'd38)) begin
+                                        rx_dlc_work <= rx_dlc_next;
+                                        if (rx_raw_index == 8'd38) begin
+                                            rx_crc_start_index <= 8'd39 +
+                                                (rx_rtr_work ? 8'd0 :
+                                                 {rx_dlc_next, 3'b000});
+                                            rx_raw_last_index <= 8'd53 +
+                                                (rx_rtr_work ? 8'd0 :
+                                                 {rx_dlc_next, 3'b000});
+                                        end
+                                    end else if ((rx_raw_index >= 8'd39) &&
+                                                 (rx_raw_index <
+                                                  rx_crc_start_index)) begin
+                                        rx_data_work[rx_data_bit_index] <=
+                                            timing_rx_bit;
+                                    end
+                                end
+
+                                if (rx_bit_repeats) begin
+                                    rx_stuff_run_count <=
+                                        rx_stuff_run_count + 3'd1;
+                                    if (rx_bit_needs_stuff)
+                                        rx_expect_stuff <= 1'b1;
+                                end else begin
+                                    rx_stuff_last_bit <= timing_rx_bit;
+                                    rx_stuff_run_count <= 3'd1;
+                                end
+
+                                if (rx_raw_index == rx_raw_last_index) begin
+                                    rx_raw_complete <= 1'b1;
+                                    if (!rx_bit_needs_stuff)
+                                        rx_phase <= RX_CRC_DELIM;
+                                end else begin
+                                    rx_raw_index <= rx_raw_index + 8'd1;
+                                end
+                            end
+                        end
+
+                        RX_CRC_DELIM: begin
+                            if (!timing_rx_bit ||
+                                (rx_crc_received != rx_crc_value))
+                                rx_frame_good <= 1'b0;
+                            rx_phase <= RX_ACK_SLOT;
+                        end
+
+                        RX_ACK_SLOT: begin
+                            rx_phase <= RX_ACK_DELIM;
+                        end
+
+                        RX_ACK_DELIM: begin
+                            if (!timing_rx_bit)
+                                rx_frame_good <= 1'b0;
+                            rx_phase <= RX_EOF;
+                            rx_tail_count <= 4'd0;
+                        end
+
+                        RX_EOF: begin
+                            if (!timing_rx_bit)
+                                rx_frame_good <= 1'b0;
+                            if (rx_tail_count == 4'd6) begin
+                                rx_phase <= RX_INTERMISSION;
+                                rx_tail_count <= 4'd0;
+                            end else begin
+                                rx_tail_count <= rx_tail_count + 4'd1;
+                            end
+                        end
+
+                        RX_INTERMISSION: begin
+                            if (!timing_rx_bit)
+                                rx_frame_good <= 1'b0;
+                            if (rx_tail_count == 4'd2) begin
+                                if (rx_frame_good && timing_rx_bit &&
+                                    !rx_origin_local && rx_filter_match) begin
+                                    rx_commit_frame <= rx_complete_frame;
+                                    rx_commit_valid <= 1'b1;
+                                end
+                                rx_phase <= RX_IDLE;
+                                rx_tail_count <= 4'd0;
+                            end else begin
+                                rx_tail_count <= rx_tail_count + 4'd1;
+                            end
+                        end
+
+                        default: begin
+                            rx_phase <= RX_IDLE;
+                            ack_drive_reg <= 1'b1;
                         end
                     endcase
                 end
