@@ -31,11 +31,18 @@ module apb_can_tb;
     wire [31:0] prdata_a;
     wire        interrupt_a;
     wire        can_tx_a;
+    reg         crc_clear;
+    reg         crc_enable;
+    reg         crc_data_bit;
+    wire [14:0] crc_value;
+    wire [14:0] crc_next_value;
 
     integer     failures;
     integer     wait_cycles;
     integer     i;
+    integer     crc_i;
     reg  [31:0] read_data;
+    reg  [18:0] crc_bits;
 
     apb_can #(
         .SYS_CLK_FREQ     (50_000_000),
@@ -56,6 +63,16 @@ module apb_can_tb;
         .interrupt        (interrupt_a),
         .can_rx           (can_tx_a   ),
         .can_tx           (can_tx_a   )
+    );
+
+    can_crc can_crc_inst (
+        .clk            (clk           ),
+        .rst_n          (rst_n         ),
+        .clear          (crc_clear     ),
+        .enable         (crc_enable    ),
+        .data_bit       (crc_data_bit  ),
+        .crc_value      (crc_value     ),
+        .crc_next_value (crc_next_value)
     );
 
     always #(CLK_PERIOD / 2) clk = ~clk;
@@ -170,6 +187,43 @@ module apb_can_tb;
         end
     endtask
 
+    task push_crc_bit;
+        input bit_value;
+        begin
+            @(negedge clk);
+            crc_data_bit <= bit_value;
+            crc_enable <= 1'b1;
+            @(negedge clk);
+            crc_enable <= 1'b0;
+            crc_data_bit <= 1'b0;
+        end
+    endtask
+
+    task test_crc15;
+        begin
+            check32("CRC reset value", {17'd0, crc_value}, 32'd0);
+            @(negedge clk);
+            crc_clear <= 1'b1;
+            crc_enable <= 1'b1;
+            crc_data_bit <= 1'b1;
+            @(negedge clk);
+            crc_clear <= 1'b0;
+            crc_enable <= 1'b0;
+            crc_data_bit <= 1'b0;
+            check32("CRC clear has priority", {17'd0, crc_value}, 32'd0);
+
+            crc_bits = 19'b0_00100100011_0_0_0_0010;
+            for (crc_i = 18; crc_i >= 0; crc_i = crc_i - 1)
+                push_crc_bit(crc_bits[crc_i]);
+
+            check32("CRC known vector", {17'd0, crc_value}, 32'h0000_26f3);
+            repeat (3) @(posedge clk);
+            check32("CRC holds while disabled", {17'd0, crc_value},
+                    32'h0000_26f3);
+            $display("[PASS] CRC15");
+        end
+    endtask
+
     task test_apb_fifo;
         begin
             apb_read_a(ADDR_CTRL, read_data);
@@ -231,12 +285,16 @@ module apb_can_tb;
         pwrite_a   = 1'b0;
         paddr_a    = 32'd0;
         pwdata_a   = 32'd0;
+        crc_clear  = 1'b0;
+        crc_enable = 1'b0;
+        crc_data_bit = 1'b0;
         failures   = 0;
         wait_cycles = 0;
         read_data  = 32'd0;
 
         @(posedge rst_n);
         repeat (2) @(posedge clk);
+        test_crc15;
         test_apb_fifo;
 
         if (failures == 0)
