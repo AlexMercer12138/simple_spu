@@ -1,25 +1,35 @@
 unsigned int status_addr = 0x008003C0;
-unsigned int fail_addr = 0x008003C4;
+unsigned int detail_addr = 0x008003C4;
 unsigned int pass_code = 0x600D;
 unsigned int fail_code = 0x0BAD;
+unsigned int uart_base = 0x10000000;
 
-void uart_init(unsigned int baud_rate) {
-    volatile unsigned int *config = (volatile unsigned int *)0x10000004;
-    int i = 0;
+void uart_delay(int count) {
+    int index = 0;
 
-    *config = baud_rate;
-    while (i < 64) {
-        i = i + 1;
+    while (index < count) {
+        index = index + 1;
     }
 }
 
-int uart_wait_tx(void) {
-    volatile unsigned int *tx_status = (volatile unsigned int *)0x10000014;
-    int remaining = 100000;
+void uart_init(unsigned int baud_rate) {
+    volatile unsigned int *uart =
+        (volatile unsigned int *)uart_base;
 
-    while ((*tx_status & 0x100) == 0) {
-        remaining = remaining - 1;
-        if (remaining == 0) {
+    uart[0] = 0x80000000;
+    uart[1] = baud_rate;
+    uart_delay(64);
+    uart[0] = 0x0000000C;
+    uart[0] = 0x00000003;
+}
+
+int uart_wait_tx(int limit) {
+    volatile unsigned int *uart =
+        (volatile unsigned int *)uart_base;
+
+    while ((uart[5] & 0x200) != 0) {
+        limit = limit - 1;
+        if (limit == 0) {
             return 0;
         }
     }
@@ -27,50 +37,65 @@ int uart_wait_tx(void) {
 }
 
 int uart_putc(unsigned int value) {
-    volatile unsigned int *ctrl = (volatile unsigned int *)0x10000000;
-    volatile unsigned int *tx_buf = (volatile unsigned int *)0x10000010;
+    volatile unsigned int *uart =
+        (volatile unsigned int *)uart_base;
 
-    if (uart_wait_tx() == 0) {
+    if (uart_wait_tx(100000) == 0) {
         return 0;
     }
-    *tx_buf = (value & 0xFF) << 24;
-    *ctrl = 0x10;
+    uart[4] = value & 0xFF;
     return 1;
 }
 
 int uart_write(unsigned int *data, int length) {
-    int i = 0;
+    int index = 0;
 
-    while (i < length) {
-        if (uart_putc(data[i]) == 0) {
+    while (index < length) {
+        if (uart_putc(data[index]) == 0) {
             return 0;
         }
-        i = i + 1;
+        index = index + 1;
     }
+    return 1;
+}
+
+int uart_getc_with_limit(unsigned int *value, int limit) {
+    volatile unsigned int *uart =
+        (volatile unsigned int *)uart_base;
+    unsigned int discarded = 0;
+
+    while ((uart[3] & 0xFF) == 0) {
+        limit = limit - 1;
+        if (limit == 0) {
+            return 0;
+        }
+    }
+
+    discarded = uart[2];
+    *value = uart[2] & 0xFF;
     return 1;
 }
 
 int uart_getc(unsigned int *value) {
-    volatile unsigned int *ctrl = (volatile unsigned int *)0x10000000;
-    volatile unsigned int *rx_buf = (volatile unsigned int *)0x10000008;
-    volatile unsigned int *rx_status = (volatile unsigned int *)0x1000000C;
-    int remaining = 100000;
+    return uart_getc_with_limit(value, 100000);
+}
 
-    *ctrl = 0x1;
-    while ((*rx_status & 0x3) == 0) {
-        remaining = remaining - 1;
-        if (remaining == 0) {
-            return 0;
-        }
-    }
+int uart_fail(unsigned int stage) {
+    volatile unsigned int *status =
+        (volatile unsigned int *)status_addr;
+    volatile unsigned int *detail =
+        (volatile unsigned int *)detail_addr;
 
-    *value = (*rx_buf >> 24) & 0xFF;
+    *detail = stage;
+    *status = fail_code;
     return 1;
 }
 
 int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)status_addr;
-    volatile unsigned int *fail = (volatile unsigned int *)fail_addr;
+    volatile unsigned int *status =
+        (volatile unsigned int *)status_addr;
+    volatile unsigned int *detail =
+        (volatile unsigned int *)detail_addr;
     unsigned int message[8];
     unsigned int received = 0;
 
@@ -85,19 +110,21 @@ int main(void) {
 
     uart_init(100000);
     if (uart_write(message, 8) == 0) {
-        *fail = 1;
-        *status = fail_code;
-        return 1;
+        return uart_fail(1);
     }
+    if (uart_getc_with_limit(&received, 128) != 0) {
+        return uart_fail(2);
+    }
+
+    *detail = 0x1001;
     if (uart_getc(&received) == 0) {
-        *fail = 2;
-        *status = fail_code;
-        return 2;
+        return uart_fail(3);
+    }
+    if (received != 0x21) {
+        return uart_fail(4);
     }
     if (uart_putc(received) == 0) {
-        *fail = 3;
-        *status = fail_code;
-        return 3;
+        return uart_fail(5);
     }
 
     *status = pass_code;

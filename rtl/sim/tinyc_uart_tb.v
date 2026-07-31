@@ -17,6 +17,7 @@ module tinyc_uart_tb();
     localparam [15:0] FAIL_ADDR   = 16'd241;
     localparam [31:0] PASS_CODE   = 32'h0000_600d;
     localparam [31:0] FAIL_CODE   = 32'h0000_0bad;
+    localparam [31:0] UART_RX_REQUEST = 32'h0000_1001;
 
     reg         clk   = 1'b0;
     reg         rst_n = 1'b0;
@@ -56,6 +57,7 @@ module tinyc_uart_tb();
     integer cycle_count     = 0;
     integer received_count  = 0;
     integer uart_error_count = 0;
+    integer handshake_wait = 0;
     reg     uart_sequence_done = 1'b0;
     reg     firmware_pass_seen = 1'b0;
     reg     done               = 1'b0;
@@ -76,6 +78,10 @@ module tinyc_uart_tb();
         .clk            (clk),
         .rst_n          (rst_n),
         .interrupt      (uart_interrupt),
+        .tck            (1'b0),
+        .tms            (1'b1),
+        .tdi            (1'b0),
+        .tdo            (),
 
         .dlb_en         (dlb_en),
         .dlb_we         (dlb_we),
@@ -201,16 +207,27 @@ module tinyc_uart_tb();
                 uart_error_count = uart_error_count + 1;
             end
         end
-        send_uart_byte(8'h21);
-        receive_uart_byte(received_byte);
-        if (received_byte !== expected_uart_byte(received_count)) begin
-            $display("[FAIL] UART byte %0d expected=%02h actual=%02h",
-                     received_count,
-                     expected_uart_byte(received_count),
-                     received_byte);
-            uart_error_count = uart_error_count + 1;
+        while ((dlb_ram[FAIL_ADDR] !== UART_RX_REQUEST) &&
+               (handshake_wait < 100000)) begin
+            @(posedge clk);
+            handshake_wait = handshake_wait + 1;
         end
-        received_count = received_count + 1;
+        if (dlb_ram[FAIL_ADDR] !== UART_RX_REQUEST) begin
+            $display("TEST FAIL: UART RX handshake missing detail=0x%08h",
+                     dlb_ram[FAIL_ADDR]);
+            $finish;
+        end else begin
+            send_uart_byte(8'h21);
+            receive_uart_byte(received_byte);
+            if (received_byte !== expected_uart_byte(received_count)) begin
+                $display("[FAIL] UART byte %0d expected=%02h actual=%02h",
+                         received_count,
+                         expected_uart_byte(received_count),
+                         received_byte);
+                uart_error_count = uart_error_count + 1;
+            end
+            received_count = received_count + 1;
+        end
         uart_sequence_done = 1'b1;
     end
 
@@ -253,12 +270,13 @@ module tinyc_uart_tb();
                          MERC32_top_inst.u_merc32_core.prog_addr,
                          dlb_ram[STATUS_ADDR],
                          received_count);
-                $display("UART RX state: rx_en=%0d fifo_count=%0d rx_busy=%0d rx_valid=%0d rx_status=0x%08h",
-                         apb_uart_inst.rx_en,
-                         apb_uart_inst.rx_data_cnt,
+                $display("UART RX state: rx_enable=%0d fifo_count=%0d rx_busy=%0d rx_valid=%0d rx_full=%0d rx_empty=%0d",
+                         apb_uart_inst.rx_enable,
+                         apb_uart_inst.rx_fifo_count,
                          apb_uart_inst.rx_busy,
                          apb_uart_inst.uart_rx_valid,
-                         apb_uart_inst.uart_rx_status);
+                         apb_uart_inst.rx_full,
+                         apb_uart_inst.rx_empty);
                 $finish;
             end
         end
