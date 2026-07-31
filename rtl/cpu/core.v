@@ -463,7 +463,7 @@ module merc32_core #(
             intr_addr <= 32'h0;
             intr_trig <= 1'b0;
         end else begin
-            intr_en   <= regi_int[1][0];
+            intr_en   <= cpu_state == ST_INTR ? 1'b0 : regi_int[1][0];
             intr_ff0  <= interrupt;
             intr_ff1  <= intr_ff0;
             intr_ff2  <= intr_ff1;
@@ -484,7 +484,7 @@ module merc32_core #(
             intr_flag <= 1'b0;
         end else if(cpu_state == ST_INTR) begin
             intr_flag <= 1'b0;
-        end else if(intr_en & intr_trig) begin
+        end else if(intr_en & regi_int[1][0] & intr_trig) begin
             intr_flag <= 1'b1;
         end
     end

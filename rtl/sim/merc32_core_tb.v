@@ -31,9 +31,9 @@ module merc32_core_tb();
     localparam [3:0] CMP_UGT             = 4'd8;
     localparam [3:0] CMP_ULE             = 4'd9;
 
-    localparam [4:0] ST_LOAD             = 5'b00001;
-    localparam [4:0] ST_STEP             = 5'b00100;
-    localparam [4:0] ST_INTR             = 5'b01000;
+    localparam [5:0] ST_LOAD             = 6'b000001;
+    localparam [5:0] ST_STEP             = 6'b001000;
+    localparam [5:0] ST_INTR             = 6'b010000;
 
     reg         clk = 1'b0;
     reg         rst_n = 1'b0;
@@ -582,13 +582,15 @@ module merc32_core_tb();
             prepare_case;
             program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd15, 4'd0, 16'h0040);
             program_rom[1] = enc_reg(OP_REG, FUNC_SET, 4'd4, 4'd0, 4'd15);
-            capture_next_pc(32'd0, reached, next_pc);
+            wait_for_step_pc(32'd0, reached);
             check_reached("write to r15 executes", reached);
             if (reached) begin
-                check_value("write to r15 does not change control flow",
-                            next_pc, 32'h0000_0004);
                 check_value("r15 accepts software write before PC refresh",
                             merc32_core_inst.regi_int[15], 32'h0000_0040);
+                @(posedge clk);
+                #1 next_pc = merc32_core_inst.prog_addr;
+                check_value("write to r15 does not change control flow",
+                            next_pc, 32'h0000_0004);
             end
             capture_next_pc(32'h0000_0004, reached, next_pc);
             check_reached("read from r15 executes sequentially", reached);
