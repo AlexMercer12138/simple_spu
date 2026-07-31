@@ -37,7 +37,7 @@ rewrite the existing `merc32_sim.xpr`, Block Design, runs, cache, or user files.
 - Create: `rtl/sim/apb4_interconnect_tb.v`
 - Create: `rtl/bridge/apb4_interconnect.v`
 
-- [ ] **Step 1: Write the failing interconnect testbench**
+- [x] **Step 1: Write the failing interconnect testbench**
 
 Create a Verilog-2005 testbench with initialized master/slave inputs, task-based
 stimulus, commented VCD calls, and `initial #(20000)` timeout. Instantiate this
@@ -89,7 +89,7 @@ write/setup/access fields     -> forwarded unchanged
 
 End with exactly one `TEST PASS` or `TEST FAIL`.
 
-- [ ] **Step 2: Verify the expected RED result**
+- [x] **Step 2: Verify the expected RED result**
 
 Run:
 
@@ -102,7 +102,7 @@ iverilog -g2005 -Wall -s apb4_interconnect_tb `
 
 Expected: elaboration fails only with `Unknown module type: apb4_interconnect`.
 
-- [ ] **Step 3: Implement the interconnect**
+- [x] **Step 3: Implement the interconnect**
 
 Create a combinational, clock-free module. Default parameters are:
 
@@ -132,7 +132,7 @@ assign m_apb_pready = hit0 ? s0_apb_pready :
 
 Do not add buffering, registered state, an error response, or `always @(*)`.
 
-- [ ] **Step 4: Verify GREEN with Icarus and ModelSim**
+- [x] **Step 4: Verify GREEN with Icarus and ModelSim**
 
 Run:
 
@@ -153,7 +153,7 @@ Expected: one `TEST PASS` per simulator and ModelSim `Errors: 0, Warnings: 0`.
 Check vks tool availability first and use the vks lint/compile/simulate sequence
 when available; otherwise record that it is unavailable.
 
-- [ ] **Step 5: Commit the interconnect**
+- [x] **Step 5: Commit the interconnect**
 
 ```powershell
 git add -- rtl/bridge/apb4_interconnect.v rtl/sim/apb4_interconnect_tb.v
@@ -170,7 +170,7 @@ git commit -m "feat: add four-way APB interconnect"
 - Generate: `merc32-xpr/build/firmware/peripheral_test.asm`
 - Generate: `merc32-xpr/build/firmware/peripheral_test.mem`
 
-- [ ] **Step 1: Write the failing firmware-builder smoke test**
+- [x] **Step 1: Write the failing firmware-builder smoke test**
 
 Create a Node.js test that makes a temporary output directory, invokes:
 
@@ -183,7 +183,7 @@ and requires exit code zero, `peripheral_test.asm`, and
 `^[0-9a-f]{8}$`, and the image must contain from 1 through 65,536 words. The
 test removes only its own operating-system temporary directory in `finally`.
 
-- [ ] **Step 2: Verify the expected RED result**
+- [x] **Step 2: Verify the expected RED result**
 
 Run:
 
@@ -194,7 +194,7 @@ node merc32-xpr\firmware\build_firmware_test.js
 Expected: failure because `build_firmware.js` does not exist. A JavaScript
 syntax error in the test is not an acceptable RED result.
 
-- [ ] **Step 3: Write Tiny C peripheral firmware**
+- [x] **Step 3: Write Tiny C peripheral firmware**
 
 Use only Tiny C features already covered by `tinyc_feature_test.c`: integer
 globals, local arrays, pointers, functions, `while`, `if`, and bitwise
@@ -274,7 +274,7 @@ KEY 0xK\r\n                  (K=low hex digit)
 TIMER tick 0xNNNNNNNN\r\n
 ```
 
-- [ ] **Step 4: Implement the firmware builder**
+- [x] **Step 4: Implement the firmware builder**
 
 Resolve paths from `__dirname`, not the process working directory. Load:
 
@@ -299,7 +299,7 @@ and one lowercase, eight-digit hexadecimal machine word per `.mem` line. Reject
 empty images and images over 65,536 words. Print the output paths and word
 count.
 
-- [ ] **Step 5: Verify firmware compilation and builder test**
+- [x] **Step 5: Verify firmware compilation and builder test**
 
 Run:
 
@@ -313,7 +313,7 @@ node merc32-xpr\firmware\build_firmware.js `
 Expected: TypeScript compile exit zero, smoke test `TEST PASS`, and a nonempty
 FPGA `.mem` image no larger than 65,536 words.
 
-- [ ] **Step 6: Commit firmware source and builder**
+- [x] **Step 6: Commit firmware source and builder**
 
 Do not stage generated files under `merc32-xpr/build/`.
 
@@ -331,7 +331,7 @@ git commit -m "feat: add FPGA peripheral validation firmware"
 - Create: `rtl/fpga/merc32_soc.v`
 - Reuse: CPU, local RAM, APB bridge, interconnect, and peripheral RTL
 
-- [ ] **Step 1: Implement `merc32_soc`**
+- [x] **Step 1: Implement `merc32_soc`**
 
 Use this board-independent interface:
 
@@ -386,7 +386,7 @@ Leave `gpio_t` internal. Route timer `pwm1` to `buzzer`; keep `pwm0` internal.
 The I2C cores' constant-low `scl_o` and `sda_o` outputs remain internal; export
 only `scl_t/sda_t` and sampled inputs.
 
-- [ ] **Step 2: Run static Verilog elaboration**
+- [x] **Step 2: Run static Verilog elaboration**
 
 Per the approved scope, do not add a SoC integration testbench. Run compile-only
 elaboration to catch missing ports/modules and Verilog errors:
@@ -404,7 +404,7 @@ iverilog -g2005 -Wall -s merc32_soc -tnull `
 Expected: exit zero. Existing warnings must be reviewed; no undefined module or
 port-width warning is accepted.
 
-- [ ] **Step 3: Commit the SoC integration**
+- [x] **Step 3: Commit the SoC integration**
 
 ```powershell
 git add -- rtl/fpga/merc32_soc.v
@@ -418,7 +418,7 @@ git commit -m "feat: integrate MERC32 FPGA SoC"
 - Create: `rtl/fpga/merc32_fpga_top.v`
 - Modify: `merc32-xpr/pin.xdc`
 
-- [ ] **Step 1: Implement the board top**
+- [x] **Step 1: Implement the board top**
 
 Use this exact top-level port set:
 
@@ -453,7 +453,7 @@ assign beep = buzzer;
 Do not add clock generation, reset delays, debounce logic, or CPU custom JTAG
 ports.
 
-- [ ] **Step 2: Complete board constraints**
+- [x] **Step 2: Complete board constraints**
 
 Replace the commented clock line with an active 20 ns clock and preserve the
 existing clock/reset/UART pins. Add:
@@ -468,7 +468,7 @@ beep AA18, LVCMOS33
 Use one `set_property -dict` statement per port. Do not constrain FPGA
 configuration JTAG pins.
 
-- [ ] **Step 3: Run compile-only top elaboration**
+- [x] **Step 3: Run compile-only top elaboration**
 
 Run the Task 3 source list plus `rtl/fpga/merc32_fpga_top.v` with:
 
@@ -479,7 +479,7 @@ iverilog -g2005 -Wall -s merc32_fpga_top -tnull <source-list>
 Expected: exit zero and no missing/width errors. This is static elaboration,
 not the declined SoC integration simulation.
 
-- [ ] **Step 4: Commit board integration**
+- [x] **Step 4: Commit board integration**
 
 `merc32-xpr` is currently untracked; stage only the constraint file and the new
 top, not caches, runs, the legacy XPR, or generated Block Design files.
@@ -496,7 +496,7 @@ git commit -m "feat: add ShengTeng Mini FPGA top"
 - Create: `merc32-xpr/build_fpga.tcl`
 - Create: `merc32-xpr/build_fpga.ps1`
 
-- [ ] **Step 1: Write the Vivado build Tcl script**
+- [x] **Step 1: Write the Vivado build Tcl script**
 
 Resolve repository and output paths relative to `[info script]`. Create a fresh
 project at `merc32-xpr/build/vivado/merc32_fpga.xpr` for part
@@ -527,7 +527,7 @@ Copy the generated bitstream to:
 merc32-xpr/build/merc32_fpga_top.bit
 ```
 
-- [ ] **Step 2: Write the PowerShell build entry point**
+- [x] **Step 2: Write the PowerShell build entry point**
 
 Resolve the repository root from `$PSScriptRoot`. Run, in order:
 
@@ -541,7 +541,7 @@ vivado -mode batch -nolog -nojournal -source <build_fpga.tcl>
 Use `$ErrorActionPreference = 'Stop'` and check `$LASTEXITCODE` after every
 external command. Do not delete anything outside `merc32-xpr/build/`.
 
-- [ ] **Step 3: Run the full FPGA build**
+- [x] **Step 3: Run the full FPGA build**
 
 Run:
 
@@ -564,7 +564,7 @@ If the build fails, use systematic debugging and add a failing regression test
 for any RTL behavior change. Build/configuration fixes remain scoped to the
 new FPGA integration.
 
-- [ ] **Step 4: Commit reproducible build scripts**
+- [x] **Step 4: Commit reproducible build scripts**
 
 ```powershell
 git add -- merc32-xpr/build_fpga.tcl merc32-xpr/build_fpga.ps1
@@ -580,7 +580,7 @@ git commit -m "build: add reproducible FPGA bitstream flow"
 - Create: `merc32-xpr/capture_serial.ps1`
 - Create: `merc32-xpr/README.md`
 
-- [ ] **Step 1: Write the hardware programming scripts**
+- [x] **Step 1: Write the hardware programming scripts**
 
 The Tcl script accepts the bitstream path as its sole Tcl argument. It must:
 
@@ -603,7 +603,7 @@ The PowerShell wrapper verifies
 `merc32-xpr/build/merc32_fpga_top.bit`, invokes Vivado batch mode with
 `-tclargs`, checks the exit code, and prints the programmed bitstream path.
 
-- [ ] **Step 2: Write bounded serial capture**
+- [x] **Step 2: Write bounded serial capture**
 
 Accept parameters:
 
@@ -617,7 +617,7 @@ bit, no handshake. Set finite read/write timeouts, discard stale input, write
 one `U` byte to exercise UART RX echo, and print received text until the
 deadline. Always close and dispose the port in `finally`.
 
-- [ ] **Step 3: Write the FPGA bring-up README**
+- [x] **Step 3: Write the FPGA bring-up README**
 
 Document:
 
@@ -635,7 +635,7 @@ one-second timer interrupt behavior
 CPU custom JTAG intentionally disabled
 ```
 
-- [ ] **Step 4: Program the connected FPGA**
+- [x] **Step 4: Program the connected FPGA**
 
 Run:
 
@@ -662,7 +662,7 @@ or bounded failure, echoed `U`, and at least two increasing timer ticks. LED/key
 acceptance requires pressing the four board keys while capture runs; record any
 part that cannot be physically observed from the host.
 
-- [ ] **Step 6: Commit programming and operator documentation**
+- [x] **Step 6: Commit programming and operator documentation**
 
 ```powershell
 git add -- merc32-xpr/program_fpga.tcl merc32-xpr/program_fpga.ps1 `
@@ -677,20 +677,20 @@ git commit -m "docs: add FPGA programming and board test flow"
 - Verify: all files created or modified above
 - Modify: `docs/superpowers/plans/2026-07-31-fpga-peripheral-bringup.md`
 
-- [ ] **Step 1: Run fresh interconnect verification**
+- [x] **Step 1: Run fresh interconnect verification**
 
 Recompile from source and rerun Icarus and ModelSim. Require one `TEST PASS`,
 no failure/timeout marker, and zero ModelSim errors/warnings. Record vks
 availability and any vks issue observed; never report a vks pass when tools are
 absent.
 
-- [ ] **Step 2: Rebuild firmware and bitstream from clean generated output**
+- [x] **Step 2: Rebuild firmware and bitstream from clean generated output**
 
 Remove only `merc32-xpr/build/` after resolving and verifying that exact path is
 inside the workspace, then rerun `build_fpga.ps1`. Require firmware, synth,
 implementation, timing, DRC, and bitstream checks to pass.
 
-- [ ] **Step 3: Audit style and change scope**
+- [x] **Step 3: Audit style and change scope**
 
 Run:
 
@@ -705,13 +705,13 @@ Expected: no prohibited Verilog matches and no whitespace errors. Confirm that
 no legacy BD/cache/run file, existing CPU/peripheral source, or unrelated user
 change was staged by this task.
 
-- [ ] **Step 4: Mark the implementation checklist complete**
+- [x] **Step 4: Mark the implementation checklist complete**
 
 Change executed task checkboxes to `[x]`. A hardware/serial observation that is
 impossible because the device or COM port is unavailable remains explicitly
 unchecked and is reported as a hardware blocker; do not mark it complete.
 
-- [ ] **Step 5: Commit the completion record**
+- [x] **Step 5: Commit the completion record**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-31-fpga-peripheral-bringup.md
@@ -719,10 +719,36 @@ git diff --cached --check
 git commit -m "docs: record FPGA peripheral bring-up results"
 ```
 
-- [ ] **Step 6: Prepare the final report**
+- [x] **Step 6: Prepare the final report**
 
 Report exact commits, source files, address/pin maps, firmware word count,
 interconnect simulation results, Vivado synthesis/implementation/timing/DRC
 results, bitstream path, hardware programming result, serial output observed,
 manual key/LED status, vks availability, retained build artifacts, and
 confirmation that unrelated worktree changes remain untouched.
+
+## Execution Record (2026-07-31)
+
+- Tasks 1-5 were committed as `12793b0`, `91fb718`, `b13560b`, `943e291`,
+  and `ec6bb3a`. Programming/operator files were committed as `2898d48`.
+- The first full firmware run exposed two CPU/toolchain issues. The final image
+  includes the user's uncommitted `core.v` local-data enable fix and the Tiny C
+  IRQ context fix committed as `eefc93c`.
+- The Tiny C IRQ regression first failed because `r7/r8` were clobbered and
+  `r1[0]` remained clear. It then passed with two interrupts and preserved
+  `r4-r14`. The C compiler integration test and `core_full_tb` also passed.
+- Fresh APB interconnect runs passed in Icarus and ModelSim; ModelSim reported
+  zero errors and zero warnings. vks tools were unavailable in this session,
+  so no vks pass is claimed and no new vks bug was observed.
+- Recursive deletion was blocked by the execution policy. The verified
+  `merc32-xpr/build` directory was moved to the recoverable
+  `merc32-xpr/build/pre-clean-backup` directory, and the active build output
+  was then created from scratch.
+- The clean build generated 2,021 firmware words, completed synthesis and
+  implementation, reported `WNS = +4.357 ns` and zero DRC errors, and produced
+  `merc32-xpr/build/merc32_fpga_top.bit`.
+- FPGA Hardware Manager selected the connected `xc7a200t` and reported
+  `PROGRAM PASS`. COM14 output included `MERC32 FPGA`, `GPIO OK`,
+  `I2C OK 0x53 0xFF`, `KEY 0x0`, echoed `U`, and increasing timer ticks.
+- Physical observation of the startup LED sequence and pressing all four keys
+  was not possible from the host, so Task 6 Step 5 remains unchecked.
