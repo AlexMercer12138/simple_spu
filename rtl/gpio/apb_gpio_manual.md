@@ -1,99 +1,254 @@
-# APB GPIO Programming Manual
+# APB GPIO 中文编程手册
 
-## Interface
+## 1. 模块概述
 
-`apb_gpio` controls 32 independent GPIO pins from one 32-bit APB slave. Each
-physical pin is split into an input, output value, and output-disable signal:
+`apb_gpio` 是一个 32 位 APB GPIO 外设，可独立设置 32 个引脚的输入或输出
+方向。模块提供直接输出、原子置位、原子清零、原子翻转、双级同步输入和每引脚
+粘滞中断状态。
 
-```verilog
-input  wire [31:0] gpio_i;
-output wire [31:0] gpio_o;
-output wire [31:0] gpio_t;
-```
+32 个引脚共用一种中断触发类型，可选择低电平、高电平、上升沿、下降沿或双边沿；
+每个引脚具有独立的中断使能位和待处理状态位。
 
-For each bit, `GPIO_DIR=1` selects output mode and `GPIO_DIR=0` selects input
-mode. The external output buffer connections are:
+## 2. 接口与引脚方向
+
+### 2.1 APB 与中断端口
+
+| 端口 | 方向 | 说明 |
+|---|---|---|
+| `s_apb_pclk` | 输入 | APB 和 GPIO 内部逻辑时钟 |
+| `s_apb_presetn` | 输入 | 同步低有效复位 |
+| `s_apb_psel` | 输入 | APB 从机选择 |
+| `s_apb_penable` | 输入 | APB 访问阶段指示 |
+| `s_apb_pwrite` | 输入 | `1` 为写，`0` 为读 |
+| `s_apb_paddr[31:0]` | 输入 | APB 字节地址 |
+| `s_apb_pwdata[31:0]` | 输入 | APB 写数据 |
+| `s_apb_pready` | 输出 | APB 传输完成应答 |
+| `s_apb_pslverr` | 输出 | 恒为 `0` |
+| `s_apb_prdata[31:0]` | 输出 | APB 读数据 |
+| `interrupt` | 输出 | 所有已使能待处理位的逻辑或 |
+
+### 2.2 GPIO 物理端口
+
+| 端口 | 方向 | 说明 |
+|---|---|---|
+| `gpio_i[31:0]` | 输入 | 引脚实际输入电平 |
+| `gpio_o[31:0]` | 输出 | 输出锁存值 |
+| `gpio_t[31:0]` | 输出 | 输出三态控制；`1` 为高阻输入，`0` 为驱动输出 |
+
+每一位的关系如下：
 
 ```text
-gpio_o = GPIO_OUT
-gpio_t = ~GPIO_DIR
+GPIO_DIR[n] = 0 -> 输入，gpio_t[n] = 1
+GPIO_DIR[n] = 1 -> 输出，gpio_t[n] = 0
+gpio_o[n] = GPIO_OUT[n]
 ```
 
-The output latch remains visible on `gpio_o` while a pin is an input. Software
-can therefore prepare an output value before changing the direction.
+引脚处于输入模式时，`gpio_o` 仍保持输出锁存值。软件可以先设置输出电平，再把
+方向改为输出，以避免方向切换时出现不期望的瞬态电平。
 
-## APB Behavior
+## 3. APB 访问行为
 
-The slave uses byte addresses and returns a registered `PREADY` after one wait
-cycle. `PSLVERR` is always zero. Undefined reads return zero and undefined
-writes have no effect. Read data is captured during the APB setup phase and
-held through transfer completion.
+寄存器按 32 位对齐，使用 `s_apb_paddr[11:2]` 译码。被选中的传输包含一个
+等待周期；读数据在 APB setup 阶段锁存，并保持到传输完成。
 
-Writing `CTRL.SOFT_RST` performs a synchronous peripheral reset. The reset
-pulse has priority over every other operation in that transfer.
+未定义地址读取返回零，未定义地址写入无效，`s_apb_pslverr` 恒为 `0`。
+`CTRL.SOFT_RST` 产生同步软复位，优先于同一次传输中的其他操作。
 
-## Register Map
+## 4. 寄存器总表
 
-| Offset | Register | Access | Reset | Description |
+| 偏移 | 寄存器 | 访问 | 复位值 | 说明 |
 |---:|---|---|---:|---|
-| `0x00` | `CTRL` | R/W | `0x00000000` | Bit 31 is the write-only `SOFT_RST` pulse |
-| `0x04` | `GPIO_DIR` | R/W | `0x00000000` | Per-pin direction, `1=output` |
-| `0x08` | `GPIO_OUT` | R/W | `0x00000000` | Output latch |
-| `0x0C` | `GPIO_SET` | W | `0x00000000` | Write-one atomic set; reads zero |
-| `0x10` | `GPIO_CLEAR` | W | `0x00000000` | Write-one atomic clear; reads zero |
-| `0x14` | `GPIO_TOGGLE` | W | `0x00000000` | Write-one atomic toggle; reads zero |
-| `0x18` | `GPIO_IN` | R | `0x00000000` | Synchronized input value |
-| `0x1C` | `IRQ_TYPE` | R/W | `0x00000007` | Global trigger type in bits `[2:0]` |
-| `0x20` | `IRQ_ENABLE` | R/W | `0x00000000` | Per-pin interrupt enable mask |
-| `0x24` | `IRQ_STATUS` | R/W1C | `0x00000000` | Per-pin sticky raw pending bits |
+| `0x00` | `CTRL` | W1P | `0x0000_0000` | 外设软复位；读取返回零 |
+| `0x04` | `GPIO_DIR` | R/W | `0x0000_0000` | 每引脚方向，`1` 为输出 |
+| `0x08` | `GPIO_OUT` | R/W | `0x0000_0000` | 32 位输出锁存器 |
+| `0x0C` | `GPIO_SET` | W | - | 写 `1` 原子置位对应输出；读取返回零 |
+| `0x10` | `GPIO_CLEAR` | W | - | 写 `1` 原子清零对应输出；读取返回零 |
+| `0x14` | `GPIO_TOGGLE` | W | - | 写 `1` 原子翻转对应输出；读取返回零 |
+| `0x18` | `GPIO_IN` | R | `0x0000_0000` | 双级同步后的输入值 |
+| `0x1C` | `IRQ_TYPE` | R/W | `0x0000_0007` | 全局中断触发类型 |
+| `0x20` | `IRQ_ENABLE` | R/W | `0x0000_0000` | 每引脚中断使能掩码 |
+| `0x24` | `IRQ_STATUS` | R/W1C | `0x0000_0000` | 每引脚粘滞原始待处理位 |
 
-## Input Synchronization
+## 5. 寄存器说明
 
-`gpio_i` passes through two clocked synchronization registers. A separate
-valid pipeline suppresses `GPIO_IN` and event detection until two complete
-`PCLK` sampling edges have occurred after hardware or software reset.
-`GPIO_IN` reads zero before that point.
+### 5.1 CTRL，偏移 `0x00`
 
-The previous synchronized sample is updated every valid cycle, including for
-output-configured pins. Consequently, changing a stable pin from output to
-input does not create a false edge event.
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `31` | `SOFT_RST` | W1P | 写 `1` 同步复位整个 GPIO 外设 |
 
-## Interrupts
+`CTRL` 读取恒为零。软复位会把全部引脚恢复为输入，清零输出锁存器和中断使能，
+把 `IRQ_TYPE` 恢复为禁用编码 `7`，并清除全部待处理状态。
 
-`IRQ_TYPE[2:0]` applies globally to all input-configured pins:
+### 5.2 GPIO_DIR，偏移 `0x04`
 
-| Value | Trigger |
+每一位控制一个引脚方向：
+
+| 位值 | 模式 | `gpio_t` |
+|---:|---|---:|
+| `0` | 输入/高阻 | `1` |
+| `1` | 输出驱动 | `0` |
+
+只有输入模式的引脚可以产生新的中断事件。方向变化不会清除已存在的
+`IRQ_STATUS`；若某位已有待处理状态，仍需软件 W1C 清除。
+
+### 5.3 GPIO_OUT，偏移 `0x08`
+
+读写完整的 32 位输出锁存器。直接写入适合一次性更新全部输出，但软件读改写时
+可能与中断处理程序或其他执行上下文发生竞争。只修改少量位时，优先使用下面的
+原子命令寄存器。
+
+### 5.4 GPIO_SET、GPIO_CLEAR、GPIO_TOGGLE
+
+| 偏移 | 寄存器 | 写入效果 |
+|---:|---|---|
+| `0x0C` | `GPIO_SET` | 将 `write_data` 中为 `1` 的输出位置位 |
+| `0x10` | `GPIO_CLEAR` | `GPIO_OUT = GPIO_OUT & ~write_data` |
+| `0x14` | `GPIO_TOGGLE` | `GPIO_OUT = GPIO_OUT ^ write_data` |
+
+写数据为 `1` 的位执行对应操作，为 `0` 的位保持不变。三个寄存器读取均返回零。
+一次 APB 写即可完成目标位修改，不需要读取 `GPIO_OUT` 后再写回。
+
+### 5.5 GPIO_IN，偏移 `0x18`
+
+`gpio_i` 经过两个时钟寄存器同步后才供软件读取。硬件复位或软复位后，独立的
+有效流水线会屏蔽输入值和中断检测，直到完成两个 `PCLK` 采样边沿；在此之前
+`GPIO_IN` 返回零。
+
+该同步器主要降低异步输入的亚稳态传播风险，不提供去抖功能。机械按键等信号仍
+需外部电路或软件定时去抖。读取 `GPIO_IN` 没有副作用。
+
+### 5.6 IRQ_TYPE，偏移 `0x1C`
+
+`IRQ_TYPE[2:0]` 对全部 32 个输入引脚生效：
+
+| 值 | 触发条件 |
 |---:|---|
-| `0` | Low level |
-| `1` | High level |
-| `2` | Rising edge |
-| `3` | Falling edge |
-| `4` | Either edge |
-| `5`-`7` | Reserved; no event |
+| `0` | 低电平 |
+| `1` | 高电平 |
+| `2` | 上升沿 |
+| `3` | 下降沿 |
+| `4` | 任意边沿 |
+| `5`、`6`、`7` | 禁止事件检测 |
 
-Only pins with `GPIO_DIR=0` generate new events. `IRQ_STATUS` records raw
-events whether or not the corresponding `IRQ_ENABLE` bit is set. The combined
-output is asserted when any enabled pending bit is set:
+写 `IRQ_TYPE` 有三个同步副作用：
+
+- 清除全部 `IRQ_STATUS` 位；
+- 在该次写入对应的时钟禁止产生新事件；
+- 以当前同步输入重建边沿历史基准。
+
+因此，改变触发类型不会把当前稳定电平误判为一次边沿。若使用电平触发且输入
+已经处于有效电平，状态会在类型写入后的下一拍重新置位。
+
+### 5.7 IRQ_ENABLE，偏移 `0x20`
+
+每一位控制对应 GPIO 待处理状态是否参与中断输出。使能只影响输出，不影响事件
+记录；引脚中断被屏蔽时发生的事件仍会置位 `IRQ_STATUS`。以后再使能该位会立刻
+使已有待处理状态驱动 `interrupt`。
+
+### 5.8 IRQ_STATUS，偏移 `0x24`
+
+每一位是对应输入引脚的粘滞原始待处理状态。中断输出关系为：
 
 ```text
 interrupt = |(IRQ_STATUS & IRQ_ENABLE)
 ```
 
-Write ones to `IRQ_STATUS` to clear handled bits. Event set has priority over
-W1C, so clearing an active level in the same cycle leaves that bit pending. An
-edge pending bit remains clear after W1C until a new matching transition.
+向某位写 `1` 清除该位，写 `0` 保持不变。新的硬件事件与 W1C 同拍发生时，
+事件置位优先。
 
-Writing `IRQ_TYPE` clears all pending bits, suppresses event detection for that
-transfer, and rebases edge history to the current synchronized input. This
-prevents a type change from being interpreted as an edge.
+对于边沿触发，W1C 后状态保持清零，直到出现新的目标边沿。对于电平触发，若
+输入仍处于有效电平，状态无法持续清除：同拍事件会立即覆盖 W1C，或在后续一拍
+重新置位。因此电平中断服务程序必须先消除外部中断条件，再执行 W1C。
 
-## Recommended Programming Order
+只有 `GPIO_DIR=0` 的引脚能产生新事件。边沿历史仍会在输出模式期间持续跟踪
+`gpio_i`，所以把一个稳定引脚从输出改为输入不会凭空产生边沿。
 
-```text
-1. Write GPIO_OUT or an atomic output register.
-2. Write GPIO_DIR to enable selected outputs.
-3. Write IRQ_TYPE; this clears old pending state.
-4. Clear IRQ_STATUS with all ones.
-5. Write IRQ_ENABLE.
-6. Service IRQ_STATUS and clear handled bits with W1C.
+## 6. 编程指导
+
+以下伪代码假定 `GPIO` 指向 GPIO 寄存器基地址。
+
+### 6.1 无毛刺地配置输出
+
+```c
+/* 先准备输出值，再打开输出驱动 */
+GPIO->GPIO_CLEAR = LED_MASK;
+GPIO->GPIO_SET = initial_high_mask;
+GPIO->GPIO_DIR |= LED_MASK;
 ```
+
+若多个执行上下文会操作不同 GPIO 位，应使用 `GPIO_SET/CLEAR/TOGGLE`，避免
+`GPIO_OUT` 读改写覆盖其他上下文刚刚完成的更新。
+
+### 6.2 读取输入
+
+```c
+uint32_t value = GPIO->GPIO_IN & input_mask;
+```
+
+系统复位后至少等待两个 `PCLK` 再依赖输入值。对于按键等慢速输入，软件应在
+多次一致采样后再确认状态。
+
+### 6.3 配置边沿中断
+
+```c
+GPIO->IRQ_ENABLE &= ~input_mask;         /* 配置期间先屏蔽 */
+GPIO->GPIO_DIR &= ~input_mask;           /* 设为输入 */
+wait_pclk(2);                            /* 等待同步输入稳定 */
+GPIO->IRQ_TYPE = GPIO_IRQ_RISING;        /* 清状态并重建边沿基准 */
+GPIO->IRQ_STATUS = input_mask;           /* 清除可能的旧状态 */
+GPIO->IRQ_ENABLE |= input_mask;
+```
+
+由于触发类型是全局配置，不能同时让一组引脚检测上升沿、另一组引脚检测下降沿。
+需要混合策略时，可统一使用双边沿并在 ISR 中读取 `GPIO_IN` 判断当前电平。
+
+### 6.4 中断服务程序
+
+边沿中断可先保存待处理位，再 W1C：
+
+```c
+void gpio_edge_isr(void)
+{
+    uint32_t pending = GPIO->IRQ_STATUS & GPIO->IRQ_ENABLE;
+
+    GPIO->IRQ_STATUS = pending;
+    handle_gpio_edges(pending, GPIO->GPIO_IN);
+}
+```
+
+电平中断应先让外部设备撤销有效电平，再清状态：
+
+```c
+void gpio_level_isr(void)
+{
+    uint32_t pending = GPIO->IRQ_STATUS & GPIO->IRQ_ENABLE;
+
+    service_external_sources(pending);   /* 先消除中断条件 */
+    GPIO->IRQ_STATUS = pending;
+}
+```
+
+如果外部条件暂时无法清除，可先清对应 `IRQ_ENABLE` 位，待条件消失后 W1C 并
+重新使能，避免 CPU 持续响应同一电平中断。
+
+### 6.5 推荐初始化顺序
+
+1. 写 `GPIO_OUT` 或原子输出寄存器，准备初始电平；
+2. 写 `GPIO_DIR`，使能所需输出；
+3. 等待输入同步有效；
+4. 写 `IRQ_TYPE`，同时清除旧状态并重建边沿历史；
+5. W1C 清除需要处理的 `IRQ_STATUS`；
+6. 最后写 `IRQ_ENABLE`。
+
+## 7. 使用限制与检查清单
+
+- `GPIO_DIR=1` 表示输出，且 `gpio_t=0`；
+- 输出锁存器与方向独立，可先准备电平再切换方向；
+- 原子输出寄存器读取恒为零，不保存写入值；
+- `GPIO_IN` 和中断检测使用双级同步，但不包含去抖；
+- 全部引脚共用一个 `IRQ_TYPE`；
+- 输出引脚不会产生新中断事件，但已有待处理位不会因改为输出而自动清除；
+- 写 `IRQ_TYPE` 会清除所有待处理位；
+- 电平条件存在时，必须先消除条件才能可靠清除待处理位；
+- 无效地址不会产生 `PSLVERR`。

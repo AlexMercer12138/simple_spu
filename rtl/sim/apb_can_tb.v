@@ -62,7 +62,6 @@ module apb_can_tb;
     wire        timing_bit_end;
 
     integer     failures;
-    integer     wait_cycles;
     integer     i;
     integer     crc_i;
     integer     cycle_count;
@@ -203,6 +202,7 @@ module apb_can_tb;
     task apb_write_a;
         input [31:0] address;
         input [31:0] data;
+        integer wait_count;
         begin
             @(negedge clk);
             psel_a    <= 1'b1;
@@ -212,10 +212,10 @@ module apb_can_tb;
             pwdata_a  <= data;
             @(negedge clk);
             penable_a <= 1'b1;
-            wait_cycles = 0;
-            while (!pready_a && (wait_cycles < 16)) begin
+            wait_count = 0;
+            while (!pready_a && (wait_count < 16)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                wait_count = wait_count + 1;
             end
             if (!pready_a) begin
                 failures = failures + 1;
@@ -233,6 +233,7 @@ module apb_can_tb;
     task apb_read_a;
         input  [31:0] address;
         output [31:0] data;
+        integer wait_count;
         begin
             @(negedge clk);
             psel_a    <= 1'b1;
@@ -242,10 +243,10 @@ module apb_can_tb;
             pwdata_a  <= 32'd0;
             @(negedge clk);
             penable_a <= 1'b1;
-            wait_cycles = 0;
-            while (!pready_a && (wait_cycles < 16)) begin
+            wait_count = 0;
+            while (!pready_a && (wait_count < 16)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                wait_count = wait_count + 1;
             end
             if (!pready_a) begin
                 failures = failures + 1;
@@ -264,6 +265,7 @@ module apb_can_tb;
     task apb_write_b;
         input [31:0] address;
         input [31:0] data;
+        integer wait_count;
         begin
             @(negedge clk);
             psel_b    <= 1'b1;
@@ -273,10 +275,10 @@ module apb_can_tb;
             pwdata_b  <= data;
             @(negedge clk);
             penable_b <= 1'b1;
-            wait_cycles = 0;
-            while (!pready_b && (wait_cycles < 16)) begin
+            wait_count = 0;
+            while (!pready_b && (wait_count < 16)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                wait_count = wait_count + 1;
             end
             if (!pready_b) begin
                 failures = failures + 1;
@@ -293,6 +295,7 @@ module apb_can_tb;
     task apb_read_b;
         input  [31:0] address;
         output [31:0] data;
+        integer wait_count;
         begin
             @(negedge clk);
             psel_b    <= 1'b1;
@@ -302,10 +305,10 @@ module apb_can_tb;
             pwdata_b  <= 32'd0;
             @(negedge clk);
             penable_b <= 1'b1;
-            wait_cycles = 0;
-            while (!pready_b && (wait_cycles < 16)) begin
+            wait_count = 0;
+            while (!pready_b && (wait_count < 16)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                wait_count = wait_count + 1;
             end
             if (!pready_b) begin
                 failures = failures + 1;
@@ -346,6 +349,22 @@ module apb_can_tb;
             apb_write_a(ADDR_TX_DATA0, payload[31:0]);
             apb_write_a(ADDR_TX_DATA1, payload[63:32]);
             apb_write_a(ADDR_TX_CMD, 32'h0000_0001);
+        end
+    endtask
+
+    task push_frame_b;
+        input [28:0] identifier;
+        input ide;
+        input rtr;
+        input [3:0] dlc;
+        input [63:0] payload;
+        begin
+            apb_write_b(ADDR_TX_ID, {3'd0, identifier});
+            apb_write_b(ADDR_TX_CTRL,
+                        {26'd0, ide, rtr, dlc});
+            apb_write_b(ADDR_TX_DATA0, payload[31:0]);
+            apb_write_b(ADDR_TX_DATA1, payload[63:32]);
+            apb_write_b(ADDR_TX_CMD, 32'h0000_0001);
         end
     endtask
 
@@ -716,6 +735,96 @@ module apb_can_tb;
         end
     endtask
 
+    task prepare_arbitration_nodes;
+        input [4:0] ctrl_a_disabled;
+        begin
+            apb_write_a(ADDR_CTRL, {22'd0, 1'b1, 4'd0,
+                                    ctrl_a_disabled});
+            apb_write_b(ADDR_CTRL, 32'h0000_0208);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_a(ADDR_ERROR_STATUS, 32'h0000_03ff);
+            apb_write_b(ADDR_ERROR_STATUS, 32'h0000_03ff);
+        end
+    endtask
+
+    task test_arbitration_retry_abort;
+        begin
+            prepare_arbitration_nodes(5'b01000);
+            push_frame_a(29'h0000_0120, 1'b0, 1'b0, 4'd1, 64'ha1);
+            push_frame_b(29'h0000_0080, 1'b0, 1'b0, 4'd1, 64'hb2);
+            fork
+                apb_write_a(ADDR_CTRL, 32'h0000_0009);
+                apb_write_b(ADDR_CTRL, 32'h0000_0009);
+            join
+            wait_irq_a(16'h0020);
+            wait_irq_b(16'h0002);
+            wait_irq_a(16'h0002);
+            wait_irq_a(16'h0001);
+            wait_irq_b(16'h0001);
+            pop_and_check_frame_a(29'h0000_0080, 1'b0, 1'b0, 4'd1,
+                                  64'hb2);
+            pop_and_check_frame_b(29'h0000_0120, 1'b0, 1'b0, 4'd1,
+                                  64'ha1);
+            apb_write_a(ADDR_CTRL, 32'h0000_0008);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+
+            prepare_arbitration_nodes(5'b01000);
+            push_frame_a(29'h048c_0001, 1'b1, 1'b0, 4'd1, 64'he1);
+            push_frame_b(29'h0000_0123, 1'b0, 1'b0, 4'd1, 64'h53);
+            fork
+                apb_write_a(ADDR_CTRL, 32'h0000_0009);
+                apb_write_b(ADDR_CTRL, 32'h0000_0009);
+            join
+            wait_irq_a(16'h0020);
+            wait_irq_b(16'h0002);
+            wait_irq_a(16'h0002);
+            pop_and_check_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd1,
+                                  64'h53);
+            pop_and_check_frame_b(29'h048c_0001, 1'b1, 1'b0, 4'd1,
+                                  64'he1);
+            apb_write_a(ADDR_CTRL, 32'h0000_0008);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+
+            prepare_arbitration_nodes(5'b00000);
+            push_frame_a(29'h0000_0550, 1'b0, 1'b0, 4'd1, 64'h55);
+            push_frame_b(29'h0000_0010, 1'b0, 1'b0, 4'd1, 64'h10);
+            fork
+                apb_write_a(ADDR_CTRL, 32'h0000_0001);
+                apb_write_b(ADDR_CTRL, 32'h0000_0009);
+            join
+            wait_irq_a(16'h0020);
+            wait_irq_a(16'h0010);
+            wait_irq_b(16'h0002);
+            apb_read_a(ADDR_FIFO_STATUS, read_data);
+            check_true("one-shot arbitration loser releases active frame",
+                       !read_data[20]);
+            apb_write_a(ADDR_CTRL, 32'h0000_0000);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+
+            prepare_arbitration_nodes(5'b01000);
+            push_frame_a(29'h0000_0700, 1'b0, 1'b0, 4'd8,
+                         64'h0707_0707_0707_0707);
+            push_frame_b(29'h0000_0001, 1'b0, 1'b0, 4'd8,
+                         64'h0101_0101_0101_0101);
+            fork
+                apb_write_a(ADDR_CTRL, 32'h0000_0009);
+                apb_write_b(ADDR_CTRL, 32'h0000_0009);
+            join
+            wait_irq_a(16'h0020);
+            apb_write_a(ADDR_TX_CMD, 32'h0000_0002);
+            wait_irq_a(16'h8000);
+            wait_irq_b(16'h0002);
+            apb_read_a(ADDR_IRQ_STATUS, read_data);
+            check_true("aborted arbitration loser is not TX done",
+                       !read_data[1]);
+            apb_write_a(ADDR_CTRL, 32'h0000_0008);
+            apb_write_b(ADDR_CTRL, 32'h0000_0008);
+            $display("[PASS] ARBITRATION_RETRY");
+            $display("[PASS] SAFE_ABORT");
+        end
+    endtask
+
     initial begin
         // $dumpfile("apb_can_tb.vcd");
         // $dumpvars(0, apb_can_tb);
@@ -737,7 +846,6 @@ module apb_can_tb;
         timing_resync_enable = 1'b1;
         timing_can_rx = 1'b1;
         failures   = 0;
-        wait_cycles = 0;
         cycle_count = 0;
         poll_count = 0;
         monitor_loopback = 1'b0;
@@ -751,6 +859,7 @@ module apb_can_tb;
         test_apb_fifo;
         test_loopback_frames;
         test_two_node_ack_filter;
+        test_arbitration_retry_abort;
 
         if (failures == 0)
             $display("APB CAN TEST PASS");

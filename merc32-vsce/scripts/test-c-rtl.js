@@ -2,10 +2,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { compileC } = require('../out/cCompiler');
-const { SimpleCPUAssembler } = require('../out/assembler');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const toolchainRoot = process.env.MERC32_TOOLCHAIN_ROOT
+    ? path.resolve(process.env.MERC32_TOOLCHAIN_ROOT)
+    : path.resolve(__dirname, '..');
+const { compileC } = require(path.join(toolchainRoot, 'out', 'cCompiler'));
+const { SimpleCPUAssembler } = require(path.join(toolchainRoot, 'out', 'assembler'));
 const commandTimeoutEnv = 'MERC32_RTL_COMMAND_TIMEOUT_MS';
 const defaultCommandTimeoutMs = 120_000;
 

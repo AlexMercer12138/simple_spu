@@ -70,9 +70,13 @@ significant bit in `Shift-IR` or `Shift-DR`; it is zero in other states. All
 IR and DR scans are least-significant-bit first.
 
 There is no `trst` pin. Five or more rising `tck` edges with `tms=1` drive the
-TAP to `Test-Logic-Reset`. The existing top-level `rst_n` also resets the TAP
-and CDC logic. Reset assertion is asynchronous; reset release is synchronized
-independently into the `tck` and `clk` domains.
+TAP to `Test-Logic-Reset`. The existing top-level `rst_n` also resets TAP and
+CDC sequential logic synchronously in the `tck` and `clk` domains, matching the
+project RTL reset standard. Because `tck` may be stopped while `rst_n` is low,
+the CPU-domain bridge masks every debug request until it observes a complete
+`Test-Logic-Reset` request/acknowledgement handshake. A CPU therefore remains
+unaffected when JTAG is not clocked, while the first standard TMS reset sequence
+initializes all TCK-domain protocol state before debug commands are accepted.
 
 The instruction register is five bits wide. `Capture-IR` loads a value whose
 two least significant bits are `01`. `Test-Logic-Reset` selects `IDCODE`.
@@ -212,12 +216,14 @@ Payload buses are never synchronized bit by bit. They remain unchanged from
 before request launch until the corresponding acknowledgement returns. This
 permits either clock to stop without corrupting a transaction.
 
-Entering `Test-Logic-Reset` creates a soft-reset event for the CPU-domain
-bridge. The bridge cancels asserted `dbg_rden`/`dbg_wren`, aborts collection,
-and aligns its acknowledgement toggles to the synchronized request toggles.
-This safely clears pending operations without resetting CDC toggles
-asynchronously. The TAP also clears `halt_req` and `rst_req`; a CPU already in
-its halt state remains halted until a later execute request.
+While the TAP is in `Test-Logic-Reset`, it asserts a soft-reset request and
+holds that level until the CPU domain acknowledges it. The bridge cancels
+asserted `dbg_rden`/`dbg_wren`, aborts collection, and aligns its acknowledgement
+toggles to the initialized request toggles. The request remains asserted across
+the clock boundary even if `tck` is faster than `clk`, so the reset event cannot
+be missed. The bridge enables debug commands only after the request has returned
+low. The TAP also clears `halt_req` and `rst_req`; a CPU already in its halt
+state remains halted until a later execute request.
 
 ## Host Operation Sequences
 

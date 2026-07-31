@@ -366,4 +366,3 @@ u_apb_can (
 - [can_crc.v](file:///d:/Software/simple_cpu/rtl/can/can_crc.v) -- CRC-15 模块
 - [can_fifo.v](file:///d:/Software/simple_cpu/rtl/can/can_fifo.v) -- RX 帧 FIFO
 - [tb_apb_can.v](file:///d:/Software/simple_cpu/rtl/sim/tb_apb_can.v) -- APB 集成仿真
-- [tb_can_crc.v](file:///d:/Software/simple_cpu/rtl/sim/tb_can_crc.v) -- CRC 关键路径仿真

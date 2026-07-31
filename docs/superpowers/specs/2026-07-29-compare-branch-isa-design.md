@@ -26,12 +26,14 @@ not change their architectural roles or make all of them general-purpose:
   2:1 select the trigger mode.
 - `r2` remains the interrupt vector byte address.
 - `r3` remains the interrupt link byte address.
-- `r15` remains the program counter.
+- `r15` remains the software-visible current-PC register.
 
 A normal instruction write to `r1`, `r2`, or `r3` updates that architectural
-register. A normal instruction write to `r15` directly selects the written
-value as the next PC; `r15` does not gain a second storage location separate
-from the program counter.
+register. A normal instruction may write `r15`, but that write does not select
+the next PC. When the register file is otherwise idle, hardware refreshes
+`r15` from the current instruction PC. Control flow is changed only by JAL,
+BZ, BNZ, or interrupt entry; relative jumps may use the current value of
+`r15` as their base.
 
 The ABI and Tiny C compiler must continue to reserve `r1-r3` and `r15` for
 their architectural roles. Software writes are allowed so low-level software
@@ -85,11 +87,12 @@ No comparison flags or hidden condition state exist.
 
 ### 3.2 Immediate semantics
 
-The immediate field is sign-extended to 32 bits for every condition, including
-unsigned comparisons. An unsigned comparison then interprets both resulting
-32-bit operands as unsigned values. Therefore `-1` represents
-`0xffffffff`; a positive unsigned value that does not fit signed 16 bits must
-first be loaded into a register.
+EQ/NE and signed relational conditions sign-extend the immediate field to
+32 bits. Unsigned relational conditions zero-extend the immediate field before
+interpreting both operands as unsigned values. Therefore `16'hffff` represents
+`32'hffff_ffff` for EQ/NE and signed conditions, but `32'h0000_ffff` for UGE,
+ULT, UGT, and ULE. `cmpu ==` and `cmpu !=` are encoding aliases of `cmp ==`
+and `cmp !=`, so they use the EQ/NE sign-extension rule.
 
 ### 3.3 Encoding
 
@@ -277,7 +280,7 @@ software responsibilities.
 Assembler tests must cover:
 
 - Exact encodings for all ten conditions in immediate and register forms.
-- Signed immediate boundaries and sign extension behavior.
+- Signed immediate boundaries, signed extension, and unsigned zero extension.
 - `cmp/cmpu` operator parsing and invalid operand diagnostics.
 - Exact encodings for BZ and BNZ with label, unsigned immediate, and register
   targets.

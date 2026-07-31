@@ -1,337 +1,309 @@
-# APB UART 控制器手册
-
-| 项目 | 描述 |
-|------|------|
-| 模块名 | `apb_uart` |
-| 总线协议 | APB (32-bit) |
-| 版本 | v1.0 |
-
----
+# APB UART 中文编程手册
 
 ## 1. 模块概述
 
-`apb_uart` 是一个挂载在 APB 总线上的通用异步串口控制器，支持中断输出。
+`apb_uart` 是一个 32 位 APB UART 外设，包含相互独立的字节宽 TX FIFO 和
+RX FIFO。发送端和接收端可分别持续使能，软件通过 `TX_DATA` 逐字节写入发送
+FIFO，通过 `RX_DATA` 逐字节读取接收 FIFO。
+
+当前实现支持：
 
 - 可编程波特率；
-- 可配置停止位与奇偶校验；
-- 内置 4 字节 TX/RX 寄存器缓存（按字节滑动指针访问）+ 内部 FIFO；
-- 4 种可配置中断触发类型；
-- 支持软复位。
+- 8 位数据，低位先传输；
+- 1 个或 2 个停止位；
+- 无校验、奇校验或偶校验；
+- 独立的收发使能和 FIFO 清空命令；
+- 4 种可选的电平型中断条件；
+- 外设软复位。
 
-模块结构：
+模块不会报告奇偶校验错误、帧错误或 FIFO 溢出错误。接收校验失败或 RX FIFO
+已满时，新字节会被丢弃；TX FIFO 已满时，新的 `TX_DATA` 写入会被忽略。
 
+## 2. 参数与接口
+
+### 2.1 参数
+
+| 参数 | 默认值 | 说明 |
+|---|---:|---|
+| `SYS_CLK_FREQ` | `50_000_000` | `s_apb_pclk` 频率，单位 Hz |
+| `FIFO_DEPTH` | `8` | TX/RX FIFO 深度；应取不小于 8 的 2 的幂，且不超过 128 |
+
+FIFO 存储阵列本身不清零。硬件复位、软复位或 FIFO 清空命令会复位 FIFO
+读写指针和数据量，因此清空后旧存储内容不可再访问。
+
+### 2.2 端口
+
+| 端口 | 方向 | 说明 |
+|---|---|---|
+| `s_apb_pclk` | 输入 | APB、UART 和 FIFO 共用时钟 |
+| `s_apb_presetn` | 输入 | 同步低有效复位 |
+| `s_apb_psel` | 输入 | APB 从机选择 |
+| `s_apb_penable` | 输入 | APB 访问阶段指示 |
+| `s_apb_pwrite` | 输入 | `1` 为写，`0` 为读 |
+| `s_apb_paddr[31:0]` | 输入 | APB 字节地址 |
+| `s_apb_pwdata[31:0]` | 输入 | APB 写数据 |
+| `s_apb_pready` | 输出 | APB 传输完成应答 |
+| `s_apb_pslverr` | 输出 | 恒为 `0` |
+| `s_apb_prdata[31:0]` | 输出 | APB 读数据 |
+| `interrupt` | 输出 | 高有效 UART 中断 |
+| `uart_rx` | 输入 | 串行接收线，空闲电平为高 |
+| `uart_tx` | 输出 | 串行发送线，空闲电平为高 |
+
+## 3. APB 访问行为
+
+寄存器按 32 位对齐，使用 `s_apb_paddr[11:2]` 译码。一次被选中的 APB
+传输包含一个等待周期；寄存器写入、FIFO 压入和 FIFO 弹出只在访问完成时
+发生一次。UART 活动不会延长 APB 访问。
+
+`s_apb_pslverr` 恒为 `0`。未定义地址的写入被忽略；UART 与另外三个外设不同，
+未定义地址的读取会保持上一次已锁存的 `s_apb_prdata`，不会强制返回零。
+
+## 4. 寄存器总表
+
+| 偏移 | 寄存器 | 访问 | 复位值 | 说明 |
+|---:|---|---|---:|---|
+| `0x00` | `CTRL` | R/W、W1P | `0x0000_0000` | 收发使能、FIFO 清空和软复位 |
+| `0x04` | `CONFIG` | R/W | `0x0000_0000` | 波特率、奇偶校验和停止位 |
+| `0x08` | `RX_DATA` | R/POP | `0x0000_0000` | RX FIFO 同步读端口 |
+| `0x0C` | `RX_STATUS` | R | `0x0000_0100` | RX FIFO 和接收器状态 |
+| `0x10` | `TX_DATA` | W | - | 向 TX FIFO 压入一个字节；读取返回零 |
+| `0x14` | `TX_STATUS` | R | `0x0000_0100` | TX FIFO 和发送器状态 |
+| `0x18` | `INTERRUPT` | R/W | `0x0000_0000` | 中断使能、条件、观察标志和阈值 |
+
+除另有说明外，未列出的位读取为零，写入无效。`CONFIG` 和 `INTERRUPT` 中有
+少量未使用但会原样保存的位，具体见对应寄存器说明。
+
+## 5. 寄存器说明
+
+### 5.1 CTRL，偏移 `0x00`
+
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `0` | `RX_EN` | R/W | `1`：持续使能接收器；`0`：关闭并复位接收状态机 |
+| `1` | `TX_EN` | R/W | `1`：允许 TX FIFO 自动发送；`0`：停止装载后续字节 |
+| `2` | `RX_CLR` | W1P | 写 `1` 清空 RX FIFO，并使下一次 `RX_DATA` 读取重新进入预取状态 |
+| `3` | `TX_CLR` | W1P | 写 `1` 清空 TX FIFO |
+| `31` | `SOFT_RST` | W1P | 写 `1` 复位整个 UART 外设 |
+
+`RX_CLR`、`TX_CLR` 和 `SOFT_RST` 是写脉冲，读取恒为零。每次写 `CTRL` 都会
+用写数据 `[1:0]` 覆盖两个使能位，因此发出清空命令时应同时写回希望保留的
+`RX_EN/TX_EN`。`SOFT_RST` 优先级最高，同一次写入中的其他位不会保留。
+
+关闭 `TX_EN` 只会阻止 TX FIFO 装载下一个字节，已经进入发送移位过程的字节
+仍会发送完毕。关闭 `RX_EN` 不会清空 RX FIFO；如需丢弃已接收数据，应同时
+使用 `RX_CLR`。
+
+### 5.2 CONFIG，偏移 `0x04`
+
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `[23:0]` | `BAUD_RATE` | R/W | 目标波特率，单位 Hz |
+| `[28:24]` | `RESERVED` | R/W | 当前 RTL 会保存并回读，但不参与 UART 功能；软件应写零 |
+| `[30:29]` | `PARITY_TYPE` | R/W | `00` 无校验，`01` 奇校验，`10` 偶校验，`11` 保留 |
+| `31` | `STOP_BIT` | R/W | `0`：1 个停止位；`1`：2 个停止位 |
+
+内部串行位周期采用下式：
+
+```text
+BAUD_DIV   = floor(SYS_CLK_FREQ / BAUD_RATE)
+实际波特率 = SYS_CLK_FREQ / BAUD_DIV
 ```
-       ┌─────────────────────────┐
-APB ──►│  apb_uart               │──► interrupt
-       │                         │
-       │      ┌───────────────┐  │
-       │      │   uart_top    │  │── uart_tx
-       │      │ (FIFO + PHY)  │  │── uart_rx
-       │      └───────────────┘  │
-       └─────────────────────────┘
+
+写入新的 `BAUD_RATE` 后，串行除法器需要约 32 个 `PCLK` 完成计算。驱动应在
+收发器空闲时修改 `CONFIG`，并在使能 UART 前至少等待 40 个 `PCLK`，与当前
+仿真用法保持一致。
+
+接收采样计数器为 10 位。为保证收发均正常，软件配置应满足：
+
+```text
+2 <= floor(SYS_CLK_FREQ / BAUD_RATE) <= 1024
 ```
 
----
+`BAUD_RATE=0` 或超出上述范围没有硬件报错，但串口时序无效。`PARITY_TYPE=11`
+会增加一个校验位周期，但该模式不属于有效协议配置，软件不得使用。接收器
+不会检查停止位，也不会产生帧错误状态。
 
-## 2. 参数列表
+### 5.3 RX_DATA，偏移 `0x08`
 
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `SYS_CLK_FREQ` | `50_000_000` | APB 时钟频率，单位 Hz；用于内部计算波特率分频值 |
-| `FIFO_DEPTH` | `8` | 内部 TX/RX FIFO 深度（字节），必须为 2 的幂，小于等于 64 |
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `[7:0]` | `RX_BYTE` | R/POP | RX FIFO 的同步读数据 |
 
----
+RX FIFO 是同步读 FIFO。一次非空 `RX_DATA` APB 读取在访问完成时弹出一个
+字节，但该字节在下一次 APB 读取时才出现在 `RX_BYTE`。因此，不能把第一次
+读取的返回值当作当前 FIFO 首字节。
 
-## 3. 端口表
+可靠的批量读取流程如下：
 
-### 3.1 时钟与复位
+1. 从 `RX_STATUS.RX_LEVEL` 保存当前字节数 `N`；
+2. 若 `N=0`，直接返回；
+3. 读取一次 `RX_DATA` 并丢弃返回值，用于预取第一个字节；
+4. 再读取 `N` 次 `RX_DATA`，依次得到保存快照中的 `N` 个字节。
 
-| 信号 | 方向 | 位宽 | 描述 |
-|------|------|------|------|
-| `s_apb_pclk` | I | 1 | APB 总线时钟，全部逻辑同步于此时钟 |
-| `s_apb_presetn` | I | 1 | 低有效复位，与 `s_apb_pclk` 同步 |
+FIFO 清空或复位后的空读取返回零。完成过至少一次有效弹出后，继续读取空 FIFO
+会返回最近一次 FIFO 输出值，但不会再次移动指针，所以软件必须用 `RX_LEVEL`
+判断有效数据量。
 
-### 3.2 APB 从设备接口
+### 5.4 RX_STATUS，偏移 `0x0C`
 
-| 信号 | 方向 | 位宽 | 描述 |
-|------|------|------|------|
-| `s_apb_psel` | I | 1 | 从机片选 |
-| `s_apb_penable` | I | 1 | 总线使能（第二个时钟） |
-| `s_apb_pwrite` | I | 1 | 1=写访问，0=读访问 |
-| `s_apb_paddr` | I | 32 | 字节地址（实际只使用 `paddr[31:2]` 作为字地址） |
-| `s_apb_pwdata` | I | 32 | 写数据 |
-| `s_apb_pready` | O | 1 | 传输应答（典型 1 个 wait state） |
-| `s_apb_pslverr` | O | 1 | 错误指示（恒 0） |
-| `s_apb_prdata` | O | 32 | 读数据 |
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `[7:0]` | `RX_LEVEL` | R | RX FIFO 当前字节数 |
+| `8` | `RX_EMPTY` | R | RX FIFO 为空 |
+| `9` | `RX_FULL` | R | RX FIFO 已满 |
+| `10` | `RX_BUSY` | R | 接收状态机正在处理一个串行帧 |
 
-### 3.3 中断
+`RX_LEVEL` 只统计已经写入 FIFO 的完整、校验通过字节，不包含正在接收的帧。
 
-| 信号 | 方向 | 位宽 | 描述 |
-|------|------|------|------|
-| `interrupt` | O | 1 | 中断输出，高有效 |
+### 5.5 TX_DATA，偏移 `0x10`
 
-### 3.4 串口物理接口
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `[7:0]` | `TX_BYTE` | W | 向 TX FIFO 压入一个字节 |
 
-| 信号 | 方向 | 位宽 | 描述 |
-|------|------|------|------|
-| `uart_rx` | I | 1 | 串行接收线 |
-| `uart_tx` | O | 1 | 串行发送线 |
+写入只使用低 8 位。即使 `TX_EN=0`，软件也可以预装 TX FIFO；以后置位
+`TX_EN` 即开始发送。FIFO 已满时写入被静默忽略，因此写之前必须检查
+`TX_STATUS.TX_FULL`。读取该寄存器返回零。
 
----
+### 5.6 TX_STATUS，偏移 `0x14`
 
-## 4. 寄存器表
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `[7:0]` | `TX_LEVEL` | R | TX FIFO 当前字节数 |
+| `8` | `TX_EMPTY` | R | TX FIFO 为空 |
+| `9` | `TX_FULL` | R | TX FIFO 已满 |
+| `10` | `TX_BUSY` | R | 正在从 FIFO 装载字节或发送串行帧 |
 
-寄存器以 32-bit 对齐，地址 = `BASE + (字索引 × 4)`。模块内部使用 `paddr[31:2]` 直接作为字索引译码。
+FIFO 为空不等于物理发送完成。判断整个发送通道空闲时，必须同时满足
+`TX_LEVEL==0` 和 `TX_BUSY==0`。
 
-| 偏移 | 字索引 | 名称 | 访问 | 复位值 | 描述 |
-|------|--------|------|------|--------|------|
-| `0x00` | 0 | `CTRL` | RW | `0x0000_0000` | UART 收发控制与软复位 |
-| `0x04` | 1 | `CONFIG` | RW | `0x0000_0000` | 波特率、停止位、校验配置 |
-| `0x08` | 2 | `RX_BUF` | RO | `0x0000_0000` | 接收数据滑动缓存（读后会清零内部指针） |
-| `0x0C` | 3 | `RX_STATUS` | RO | `0x0000_0000` | 接收状态 |
-| `0x10` | 4 | `TX_BUF` | WO | `0x0000_0000` | 发送数据滑动缓存 |
-| `0x14` | 5 | `TX_STATUS` | RO | `0x0000_0000` | 发送状态 |
-| `0x18` | 6 | `INTERRUPT` | RW | `0x0000_0000` | 中断使能、触发源、计数阈值 |
+### 5.7 INTERRUPT，偏移 `0x18`
 
-> 注：未列出的偏移读访问返回上一次成功读取数据；写访问被忽略。`PSLVERR` 恒为 0。
+| 位 | 名称 | 访问 | 说明 |
+|---:|---|---|---|
+| `0` | `INT_EN` | R/W | UART 中断总使能 |
+| `[2:1]` | `INT_TYPE` | R/W | 中断条件选择 |
+| `3` | - | - | 保留，写入时强制清零 |
+| `4` | `INT_FLAG` | R/W | 中断输出曾被观察为高的粘滞标志 |
+| `[15:5]` | `RESERVED` | R/W | 当前 RTL 会保存并回读，但不参与中断功能；软件应写零 |
+| `[23:16]` | `RX_THRESHOLD` | R/W | RX 字节数阈值 |
+| `[31:24]` | `TX_THRESHOLD` | R/W | TX 字节数阈值 |
 
-### 4.1 CTRL — 控制寄存器 (offset 0x00)
+`INT_TYPE` 编码如下：
 
-| 位 | 名称 | 类型 | 描述 |
-|----|------|------|------|
-| `[31]` | `SOFT_RST` | RW | 软复位：写 1 复位串口物理层 |
-| `[30:7]` | — | — | 保留 |
-| `[6:5]` | `TX_CNT_MAX` | RW | TX 发送长度（取值 0-3，对应 1-4 字节） |
-| `[4]` | `TX_EN` | W1S | 写 1 启动一次 TX 发送（**自动清零**） |
-| `[3]` | — | — | 保留 |
-| `[2:1]` | `RX_CNT_MAX` | RW | RX 接收长度（取值 0-3，对应 1-4 字节） |
-| `[0]` | `RX_EN` | W1S | 写 1 启动一次 RX 接收（**自动清零**） |
+| 值 | 中断输出条件 |
+|---:|---|
+| `0` | RX FIFO 非空 |
+| `1` | TX FIFO 未满 |
+| `2` | `RX_LEVEL >= RX_THRESHOLD` |
+| `3` | `TX_LEVEL <= TX_THRESHOLD` |
 
-行为说明：
-- 向 `TX_EN` 写 1 时，按照 `TX_CNT_MAX` 对应的长度将 `TX_BUF` 中的数据填充到发送 FIFO 中，发送 FIFO 中存在数据时串口会自动发送，`TX_EN` 会自动清零；
-- 向 `RX_EN` 写 1 时，按照 `RX_CNT_MAX` 对应的长度将接收 FIFO 中的数据读取到 `RX_BUF` 中，接收 FIFO 中数据不够一次接收时会持续接收直到满足此次长度，`RX_EN` 会自动清零；
+`interrupt` 是对所选条件进行寄存后的电平输出，仅在 `INT_EN=1` 时有效。
+`INT_FLAG` 不是中断请求锁存器，也不参与 `interrupt` 计算；它只表示硬件曾观察
+到中断输出为高。清除该标志时，应重写完整 `INTERRUPT` 配置并令位 4 为零。
+如果触发条件仍成立，`interrupt` 会继续保持有效，`INT_FLAG` 也会再次置位。
 
-### 4.2 CONFIG — 串口物理层配置 (offset 0x04)
-
-| 位 | 名称 | 类型 | 描述 |
-|----|------|------|------|
-| `[31]` | `STOP_BIT` | RW | 0=1 个停止位，1=2 个停止位 |
-| `[30:29]` | `PARITY_TYPE` | RW | `00`=无校验，`01`=奇校验，`10`=偶校验，`11`=保留 |
-| `[28:24]` | — | — | 保留 |
-| `[23:0]` | `BAUD_RATE` | RW | 目标波特率（Hz），如 `115200`=`0x01_C200` |
-
-### 4.3 RX_BUF — 接收缓存 (offset 0x08, RO)
-
-| 位 | 字段 | 描述 |
-|----|------|------|
-| `[31:24]` | `RX_BYTE0` | 第 1 个接收字节 |
-| `[23:16]` | `RX_BYTE1` | 第 2 个接收字节 |
-| `[15:08]` | `RX_BYTE2` | 第 3 个接收字节 |
-| `[07:00]` | `RX_BYTE3` | 第 4 个接收字节 |
-
-行为：
-- 接收的字节按 `RX_PTR` 指向位置依次写入；
-- 软件读取该寄存器后，硬件清除 `RX_BUF`，并将 `RX_PTR` 复位为 0。
-
-### 4.4 RX_STATUS — 接收状态 (offset 0x0C, RO)
-
-| 位 | 名称 | 描述 |
-|----|------|------|
-| `[31:10]` | — | 保留 |
-| `[9]` | `RX_READY` | 接收使能指示 |
-| `[8]` | `RX_VALID` | 接收 FIFO 非空指示 |
-| `[7:6]` | `RX_CNT` | 当前一轮已接收字节数 |
-| `[5:2]` | `RX_DATA_CNT` | 接收 FIFO 中剩余可读字节数 |
-| `[1:0]` | `RX_PTR` | 下一个写入 `RX_BUF` 的字节位置 |
-
-### 4.5 TX_BUF — 发送缓存 (offset 0x10, WO)
-
-| 位 | 字段 | 描述 |
-|----|------|------|
-| `[31:24]` | `TX_BYTE0` | 第 1 个发送字节 |
-| `[23:16]` | `TX_BYTE1` | 第 2 个发送字节 |
-| `[15:08]` | `TX_BYTE2` | 第 3 个发送字节 |
-| `[07:00]` | `TX_BYTE3` | 第 4 个发送字节 |
-
-行为：
-- 写入 `TX_BUF` 后，硬件会清除 `TX_PTR`。
-
-### 4.6 TX_STATUS — 发送状态 (offset 0x14, RO)
-
-| 位 | 名称 | 描述 |
-|----|------|------|
-| `[31:10]` | — | 保留 |
-| `[9]` | `TX_VALID` | 发送使能指示 |
-| `[8]` | `TX_READY` | 发送 FIFO 非满指示 |
-| `[7:6]` | `TX_CNT` | 当前一轮已发送字节数 |
-| `[5:2]` | `TX_DATA_CNT` | 发送 FIFO 中尚未发出的字节数 |
-| `[1:0]` | `TX_PTR` | 下一个从 `TX_BUF` 取出的字节位置 |
-
-### 4.7 INTERRUPT — 中断控制 (offset 0x18)
-
-| 位 | 名称 | 描述 |
-|----|------|------|
-| `[31:24]` | `TX_CNT_THRESH` | 当触发源 = 3 时使用：与 `TX_DATA_CNT` 比较 |
-| `[23:16]` | `RX_CNT_THRESH` | 当触发源 = 2 时使用：与 `RX_DATA_CNT` 比较 |
-| `[15:5]` | — | 保留 |
-| `[4]` | `INT_FLAG` | 粘滞中断标志；硬件置 1，软件写 0 清除，读取不清除 |
-| `[3]` | — | 保留，写入时强制清零 |
-| `[2:1]` | `INT_TYPE` | 触发源选择，见下表 |
-| `[0]` | `INT_EN` | 中断使能 |
-
-`INT_FLAG` 在 `interrupt` 有效后由硬件置 1。读取 `INTERRUPT` 不改变该标志；
-软件需要写回控制值并令 bit 4 为 `0` 才能清除。bit 3 始终为保留位，RTL 在
-读写寄存器时使用掩码将其保持为 `0`。
-
-中断触发源（`INT_TYPE`）：
-
-| 取值 | 触发条件 |
-|------|----------|
-| `00` | `RX_VALID` UART 接收 FIFO 非空 |
-| `01` | `TX_READY` UART 发送 FIFO 非满 |
-| `10` | `RX_DATA_CNT == RX_CNT_THRESH` |
-| `11` | `TX_DATA_CNT == TX_CNT_THRESH` |
-
----
+阈值建议设置在 `1..FIFO_DEPTH`。`RX_THRESHOLD=0` 会始终满足 RX 阈值条件；
+TX 未满和 TX 阈值两种模式在空 FIFO 时通常立即有效，驱动应在没有待发送数据
+时关闭相应中断，避免持续进入中断处理程序。
 
 ## 6. 编程指导
 
-> 以下示例与 [uart_test.asm](file:///d:/Software/simple_cpu/example/uart_test.asm) 完全对应。
-> 关键约定：`CNT_MAX = N` 时，一次操作的字节数为 **N+1**；启动一次收/发只需向 CTRL 写一次相应的 `EN` 位（硬件自动清零）。
+以下伪代码假定 `UART` 指向 UART 寄存器基地址。
 
-### 6.1 初始化序列（推荐）
+### 6.1 初始化
 
-```
-1. 写 CONFIG    = 115200             // 直接填目标波特率(Hz)
-2. 写 INTERRUPT = 0x00000001         // INT_EN=1, INT_TYPE=00 (RX_VALID 触发)
-3. （可选）配置 CPU 中断向量, 选择上升沿触发
-```
+```c
+UART->CTRL = (1u << 31);                 /* 软复位 */
+UART->CONFIG = baud_rate
+             | (parity_type << 29)
+             | (two_stop_bits << 31);
+delay_pclk(40);                          /* 等待波特率除法完成 */
 
-无需显式发起软复位；上电复位 (`presetn`) 已将所有寄存器清零。
-
-### 6.2 发送 1 字节示例
-
-```
-等待 TX 通道空闲:
-    while ((TX_STATUS >> 9) & 1) ;       // 等待 TX_VALID == 0
-
-写入数据并启动:
-    TX_BUF = byte << 24;                 // 单字节放在 [31:24]
-    CTRL   = 0x0010;                     // TX_EN=1, TX_CNT_MAX=0 (1 字节)
+UART->CTRL = (1u << 2) | (1u << 3);     /* 清空两个 FIFO，保持关闭 */
+UART->INTERRUPT = 0;                     /* 默认先使用轮询 */
+UART->CTRL = (1u << 0) | (1u << 1);     /* 持续使能 RX 和 TX */
 ```
 
-对应汇编宏（[uart_test.asm](file:///d:/Software/simple_cpu/example/uart_test.asm) 中 `UartSendByte`）。
+若只需要单向通信，可仅使能对应方向。
 
-### 6.3 发送 4 字节示例
+### 6.2 轮询发送
 
-```
-等待 TX 通道空闲:
-    while ((TX_STATUS >> 9) & 1) ;       // 等待 TX_VALID == 0
+```c
+void uart_putc(uint8_t value)
+{
+    while (UART->TX_STATUS & (1u << 9))  /* TX_FULL */
+        ;
+    UART->TX_DATA = value;
+}
 
-写入数据并启动:
-    TX_BUF = {b0, b1, b2, b3};           // 写后硬件自动清 TX_PTR
-    CTRL   = 0x0070;                     // TX_EN=1, TX_CNT_MAX=3 (4 字节)
-```
-
-对应汇编宏 `UartSendInt`。**每发一帧都需要重写 CTRL**，因为 `TX_EN` 硬件自动清零。
-
-### 6.4 接收 1 字节示例
-
-```
-启动接收:
-    CTRL = 0x0001;                       // RX_EN=1, RX_CNT_MAX=0 (1 字节)
-
-读取数据 (硬件填满后会自动清 RX_EN):
-    byte = RX_BUF >> 24;                 // 单字节位于 [31:24]
-                                         // 读 RX_BUF 后 RX_PTR/RX_BUF 自动清零
+void uart_flush(void)
+{
+    while (((UART->TX_STATUS & 0xffu) != 0) ||
+           (UART->TX_STATUS & (1u << 10))) /* TX_BUSY */
+        ;
+}
 ```
 
-轮询接收完成时应等待 `RX_STATUS.RX_PTR != 0`，再读取 `RX_BUF`。不要要求软件
-必须观察到 `RX_READY` 从 1 变为 0：如果字节在启动 RX 前已经进入 FIFO，硬件
-可能在两次软件读寄存器之间完成搬运，软件将看不到短暂的 `RX_READY=1`。
+连续发送时只需在 FIFO 满时等待，不应逐字节等待 `TX_BUSY` 清零。
 
-对应汇编宏 `UartRecvByte`。
+### 6.3 批量接收
 
-### 6.5 中断模式
+```c
+size_t uart_read_snapshot(uint8_t *buffer)
+{
+    size_t i;
+    size_t count = UART->RX_STATUS & 0xffu;
 
-主循环周期性发送 `"Hello world!\r\n"`，串口接收到的字节通过中断原样回送。
+    if (count == 0)
+        return 0;
 
-```
-主循环:
-    1. 等待 TX_VALID==0, 调用 UartSendInt(0x4865_6C6C)   // "Hell"
-    2. 等待 TX_VALID==0, 调用 UartSendInt(0x6F20_776F)   // "o wo"
-    3. 等待 TX_VALID==0, 调用 UartSendInt(0x726C_6421)   // "rld!"
-    4. 等待 TX_VALID==0, 调用 UartSendByte(0x0A)         // "\n"
-    5. 等待 TX_VALID==0, 调用 UartSendByte(0x0D)         // "\r"
-    6. 延时, 跳回 1
+    (void)UART->RX_DATA;                 /* 同步 FIFO 预取，必须丢弃 */
+    for (i = 0; i < count; ++i)
+        buffer[i] = (uint8_t)UART->RX_DATA;
 
-ISR (RX_VALID 上升沿):
-    1. 关 CPU 中断使能 (防止重入)
-    2. CTRL = 0x0001;            读取 RX_BUF >> 24       // UartRecvByte
-    3. 等待 TX_VALID==0
-    4. TX_BUF = byte << 24;  CTRL = 0x0010              // UartSendByter 回送
-    5. 开 CPU 中断使能
-    6. jmp r2[15:0]              返回主程序
+    return count;
+}
 ```
 
-### 6.6 软复位
+该函数只读取进入函数时已经存在的数据。读取期间新到达的字节会留给下一次调用，
+不会因为采用保存的 `RX_LEVEL` 而被误读。
 
-如需在运行中复位 UART 物理层，写 `CTRL[31] = 1` 即可；硬件下一拍即将下层 `uart_top` 的 `rst_n` 拉低。
+### 6.4 中断模式
 
-### 6.7 寄存器副作用速查
+接收中断推荐选择“RX FIFO 非空”或合理的 RX 阈值。ISR 应循环读取，直到
+触发条件解除；只清 `INT_FLAG` 不能撤销电平型中断。
 
-下列副作用由硬件自动完成，软件无需显式操作：
+```c
+void uart_rx_isr(void)
+{
+    uint8_t buffer[UART_FIFO_DEPTH];
 
-| 操作 | 自动效果 |
-|------|---------|
-| 读 `RX_BUF` | `RX_STATUS[1:0] ← 0`，`RX_BUF ← 0` |
-| 写 `TX_BUF` | `TX_STATUS[1:0] ← 0` |
-| RX 收满 (`RX_CNT == RX_CNT_MAX`) | `CTRL.RX_EN ← 0` |
-| TX 发完 (`TX_CNT == TX_CNT_MAX`) | `CTRL.TX_EN ← 0` |
+    while ((UART->RX_STATUS & 0xffu) != 0)
+        consume(buffer, uart_read_snapshot(buffer));
 
----
-
-## 7. 应用注意事项
-
-1. **波特率切换**：写 `CONFIG.BAUD_RATE` 后需要约 32 个 `pclk` 周期完成除法器收敛，期间不应启动新的 TX。
-2. **CNT_MAX 配置**：必须与软件期望的滑动窗口长度一致；若设置 `RX_CNT_MAX=3` 而软件按 1 字节读取，会出现指针越界等待。
-3. **中断触发模式**：本控制器输出电平型 `interrupt`，建议在 CPU 端选择上升沿触发以避免重复进入 ISR。
-4. **PSLVERR**：当前实现恒为 0，因此非法地址访问不会报错，调试时需自行核对地址。
-5. **FIFO 深度**：`FIFO_DEPTH` 决定连续突发能力；若开启 `INT_TYPE = 2/3`（基于 FIFO 计数阈值），阈值不得超过 `FIFO_DEPTH`。
-
----
-
-## 8. 实例化模板
-
-```verilog
-apb_uart #(
-    .SYS_CLK_FREQ   (50_000_000),
-    .FIFO_DEPTH     (8))
-u_apb_uart (
-    .s_apb_pclk     (pclk),
-    .s_apb_presetn  (presetn),
-
-    .s_apb_psel     (psel),
-    .s_apb_penable  (penable),
-    .s_apb_pwrite   (pwrite),
-    .s_apb_paddr    (paddr),
-    .s_apb_pwdata   (pwdata),
-
-    .s_apb_pready   (pready),
-    .s_apb_pslverr  (pslverr),
-    .s_apb_prdata   (prdata),
-
-    .interrupt      (uart_irq),
-
-    .uart_rx        (uart_rx),
-    .uart_tx        (uart_tx));
+    UART->INTERRUPT = UART_INT_RX_NOT_EMPTY; /* 位 4 写 0 */
+}
 ```
 
----
+发送中断适合软件维护一个更大的环形缓冲区。每次中断尽量填满硬件 FIFO；软件
+缓冲区耗尽后关闭 `INT_EN`，下次入队时再开启。
 
-## 9. 相关文件
+### 6.5 重新配置与清空
 
-- [apb_uart.v](file:///d:/Software/simple_cpu/rtl/uart/apb_uart.v) — APB 寄存器与中断包装
-- [uart_top.v](file:///d:/Software/simple_cpu/rtl/uart/uart_top.v) — UART 核心（FIFO + 物理层）
-- [tb_apb_uart.v](file:///d:/Software/simple_cpu/rtl/uart/tb_apb_uart.v) — 模块级仿真测试平台
-- [uart_test.asm](file:///d:/Software/simple_cpu/example/uart_test.asm) — 周期打印 + 中断回显示例
+- 修改波特率、校验或停止位前，先停止写入，等待 `TX_LEVEL=0` 且
+  `TX_BUSY=0`，再关闭收发器；
+- 写 `CONFIG` 后等待至少 40 个 `PCLK`，再重新使能；
+- 仅需丢弃缓存数据时使用 `RX_CLR/TX_CLR`，并在同一次 `CTRL` 写入中保留
+  所需使能位；
+- `SOFT_RST` 会清除控制、配置、中断和两个 FIFO，复位后必须重新初始化。
+
+## 7. 使用限制与检查清单
+
+- UART 固定为 8 数据位、低位先传输；
+- 接收器不检查停止位，不提供帧错误状态；
+- 奇偶校验失败、RX FIFO 满和 TX FIFO 满均不会产生专用错误中断；
+- `RX_DATA` 必须按同步 FIFO 预取流程读取；
+- `TX_EMPTY=1` 时仍可能有一个字节正在串行发送，应结合 `TX_BUSY` 判断完成；
+- 中断源是电平条件，ISR 返回前应消除条件或关闭中断；
+- 非法寄存器地址不会产生 `PSLVERR`，UART 非法读还会保留上一次读数据。

@@ -2,8 +2,8 @@
 // Covers the current assembly surface syntax:
 //   - mov immediate/register-like copy, ALU, memory load/store
 //   - jmp immediate/label/register/base+offset/register+register forms
-//   - cmp/brc immediate/label/register/base+offset/register+register targets
-//   - cmp/brc signed and unsigned condition forms
+//   - cmp/cmpu register and immediate conditions
+//   - bz/bnz label/register/base+offset/register+register targets
 //   - interrupt vector setup/return flow
 //   - pseudo directives: .prog, .entry, .equ, .ifdef/.elsif/.else/.endif,
 //     .macro/.endm, .rept/.endr, .include
@@ -31,14 +31,14 @@
 .macro assert_eqi(src, expect, code)
 mov r13, expect
 mov r14, code
-cmp src, r13
-brc fail, "!="
+cmp r11, src == r13
+bz r11, r0 + fail
 .endm
 
 .macro assert_eqr(lhs, rhs, code)
 mov r14, code
-cmp lhs, rhs
-brc fail, "!="
+cmp r11, lhs == rhs
+bz r11, r0 + fail
 .endm
 
 .macro write_mem(addr, value)
@@ -197,84 +197,81 @@ mov r9, [r4 + r7]
 assert_eqi(r9, 0x2222, 43)
 
 // ---------------------------------------------------------------------------
-// cmp + brc immediate/label target forms.
+// cmp/cmpu immediate forms with bz/bnz label targets.
 // ---------------------------------------------------------------------------
 mov r4, 5
 mov r5, 5
 mov r6, 9
 
 mov r14, 50
-cmp r4, r5
-brc br_beq_i_ok, "eq"
+cmp r11, r4 == 5
+bnz r11, r0 + br_beq_i_ok
 jmp fail
 br_beq_i_ok:
 
 mov r14, 51
-cmp r4, r6
-brc fail, "eq"
+cmp r11, r4 == 9
+bnz r11, r0 + fail
 
 mov r14, 52
-cmp r4, r6
-brc br_bne_i_ok, "ne"
+cmp r11, r4 != 9
+bnz r11, r0 + br_bne_i_ok
 jmp fail
 br_bne_i_ok:
 
 mov r14, 53
-cmp r4, r5
-brc fail, "ne"
+cmp r11, r4 != 5
+bnz r11, r0 + fail
 
 mov r4, 0
 mov r4, r4 - 1
 mov r5, 1
 mov r14, 54
-cmp r4, r5
-brc br_blt_i_ok, "lt"
+cmp r11, r4 < 1
+bnz r11, r0 + br_blt_i_ok
 jmp fail
 br_blt_i_ok:
 
 mov r14, 55
-cmp r5, r4
-brc fail, "lt"
+cmp r11, r5 < -1
+bnz r11, r0 + fail
 
 mov r14, 56
-cmp r5, r4
-brc br_bge_i_ok, "ge"
+cmp r11, r5 >= -1
+bnz r11, r0 + br_bge_i_ok
 jmp fail
 br_bge_i_ok:
 
 mov r14, 57
-cmp r4, r5
-brc fail, "ge"
+cmp r11, r4 >= 1
+bnz r11, r0 + fail
 
 mov r14, 58
-cmp r5, r4
-brc br_gt_i_ok, ">"
+cmp r11, r5 > -1
+bnz r11, r0 + br_gt_i_ok
 jmp fail
 br_gt_i_ok:
 
 mov r14, 59
-cmp r4, r5
-brc br_le_i_ok, "<="
+cmp r11, r4 <= 1
+bnz r11, r0 + br_le_i_ok
 jmp fail
 br_le_i_ok:
 
-mov r4, 0
-mov r4, r4 - 1
-mov r5, 1
 mov r14, 60
-cmp r4, r5
-brcu br_ugt_i_ok, ">"
+cmpu r11, r4 > -1
+bnz r11, r0 + br_ugt_i_ok
 jmp fail
 br_ugt_i_ok:
 
 mov r14, 61
-cmp r5, r4
-brcu br_ule_i_ok, "<="
+cmpu r11, r5 <= -1
+bnz r11, r0 + br_ule_i_ok
 jmp fail
 br_ule_i_ok:
 
 // ---------------------------------------------------------------------------
-// cmp + brc register-target forms.
+// Register comparisons with all bz/bnz target forms.
 // ---------------------------------------------------------------------------
 mov r4, 6
 mov r5, 6
@@ -282,29 +279,30 @@ mov r6, 8
 
 mov r8, br_beq_r_ok
 mov r14, 62
-cmp r4, r5
-brc r8, "eq"
+cmp r11, r4 == r5
+bnz r11, r0 + r8
 jmp fail
 br_beq_r_ok:
 
 mov r8, br_bne_r_ok
 mov r14, 63
-cmp r4, r6
-brc r8, "ne"
+cmp r11, r4 != r6
+bnz r11, r8 + 0
 jmp fail
 br_bne_r_ok:
 
 mov r8, br_blt_r_ok
+mov r9, 0
 mov r14, 64
-cmp r4, r6
-brc r8, "lt"
+cmp r11, r4 < r6
+bnz r11, r8 + r9
 jmp fail
 br_blt_r_ok:
 
 mov r8, br_bge_r_ok
 mov r14, 65
-cmp r6, r4
-brc r8, "ge"
+cmp r11, r6 >= r4
+bnz r11, r0 + r8
 jmp fail
 br_bge_r_ok:
 
@@ -356,7 +354,7 @@ jmp r9
 
 // ---------------------------------------------------------------------------
 // Interrupt setup. r1 is interrupt control, r2 is vector, r3 is return.
-// The wait loop only uses r8-r11 because the ISR uses r4-r6 as scratch and
+// The wait loop only uses r8-r11 because the ISR uses r4-r7 as scratch and
 // reads r3 as the hardware interrupt return address.
 // ---------------------------------------------------------------------------
 interrupt_setup:
@@ -381,9 +379,8 @@ mov r5, [r4]
 mov r5, r5 + 1
 mov [r4], r5
 
-mov r6, EXPECTED_INTERRUPTS
-cmp r5, r6
-brc isr_done, ">="
+cmp r6, r5 >= EXPECTED_INTERRUPTS
+bnz r6, r0 + isr_done
 
 mov r1, r1 | 0x0001
 jmp r3

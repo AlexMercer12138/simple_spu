@@ -26,12 +26,15 @@
 MERC32_top #(
     .ILB_ADDR_WIDTH             (16             ),
     .DLB_ADDR_WIDTH             (16             ),
-    .ILB_INIT_FILE              (""             ),
-    .DLB_INIT_FILE              (""             ))
+    .JTAG_IDCODE_VALUE          (32'h4d32_0001  ))
 u_MERC32_top (
     .clk                        (clk            ),
     .rst_n                      (rst_n          ),
-    .interrupt                  (interrupt      ));
+    .interrupt                  (interrupt      ),
+    .tck                        (tck            ),
+    .tms                        (tms            ),
+    .tdi                        (tdi            ),
+    .tdo                        (tdo            ));
 */
 
 //================================================================================
@@ -47,13 +50,17 @@ u_MERC32_top (
 module MERC32_top #(
     parameter   ILB_ADDR_WIDTH          = 16,
     parameter   DLB_ADDR_WIDTH          = 16,
-    parameter   ILB_INIT_FILE           = "",
-    parameter   DLB_INIT_FILE           = ""
+    parameter   JTAG_IDCODE_VALUE       = 32'h4d32_0001
 ) (
     input                               clk,
     input                               rst_n,
 
     input                               interrupt,
+
+    input                               tck,
+    input                               tms,
+    input                               tdi,
+    output                              tdo,
 
     output                              dlb_en,
     output                              dlb_we,
@@ -134,12 +141,55 @@ module MERC32_top #(
 `endif
 );
 
+    wire                                dbg_rst_req;
+    wire                                dbg_halt_req;
+    wire                                dbg_step_req;
+    wire                                dbg_regi_req;
+    wire                                dbg_regi_vld;
+    wire    [31:0]                      dbg_regi_data;
+    wire                                dbg_halted;
+    wire                                dbg_rden;
+    wire                                dbg_wren;
+    wire    [31:0]                      dbg_addr;
+    wire    [31:0]                      dbg_wdata;
+    wire    [31:0]                      dbg_rdata;
+    wire                                dbg_ack;
+
     wire                                cpu_plb_rden;
     wire                                cpu_plb_wren;
     wire    [31:0]                      cpu_plb_addr;
     wire    [31:0]                      cpu_plb_wdata;
     wire    [31:0]                      cpu_plb_rdata;
     wire                                cpu_plb_ack;
+
+    //----------------------------------------------------------------------------
+    // JTAG debug transport
+    //----------------------------------------------------------------------------
+    jtag_debug #(
+        .IDCODE_VALUE                   (JTAG_IDCODE_VALUE      ))
+    jtag_debug_inst (
+        .clk                            (clk                    ),
+        .rst_n                          (rst_n                  ),
+
+        .tck                            (tck                    ),
+        .tms                            (tms                    ),
+        .tdi                            (tdi                    ),
+        .tdo                            (tdo                    ),
+
+        .dbg_rst_req                    (dbg_rst_req            ),
+        .dbg_halt_req                   (dbg_halt_req           ),
+        .dbg_step_req                   (dbg_step_req           ),
+        .dbg_regi_req                   (dbg_regi_req           ),
+        .dbg_regi_vld                   (dbg_regi_vld           ),
+        .dbg_regi_data                  (dbg_regi_data          ),
+        .dbg_halted                     (dbg_halted             ),
+
+        .dbg_rden                       (dbg_rden               ),
+        .dbg_wren                       (dbg_wren               ),
+        .dbg_addr                       (dbg_addr               ),
+        .dbg_wdata                      (dbg_wdata              ),
+        .dbg_rdata                      (dbg_rdata              ),
+        .dbg_ack                        (dbg_ack                ));
 
     //----------------------------------------------------------------------------
     // merc32_core instantiation
@@ -153,17 +203,20 @@ module MERC32_top #(
 
         .interrupt                      (interrupt              ),
 
-        .dbg_halt                       (1'b0                   ),
-        .dbg_step                       (1'b0                   ),
-        .dbg_reset                      (1'b0                   ),
-        .dbg_halted                     (                       ),
+        .dbg_rst_req                    (dbg_rst_req            ),
+        .dbg_halt_req                   (dbg_halt_req           ),
+        .dbg_step_req                   (dbg_step_req           ),
+        .dbg_regi_req                   (dbg_regi_req           ),
+        .dbg_regi_vld                   (dbg_regi_vld           ),
+        .dbg_regi_data                  (dbg_regi_data          ),
+        .dbg_halted                     (dbg_halted             ),
 
-        .dbg_rden                       (1'b0                   ),
-        .dbg_wren                       (1'b0                   ),
-        .dbg_addr                       (32'h0                  ),
-        .dbg_wdata                      (32'h0                  ),
-        .dbg_rdata                      (                       ),
-        .dbg_ack                        (                       ),
+        .dbg_rden                       (dbg_rden               ),
+        .dbg_wren                       (dbg_wren               ),
+        .dbg_addr                       (dbg_addr               ),
+        .dbg_wdata                      (dbg_wdata              ),
+        .dbg_rdata                      (dbg_rdata              ),
+        .dbg_ack                        (dbg_ack                ),
 
         .plb_rden                       (cpu_plb_rden           ),
         .plb_wren                       (cpu_plb_wren           ),

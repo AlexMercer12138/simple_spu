@@ -22,14 +22,14 @@ assert_eqi(r4, 3, 80)
 
 mov r4, 8
 mov r14, 81
-cmp r4, r0
-brc pseudo_include_gt_ok, ">"
+cmp r11, r4 > r0
+bnz r11, r0 + pseudo_include_gt_ok
 jmp fail
 
 pseudo_include_gt_ok:
 mov r14, 82
-cmp r0, r4
-brc pseudo_include_le_ok, "<="
+cmp r11, r0 <= r4
+bnz r11, r0 + pseudo_include_le_ok
 jmp fail
 
 pseudo_include_le_ok:
