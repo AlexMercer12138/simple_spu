@@ -15,6 +15,11 @@ module apb_can_tb;
     localparam ADDR_TX_DATA0     = 32'h0000_0014;
     localparam ADDR_TX_DATA1     = 32'h0000_0018;
     localparam ADDR_TX_CMD       = 32'h0000_001c;
+    localparam ADDR_RX_ID        = 32'h0000_0020;
+    localparam ADDR_RX_CTRL      = 32'h0000_0024;
+    localparam ADDR_RX_DATA0     = 32'h0000_0028;
+    localparam ADDR_RX_DATA1     = 32'h0000_002c;
+    localparam ADDR_RX_CMD       = 32'h0000_0030;
     localparam ADDR_FIFO_STATUS  = 32'h0000_0034;
     localparam ADDR_IRQ_STATUS   = 32'h0000_0044;
     localparam ADDR_ERROR_STATUS = 32'h0000_0050;
@@ -53,8 +58,11 @@ module apb_can_tb;
     integer     timing_start_cycle;
     integer     timing_sample_cycle;
     integer     timing_next_cycle;
+    integer     poll_count;
     reg  [31:0] read_data;
     reg  [18:0] crc_bits;
+    reg         monitor_loopback;
+    reg         loopback_dominant_seen;
 
     apb_can #(
         .SYS_CLK_FREQ     (50_000_000),
@@ -108,6 +116,8 @@ module apb_can_tb;
 
     always @(posedge clk) begin
         cycle_count <= cycle_count + 1;
+        if (monitor_loopback && !can_tx_a)
+            loopback_dominant_seen <= 1'b1;
     end
 
     initial #(CLK_PERIOD * 10) rst_n = 1'b1;
@@ -217,6 +227,59 @@ module apb_can_tb;
             apb_write_a(ADDR_TX_DATA0, payload[31:0]);
             apb_write_a(ADDR_TX_DATA1, payload[63:32]);
             apb_write_a(ADDR_TX_CMD, 32'h0000_0001);
+        end
+    endtask
+
+    task push_frame_a;
+        input [28:0] identifier;
+        input ide;
+        input rtr;
+        input [3:0] dlc;
+        input [63:0] payload;
+        begin
+            apb_write_a(ADDR_TX_ID, {3'd0, identifier});
+            apb_write_a(ADDR_TX_CTRL,
+                        {26'd0, ide, rtr, dlc});
+            apb_write_a(ADDR_TX_DATA0, payload[31:0]);
+            apb_write_a(ADDR_TX_DATA1, payload[63:32]);
+            apb_write_a(ADDR_TX_CMD, 32'h0000_0001);
+        end
+    endtask
+
+    task wait_irq_a;
+        input [15:0] mask;
+        begin
+            poll_count = 0;
+            apb_read_a(ADDR_IRQ_STATUS, read_data);
+            while (((read_data[15:0] & mask) == 0) &&
+                   (poll_count < 5000)) begin
+                poll_count = poll_count + 1;
+                apb_read_a(ADDR_IRQ_STATUS, read_data);
+            end
+            check_true("IRQ arrives before timeout",
+                       (read_data[15:0] & mask) != 0);
+        end
+    endtask
+
+    task pop_and_check_frame_a;
+        input [28:0] expected_id;
+        input expected_ide;
+        input expected_rtr;
+        input [3:0] expected_dlc;
+        input [63:0] expected_payload;
+        begin
+            apb_write_a(ADDR_RX_CMD, 32'h0000_0001);
+            apb_read_a(ADDR_RX_ID, read_data);
+            check32("loopback RX ID", read_data, {3'd0, expected_id});
+            apb_read_a(ADDR_RX_CTRL, read_data);
+            check32("loopback RX control", read_data,
+                    {26'd0, expected_ide, expected_rtr, expected_dlc});
+            apb_read_a(ADDR_RX_DATA0, read_data);
+            check32("loopback RX data bytes 0-3", read_data,
+                    expected_payload[31:0]);
+            apb_read_a(ADDR_RX_DATA1, read_data);
+            check32("loopback RX data bytes 4-7", read_data,
+                    expected_payload[63:32]);
         end
     endtask
 
@@ -391,6 +454,57 @@ module apb_can_tb;
         end
     endtask
 
+    task test_loopback_frames;
+        begin
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_a(ADDR_ERROR_STATUS, 32'h0000_03ff);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0000);
+            apb_write_a(ADDR_CTRL, 32'h0000_000d);
+            monitor_loopback = 1'b1;
+            loopback_dominant_seen = 1'b0;
+
+            push_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_irq_a(16'h0003);
+            pop_and_check_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd0,
+                                  64'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0003);
+
+            push_frame_a(29'h0000_0456, 1'b0, 1'b0, 4'd8,
+                         64'h8877_6655_4433_2211);
+            wait_irq_a(16'h0003);
+            pop_and_check_frame_a(29'h0000_0456, 1'b0, 1'b0, 4'd8,
+                                  64'h8877_6655_4433_2211);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0003);
+
+            push_frame_a(29'h01ab_cdef, 1'b1, 1'b0, 4'd8,
+                         64'h0123_4567_89ab_cdef);
+            wait_irq_a(16'h0003);
+            pop_and_check_frame_a(29'h01ab_cdef, 1'b1, 1'b0, 4'd8,
+                                  64'h0123_4567_89ab_cdef);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0003);
+
+            push_frame_a(29'h0000_0321, 1'b0, 1'b1, 4'd4,
+                         64'hffff_ffff_ffff_ffff);
+            wait_irq_a(16'h0003);
+            pop_and_check_frame_a(29'h0000_0321, 1'b0, 1'b1, 4'd4,
+                                  64'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0003);
+
+            push_frame_a(29'h0123_4567, 1'b1, 1'b1, 4'd8,
+                         64'hffff_ffff_ffff_ffff);
+            wait_irq_a(16'h0003);
+            pop_and_check_frame_a(29'h0123_4567, 1'b1, 1'b1, 4'd8,
+                                  64'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0003);
+
+            monitor_loopback = 1'b0;
+            check_true("loopback keeps external CAN TX recessive",
+                       !loopback_dominant_seen);
+            apb_write_a(ADDR_CTRL, 32'h0000_000c);
+            $display("[PASS] LOOPBACK_FRAMES");
+        end
+    endtask
+
     initial begin
         // $dumpfile("apb_can_tb.vcd");
         // $dumpvars(0, apb_can_tb);
@@ -409,6 +523,9 @@ module apb_can_tb;
         failures   = 0;
         wait_cycles = 0;
         cycle_count = 0;
+        poll_count = 0;
+        monitor_loopback = 1'b0;
+        loopback_dominant_seen = 1'b0;
         read_data  = 32'd0;
 
         @(posedge rst_n);
@@ -416,6 +533,7 @@ module apb_can_tb;
         test_crc15;
         test_bit_timing;
         test_apb_fifo;
+        test_loopback_frames;
 
         if (failures == 0)
             $display("APB CAN TEST PASS");
@@ -425,7 +543,7 @@ module apb_can_tb;
     end
 
     initial begin
-        #(CLK_PERIOD * 20000);
+        #(CLK_PERIOD * 1000000);
         failures = failures + 1;
         $display("[FAIL] APB CAN TEST TIMEOUT");
         $finish;
