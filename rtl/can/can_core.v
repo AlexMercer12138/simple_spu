@@ -51,15 +51,20 @@ module can_core (
     output  wire        can_tx
 );
 
-    localparam ST_STOP         = 4'd0;
-    localparam ST_IDLE         = 4'd1;
-    localparam ST_FRAME        = 4'd2;
-    localparam ST_CRC_DELIM    = 4'd3;
-    localparam ST_ACK_SLOT     = 4'd4;
-    localparam ST_ACK_DELIM    = 4'd5;
-    localparam ST_EOF          = 4'd6;
-    localparam ST_INTERMISSION = 4'd7;
-    localparam ST_ARB_LOST     = 4'd8;
+    localparam ST_STOP               = 5'd0;
+    localparam ST_IDLE               = 5'd1;
+    localparam ST_FRAME              = 5'd2;
+    localparam ST_CRC_DELIM          = 5'd3;
+    localparam ST_ACK_SLOT           = 5'd4;
+    localparam ST_ACK_DELIM          = 5'd5;
+    localparam ST_EOF                = 5'd6;
+    localparam ST_INTERMISSION       = 5'd7;
+    localparam ST_ERROR_FLAG         = 5'd8;
+    localparam ST_ERROR_DELIM        = 5'd9;
+    localparam ST_ERROR_INTERMISSION = 5'd10;
+    localparam ST_SUSPEND            = 5'd11;
+    localparam ST_BUS_OFF            = 5'd12;
+    localparam ST_ARB_LOST           = 5'd13;
 
     localparam RX_IDLE         = 3'd0;
     localparam RX_STUFFED      = 3'd1;
@@ -136,7 +141,51 @@ module can_core (
         end
     endfunction
 
-    reg  [3:0]  state;
+    function [3:0] frame_field_at_index;
+        input [98:0] frame_value;
+        input [7:0] raw_index_value;
+        input [7:0] crc_start_value;
+        begin
+            if (raw_index_value == 8'd0)
+                frame_field_at_index = 4'd1;
+            else if ((!frame_value[69] &&
+                      (raw_index_value <= 8'd12)) ||
+                     (frame_value[69] &&
+                      (raw_index_value <= 8'd32)))
+                frame_field_at_index = 4'd2;
+            else if ((!frame_value[69] &&
+                      (raw_index_value <= 8'd18)) ||
+                     (frame_value[69] &&
+                      (raw_index_value <= 8'd38)))
+                frame_field_at_index = 4'd3;
+            else if (raw_index_value < crc_start_value)
+                frame_field_at_index = 4'd4;
+            else
+                frame_field_at_index = 4'd5;
+        end
+    endfunction
+
+    function [3:0] receive_field_at_index;
+        input ide_value;
+        input [7:0] raw_index_value;
+        input [7:0] crc_start_value;
+        begin
+            if (raw_index_value == 8'd0)
+                receive_field_at_index = 4'd1;
+            else if ((!ide_value && (raw_index_value <= 8'd12)) ||
+                     (ide_value && (raw_index_value <= 8'd32)))
+                receive_field_at_index = 4'd2;
+            else if ((!ide_value && (raw_index_value <= 8'd18)) ||
+                     (ide_value && (raw_index_value <= 8'd38)))
+                receive_field_at_index = 4'd3;
+            else if (raw_index_value < crc_start_value)
+                receive_field_at_index = 4'd4;
+            else
+                receive_field_at_index = 4'd5;
+        end
+    endfunction
+
+    reg  [4:0]  state;
     reg  [98:0] active_frame;
     reg         active_frame_valid;
     reg         request_cooldown;
@@ -153,8 +202,19 @@ module can_core (
     reg         tx_participating;
     reg         tx_arbitration_field;
     reg  [5:0]  tx_arbitration_pos;
+    reg  [7:0]  tx_current_raw_index;
     reg         retry_pending_reg;
     reg         tx_abort_pending_reg;
+    reg         error_drive_reg;
+    reg         error_flag_started;
+    reg  [3:0]  error_flag_count;
+    reg  [3:0]  error_delim_count;
+    reg  [2:0]  error_intermission_count;
+    reg         error_flag_passive_reg;
+    reg         error_transmitter_reg;
+    reg         error_retry_allowed_reg;
+    reg  [8:0]  tec_reg;
+    reg  [7:0]  rec_reg;
     reg         tx_crc_clear;
     reg         tx_crc_enable;
     reg         tx_crc_data_bit;
@@ -182,6 +242,7 @@ module can_core (
     reg         rx_crc_data_bit;
     reg         rx_commit_valid;
     reg  [98:0] rx_commit_frame;
+    reg         rx_success_valid;
 
     wire        timing_rx_input;
     wire        timing_rx_bit;
@@ -213,6 +274,16 @@ module can_core (
     wire        rx_filter_match;
     wire [98:0] rx_complete_frame;
     wire        arbitration_loss_now;
+    wire        rx_stuff_error_now;
+    wire        rx_form_error_now;
+    wire        rx_crc_error_now;
+    wire        tx_ack_error_now;
+    wire        tx_bit_error_now;
+    wire        protocol_error_now;
+    wire        protocol_error_is_tx;
+    wire [2:0]  protocol_error_type;
+    wire [3:0]  protocol_error_field;
+    wire        error_recovery_active;
 
     assign running = enable_req;
     assign bus_idle = enable_req && (state == ST_IDLE);
@@ -220,14 +291,14 @@ module can_core (
     assign rx_active = rx_phase != RX_IDLE;
     assign retry_pending = retry_pending_reg;
     assign tx_abort_pending = tx_abort_pending_reg;
-    assign error_warning = 1'b0;
-    assign error_passive = 1'b0;
-    assign bus_off = 1'b0;
-    assign tec = 9'd0;
-    assign rec = 8'd0;
-    assign can_tx = (!running || listen_only || loopback) ? 1'b1 :
+    assign error_warning = (tec_reg >= 9'd96) || (rec_reg >= 8'd96);
+    assign error_passive = (tec_reg >= 9'd128) || (rec_reg >= 8'd128);
+    assign bus_off = tec_reg > 9'd255;
+    assign tec = tec_reg;
+    assign rec = rec_reg;
+    assign can_tx = (!running || listen_only || loopback || bus_off) ? 1'b1 :
                     ((tx_participating ? tx_drive_reg : 1'b1) &
-                     ack_drive_reg);
+                     ack_drive_reg & error_drive_reg);
     assign timing_rx_input = loopback ?
                              ((state == ST_ACK_SLOT) ? 1'b0 : tx_drive_reg) :
                              can_rx;
@@ -270,6 +341,55 @@ module can_core (
                                   tx_participating &&
                                   tx_arbitration_field &&
                                   tx_drive_reg && !timing_rx_bit;
+    assign error_recovery_active = (state == ST_ERROR_FLAG) ||
+                                   (state == ST_ERROR_DELIM) ||
+                                   (state == ST_ERROR_INTERMISSION) ||
+                                   (state == ST_SUSPEND) ||
+                                   (state == ST_BUS_OFF);
+    assign rx_stuff_error_now = timing_sample_point &&
+                                (rx_phase == RX_STUFFED) &&
+                                rx_expect_stuff &&
+                                (timing_rx_bit == rx_stuff_last_bit);
+    assign rx_crc_error_now = timing_sample_point &&
+                              (rx_phase == RX_CRC_DELIM) &&
+                              timing_rx_bit &&
+                              (rx_crc_received != rx_crc_value);
+    assign rx_form_error_now = timing_sample_point &&
+        (((rx_phase == RX_CRC_DELIM) && !timing_rx_bit) ||
+         ((rx_phase == RX_ACK_DELIM) && !timing_rx_bit) ||
+         ((rx_phase == RX_EOF) && !timing_rx_bit) ||
+         ((rx_phase == RX_INTERMISSION) && !timing_rx_bit));
+    assign tx_ack_error_now = timing_sample_point &&
+                              (state == ST_ACK_SLOT) &&
+                              tx_participating && !loopback && timing_rx_bit;
+    assign tx_bit_error_now = timing_sample_point && tx_participating &&
+        !loopback && !arbitration_loss_now &&
+        ((((state == ST_FRAME) || (state == ST_CRC_DELIM) ||
+           (state == ST_ACK_DELIM) || (state == ST_EOF)) &&
+          (timing_rx_bit != tx_drive_reg)));
+    assign protocol_error_now = enable_req && !loopback &&
+                                !error_recovery_active &&
+                                (tx_bit_error_now || tx_ack_error_now ||
+                                 rx_stuff_error_now || rx_form_error_now ||
+                                 rx_crc_error_now);
+    assign protocol_error_is_tx = tx_bit_error_now || tx_ack_error_now;
+    assign protocol_error_type = tx_bit_error_now ? 3'd5 :
+                                 tx_ack_error_now ? 3'd4 :
+                                 rx_stuff_error_now ? 3'd1 :
+                                 rx_form_error_now ? 3'd2 : 3'd3;
+    assign protocol_error_field = tx_ack_error_now ? 4'd6 :
+        (tx_bit_error_now ?
+         ((state == ST_FRAME) ?
+          frame_field_at_index(active_frame, tx_current_raw_index,
+                               crc_start_index) :
+          ((state == ST_CRC_DELIM) ? 4'd5 :
+           ((state == ST_ACK_DELIM) ? 4'd6 : 4'd7))) :
+         (rx_stuff_error_now ?
+          receive_field_at_index(rx_ide_work, rx_raw_index,
+                                 rx_crc_start_index) :
+          ((rx_phase == RX_CRC_DELIM) ? 4'd5 :
+           ((rx_phase == RX_ACK_DELIM) ? 4'd6 :
+            ((rx_phase == RX_EOF) ? 4'd7 : 4'd9)))));
 
     can_bit_timing can_bit_timing_inst (
         .clk              (clk                              ),
@@ -329,8 +449,19 @@ module can_core (
             tx_participating <= 1'b0;
             tx_arbitration_field <= 1'b0;
             tx_arbitration_pos <= 6'd0;
+            tx_current_raw_index <= 8'd0;
             retry_pending_reg <= 1'b0;
             tx_abort_pending_reg <= 1'b0;
+            error_drive_reg <= 1'b1;
+            error_flag_started <= 1'b0;
+            error_flag_count <= 4'd0;
+            error_delim_count <= 4'd0;
+            error_intermission_count <= 3'd0;
+            error_flag_passive_reg <= 1'b0;
+            error_transmitter_reg <= 1'b0;
+            error_retry_allowed_reg <= 1'b0;
+            tec_reg <= 9'd0;
+            rec_reg <= 8'd0;
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
 
@@ -373,11 +504,19 @@ module can_core (
                 rx_frame_valid <= 1'b1;
             end
 
+            if (rx_success_valid && !listen_only) begin
+                if (rec_reg > 8'd127)
+                    rec_reg <= 8'd127;
+                else if (rec_reg != 8'd0)
+                    rec_reg <= rec_reg - 8'd1;
+            end
+
             if (!enable_req) begin
                 state <= ST_STOP;
                 tx_drive_reg <= 1'b1;
                 tx_participating <= 1'b0;
                 tx_arbitration_field <= 1'b0;
+                error_drive_reg <= 1'b1;
                 request_cooldown <= 1'b0;
             end else begin
                 if (state == ST_STOP)
@@ -425,11 +564,139 @@ module can_core (
                     end
                 end
 
+                if (protocol_error_now) begin
+                    state <= ST_ERROR_FLAG;
+                    tx_drive_reg <= 1'b1;
+                    tx_participating <= 1'b0;
+                    tx_arbitration_field <= 1'b0;
+                    error_drive_reg <= 1'b1;
+                    error_flag_started <= 1'b0;
+                    error_flag_count <= 4'd0;
+                    error_delim_count <= 4'd0;
+                    error_intermission_count <= 3'd0;
+                    error_transmitter_reg <= protocol_error_is_tx;
+                    error_retry_allowed_reg <= protocol_error_is_tx &&
+                                               auto_retry;
+                    protocol_error_event <= 1'b1;
+                    last_error_type <= protocol_error_type;
+                    last_error_field <= protocol_error_field;
+
+                    if (listen_only) begin
+                        error_flag_passive_reg <= 1'b1;
+                    end else if (protocol_error_is_tx) begin
+                        if (tec_reg < 9'd249)
+                            tec_reg <= tec_reg + 9'd8;
+                        else
+                            tec_reg <= 9'd256;
+                        error_flag_passive_reg <=
+                            ((tec_reg + 9'd8) >= 9'd128) ||
+                            (rec_reg >= 8'd128);
+                        if ((tec_reg < 9'd96) &&
+                            ((tec_reg + 9'd8) >= 9'd96))
+                            warning_enter_event <= 1'b1;
+                        if ((tec_reg < 9'd128) &&
+                            ((tec_reg + 9'd8) >= 9'd128))
+                            passive_enter_event <= 1'b1;
+                        if ((tec_reg <= 9'd255) &&
+                            ((tec_reg + 9'd8) > 9'd255))
+                            bus_off_enter_event <= 1'b1;
+                        retry_pending_reg <= auto_retry;
+                        if (!auto_retry)
+                            tx_failed_event <= 1'b1;
+                    end else begin
+                        if (rec_reg != 8'hff)
+                            rec_reg <= rec_reg + 8'd1;
+                        error_flag_passive_reg <=
+                            (tec_reg >= 9'd128) ||
+                            ((rec_reg + 8'd1) >= 8'd128);
+                        if ((rec_reg < 8'd96) &&
+                            ((rec_reg + 8'd1) >= 8'd96) &&
+                            (tec_reg < 9'd96))
+                            warning_enter_event <= 1'b1;
+                        if ((rec_reg < 8'd128) &&
+                            ((rec_reg + 8'd1) >= 8'd128) &&
+                            (tec_reg < 9'd128))
+                            passive_enter_event <= 1'b1;
+                    end
+                end
+
+                if (timing_sample_point && (state == ST_ERROR_DELIM)) begin
+                    if (timing_rx_bit) begin
+                        if (error_delim_count == 4'd7) begin
+                            state <= ST_ERROR_INTERMISSION;
+                            error_delim_count <= 4'd0;
+                            error_intermission_count <= 3'd0;
+                        end else begin
+                            error_delim_count <= error_delim_count + 4'd1;
+                        end
+                    end else begin
+                        error_delim_count <= 4'd0;
+                    end
+                end
+
+                if (timing_sample_point &&
+                    (state == ST_ERROR_INTERMISSION)) begin
+                    if (timing_rx_bit) begin
+                        if (error_intermission_count == 3'd2) begin
+                            error_intermission_count <= 3'd0;
+                            error_drive_reg <= 1'b1;
+                            if (tx_abort_pending_reg &&
+                                active_frame_valid) begin
+                                state <= ST_IDLE;
+                                active_frame_valid <= 1'b0;
+                                retry_pending_reg <= 1'b0;
+                                tx_abort_pending_reg <= 1'b0;
+                                tx_aborted_event <= 1'b1;
+                            end else if (error_transmitter_reg &&
+                                         active_frame_valid &&
+                                         error_retry_allowed_reg &&
+                                         !bus_off) begin
+                                if (error_passive) begin
+                                    state <= ST_SUSPEND;
+                                    error_intermission_count <= 3'd0;
+                                end else begin
+                                    state <= ST_IDLE;
+                                    retry_pending_reg <= 1'b0;
+                                    tx_crc_clear <= 1'b1;
+                                end
+                            end else begin
+                                state <= bus_off ? ST_BUS_OFF : ST_IDLE;
+                                if (error_transmitter_reg)
+                                    active_frame_valid <= 1'b0;
+                                retry_pending_reg <= 1'b0;
+                            end
+                            error_transmitter_reg <= 1'b0;
+                        end else begin
+                            error_intermission_count <=
+                                error_intermission_count + 3'd1;
+                        end
+                    end else begin
+                        error_intermission_count <= 3'd0;
+                    end
+                end
+
+                if (timing_sample_point && (state == ST_SUSPEND)) begin
+                    if (timing_rx_bit) begin
+                        if (error_intermission_count == 3'd7) begin
+                            state <= ST_IDLE;
+                            error_intermission_count <= 3'd0;
+                            retry_pending_reg <= 1'b0;
+                            tx_crc_clear <= 1'b1;
+                        end else begin
+                            error_intermission_count <=
+                                error_intermission_count + 3'd1;
+                        end
+                    end else begin
+                        error_intermission_count <= 3'd0;
+                    end
+                end
+
                 if (timing_bit_start) begin
                     tx_arbitration_field <= 1'b0;
                     case (state)
                         ST_IDLE: begin
                             tx_drive_reg <= 1'b1;
+                            error_drive_reg <= 1'b1;
                             if (active_frame_valid &&
                                 (tx_abort_pending_reg || tx_abort)) begin
                                 active_frame_valid <= 1'b0;
@@ -441,6 +708,7 @@ module can_core (
                                 state <= ST_FRAME;
                                 tx_drive_reg <= 1'b0;
                                 tx_participating <= 1'b1;
+                                tx_current_raw_index <= 8'd0;
                                 raw_index <= 8'd1;
                                 raw_complete <= 1'b0;
                                 stuff_pending <= 1'b0;
@@ -456,6 +724,7 @@ module can_core (
                             if (raw_complete) begin
                                 if (stuff_pending) begin
                                     tx_drive_reg <= !stuff_last_bit;
+                                    tx_current_raw_index <= raw_index;
                                     stuff_last_bit <= !stuff_last_bit;
                                     stuff_run_count <= 3'd1;
                                     stuff_pending <= 1'b0;
@@ -465,11 +734,13 @@ module can_core (
                                 end
                             end else if (stuff_pending) begin
                                 tx_drive_reg <= !stuff_last_bit;
+                                tx_current_raw_index <= raw_index;
                                 stuff_last_bit <= !stuff_last_bit;
                                 stuff_run_count <= 3'd1;
                                 stuff_pending <= 1'b0;
                             end else begin
                                 tx_drive_reg <= next_raw_bit;
+                                tx_current_raw_index <= raw_index;
                                 if ((raw_index >= 8'd1) &&
                                     ((!active_frame[69] &&
                                       (raw_index <= 8'd12)) ||
@@ -505,16 +776,7 @@ module can_core (
 
                         ST_ACK_SLOT: begin
                             tx_drive_reg <= 1'b1;
-                            if (!loopback && !ack_seen) begin
-                                state <= ST_IDLE;
-                                active_frame_valid <= 1'b0;
-                                tx_failed_event <= 1'b1;
-                                protocol_error_event <= 1'b1;
-                                last_error_type <= 3'd4;
-                                last_error_field <= 4'd6;
-                            end else begin
-                                state <= ST_ACK_DELIM;
-                            end
+                            state <= ST_ACK_DELIM;
                         end
 
                         ST_ACK_DELIM: begin
@@ -545,6 +807,8 @@ module can_core (
                                     tx_aborted_event <= 1'b1;
                                 end else begin
                                     tx_done_event <= 1'b1;
+                                    if (tec_reg != 9'd0)
+                                        tec_reg <= tec_reg - 9'd1;
                                     if (loopback && active_filter_match) begin
                                         rx_frame <= loopback_frame;
                                         rx_frame_valid <= 1'b1;
@@ -576,9 +840,53 @@ module can_core (
                             end
                         end
 
+                        ST_ERROR_FLAG: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            if (!error_flag_started) begin
+                                error_drive_reg <=
+                                    error_flag_passive_reg ? 1'b1 : 1'b0;
+                                error_flag_started <= 1'b1;
+                                error_flag_count <= 4'd1;
+                            end else if (error_flag_count == 4'd6) begin
+                                state <= ST_ERROR_DELIM;
+                                error_drive_reg <= 1'b1;
+                                error_flag_started <= 1'b0;
+                                error_flag_count <= 4'd0;
+                                error_delim_count <= 4'd0;
+                            end else begin
+                                error_flag_count <= error_flag_count + 4'd1;
+                            end
+                        end
+
+                        ST_ERROR_DELIM: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            error_drive_reg <= 1'b1;
+                        end
+
+                        ST_ERROR_INTERMISSION: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            error_drive_reg <= 1'b1;
+                        end
+
+                        ST_SUSPEND: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            error_drive_reg <= 1'b1;
+                        end
+
+                        ST_BUS_OFF: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            error_drive_reg <= 1'b1;
+                        end
+
                         default: begin
                             state <= ST_IDLE;
                             tx_drive_reg <= 1'b1;
+                            error_drive_reg <= 1'b1;
                         end
                     endcase
                 end
@@ -611,11 +919,13 @@ module can_core (
             rx_crc_data_bit <= 1'b0;
             rx_commit_valid <= 1'b0;
             rx_commit_frame <= 99'd0;
+            rx_success_valid <= 1'b0;
         end else begin
             rx_crc_enable <= 1'b0;
             rx_commit_valid <= 1'b0;
+            rx_success_valid <= 1'b0;
 
-            if (!enable_req || loopback) begin
+            if (!enable_req || loopback || error_recovery_active) begin
                 ack_drive_reg <= 1'b1;
                 rx_phase <= RX_IDLE;
                 rx_raw_index <= 8'd0;
@@ -794,9 +1104,12 @@ module can_core (
                                 rx_frame_good <= 1'b0;
                             if (rx_tail_count == 4'd2) begin
                                 if (rx_frame_good && timing_rx_bit &&
-                                    !rx_origin_local && rx_filter_match) begin
-                                    rx_commit_frame <= rx_complete_frame;
-                                    rx_commit_valid <= 1'b1;
+                                    !rx_origin_local) begin
+                                    rx_success_valid <= 1'b1;
+                                    if (rx_filter_match) begin
+                                        rx_commit_frame <= rx_complete_frame;
+                                        rx_commit_valid <= 1'b1;
+                                    end
                                 end
                                 rx_phase <= RX_IDLE;
                                 rx_tail_count <= 4'd0;
@@ -810,6 +1123,19 @@ module can_core (
                             ack_drive_reg <= 1'b1;
                         end
                     endcase
+                end
+
+                if (protocol_error_now) begin
+                    ack_drive_reg <= 1'b1;
+                    rx_phase <= RX_IDLE;
+                    rx_raw_index <= 8'd0;
+                    rx_crc_start_index <= 8'hff;
+                    rx_raw_last_index <= 8'hff;
+                    rx_raw_complete <= 1'b0;
+                    rx_expect_stuff <= 1'b0;
+                    rx_stuff_run_count <= 3'd0;
+                    rx_frame_good <= 1'b0;
+                    rx_origin_local <= 1'b0;
                 end
             end
         end

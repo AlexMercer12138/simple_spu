@@ -22,6 +22,7 @@ module apb_can_tb;
     localparam ADDR_RX_CMD       = 32'h0000_0030;
     localparam ADDR_FIFO_STATUS  = 32'h0000_0034;
     localparam ADDR_IRQ_STATUS   = 32'h0000_0044;
+    localparam ADDR_ERROR_COUNT  = 32'h0000_004c;
     localparam ADDR_ERROR_STATUS = 32'h0000_0050;
 
     reg         clk = 1'b0;
@@ -47,6 +48,11 @@ module apb_can_tb;
     wire        interrupt_b;
     wire        can_tx_b;
     wire        can_bus;
+    wire        controller_bus;
+    reg         external_bus_enable;
+    reg         external_bus_bit;
+    reg         bus_override_enable;
+    reg         bus_override_bit;
     reg         crc_clear;
     reg         crc_enable;
     reg         crc_data_bit;
@@ -73,6 +79,15 @@ module apb_can_tb;
     reg  [18:0] crc_bits;
     reg         monitor_loopback;
     reg         loopback_dominant_seen;
+    reg         monitor_error_flag_a;
+    reg         monitor_error_flag_b;
+    integer     dominant_run_a;
+    integer     dominant_run_b;
+    integer     maximum_dominant_run_a;
+    integer     maximum_dominant_run_b;
+    reg  [14:0] external_crc;
+    reg         external_stuff_last;
+    integer     external_stuff_run;
 
     apb_can #(
         .SYS_CLK_FREQ     (50_000_000),
@@ -116,7 +131,9 @@ module apb_can_tb;
         .can_tx           (can_tx_b   )
     );
 
-    assign can_bus = can_tx_a & can_tx_b;
+    assign controller_bus = can_tx_a & can_tx_b &
+                            (external_bus_enable ? external_bus_bit : 1'b1);
+    assign can_bus = bus_override_enable ? bus_override_bit : controller_bus;
 
     can_crc can_crc_inst (
         .clk            (clk           ),
@@ -153,6 +170,30 @@ module apb_can_tb;
             loopback_dominant_seen <= 1'b1;
     end
 
+    always @(negedge clk) begin
+        if (monitor_error_flag_a &&
+            apb_can_inst_a.can_core_inst.timing_bit_start) begin
+            if (!can_tx_a) begin
+                dominant_run_a = dominant_run_a + 1;
+                if (dominant_run_a > maximum_dominant_run_a)
+                    maximum_dominant_run_a = dominant_run_a;
+            end else begin
+                dominant_run_a = 0;
+            end
+        end
+
+        if (monitor_error_flag_b &&
+            apb_can_inst_b.can_core_inst.timing_bit_start) begin
+            if (!can_tx_b) begin
+                dominant_run_b = dominant_run_b + 1;
+                if (dominant_run_b > maximum_dominant_run_b)
+                    maximum_dominant_run_b = dominant_run_b;
+            end else begin
+                dominant_run_b = 0;
+            end
+        end
+    end
+
     initial #(CLK_PERIOD * 10) rst_n = 1'b1;
 
     task check32;
@@ -178,6 +219,18 @@ module apb_can_tb;
             end
         end
     endtask
+
+    function [14:0] tb_crc15_next;
+        input [14:0] crc_in;
+        input bit_in;
+        reg feedback;
+        begin
+            feedback = bit_in ^ crc_in[14];
+            tb_crc15_next = {crc_in[13:0], 1'b0};
+            if (feedback)
+                tb_crc15_next = tb_crc15_next ^ 15'h4599;
+        end
+    endfunction
 
     task apb_idle_a;
         begin
@@ -365,6 +418,193 @@ module apb_can_tb;
             apb_write_b(ADDR_TX_DATA0, payload[31:0]);
             apb_write_b(ADDR_TX_DATA1, payload[63:32]);
             apb_write_b(ADDR_TX_CMD, 32'h0000_0001);
+        end
+    endtask
+
+    task wait_b_next_bit_start;
+        begin
+            @(negedge clk);
+            while (apb_can_inst_b.can_core_inst.timing_bit_start)
+                @(negedge clk);
+            while (!apb_can_inst_b.can_core_inst.timing_bit_start)
+                @(negedge clk);
+        end
+    endtask
+
+    task external_send_bus_bit;
+        input bit_value;
+        begin
+            external_bus_bit <= bit_value;
+            wait_b_next_bit_start;
+        end
+    endtask
+
+    task external_start_frame;
+        begin
+            @(negedge clk);
+            external_bus_enable <= 1'b1;
+            external_bus_bit <= 1'b0;
+            while (apb_can_inst_b.can_core_inst.rx_phase == 3'd0)
+                @(negedge clk);
+            while (!apb_can_inst_b.can_core_inst.timing_bit_start)
+                @(negedge clk);
+            external_crc = tb_crc15_next(15'd0, 1'b0);
+            external_stuff_last = 1'b0;
+            external_stuff_run = 1;
+        end
+    endtask
+
+    task external_send_raw_bit;
+        input bit_value;
+        input include_in_crc;
+        begin
+            if (external_stuff_run == 5) begin
+                external_send_bus_bit(!external_stuff_last);
+                external_stuff_last = !external_stuff_last;
+                external_stuff_run = 1;
+            end
+
+            external_send_bus_bit(bit_value);
+            if (include_in_crc)
+                external_crc = tb_crc15_next(external_crc, bit_value);
+            if (bit_value == external_stuff_last) begin
+                external_stuff_run = external_stuff_run + 1;
+            end else begin
+                external_stuff_last = bit_value;
+                external_stuff_run = 1;
+            end
+        end
+    endtask
+
+    task external_finish_stuffing;
+        begin
+            if (external_stuff_run == 5) begin
+                external_send_bus_bit(!external_stuff_last);
+                external_stuff_last = !external_stuff_last;
+                external_stuff_run = 1;
+            end
+        end
+    endtask
+
+    task wait_core_b_idle;
+        integer timeout_count;
+        begin
+            timeout_count = 0;
+            while (((apb_can_inst_b.can_core_inst.state != 4'd1) ||
+                    (apb_can_inst_b.can_core_inst.rx_phase != 3'd0)) &&
+                   (timeout_count < 2000)) begin
+                @(negedge clk);
+                timeout_count = timeout_count + 1;
+            end
+            check_true("CAN core B returns to idle after error",
+                       timeout_count < 2000);
+        end
+    endtask
+
+    task wait_core_a_idle;
+        integer timeout_count;
+        begin
+            timeout_count = 0;
+            while (((apb_can_inst_a.can_core_inst.state != 5'd1) ||
+                    (apb_can_inst_a.can_core_inst.rx_phase != 3'd0)) &&
+                   (timeout_count < 2000)) begin
+                @(negedge clk);
+                timeout_count = timeout_count + 1;
+            end
+            check_true("CAN core A returns to idle after error",
+                       timeout_count < 2000);
+        end
+    endtask
+
+    task send_external_standard_frame;
+        input [1:0] error_mode;
+        integer bit_index;
+        reg transmitted_crc_bit;
+        reg [10:0] identifier;
+        begin
+            identifier = 11'h123;
+            external_start_frame;
+            for (bit_index = 10; bit_index >= 0;
+                 bit_index = bit_index - 1)
+                external_send_raw_bit(identifier[bit_index], 1'b1);
+            external_send_raw_bit(1'b0, 1'b1);
+            external_send_raw_bit(1'b0, 1'b1);
+            external_send_raw_bit(1'b0, 1'b1);
+            for (bit_index = 3; bit_index >= 0;
+                 bit_index = bit_index - 1)
+                external_send_raw_bit(1'b0, 1'b1);
+
+            for (bit_index = 14; bit_index >= 0;
+                 bit_index = bit_index - 1) begin
+                transmitted_crc_bit = external_crc[bit_index];
+                if ((error_mode == 2'd1) && (bit_index == 14))
+                    transmitted_crc_bit = !transmitted_crc_bit;
+                external_send_raw_bit(transmitted_crc_bit, 1'b0);
+            end
+            external_finish_stuffing;
+
+            external_send_bus_bit(error_mode == 2'd2 ? 1'b0 : 1'b1);
+            if (error_mode == 2'd0) begin
+                external_send_bus_bit(1'b1);
+                external_send_bus_bit(1'b1);
+                for (bit_index = 0; bit_index < 7;
+                     bit_index = bit_index + 1)
+                    external_send_bus_bit(1'b1);
+                for (bit_index = 0; bit_index < 3;
+                     bit_index = bit_index + 1)
+                    external_send_bus_bit(1'b1);
+            end
+
+            external_bus_bit <= 1'b1;
+            if (error_mode != 2'd0)
+                wait_core_b_idle;
+            @(negedge clk);
+            external_bus_enable <= 1'b0;
+        end
+    endtask
+
+    task send_external_stuff_error;
+        integer zero_index;
+        begin
+            external_start_frame;
+            for (zero_index = 0; zero_index < 5;
+                 zero_index = zero_index + 1)
+                external_send_bus_bit(1'b0);
+            external_bus_bit <= 1'b1;
+            wait_core_b_idle;
+            @(negedge clk);
+            external_bus_enable <= 1'b0;
+        end
+    endtask
+
+    task reset_node_b_for_external_frame;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_CTRL, 32'h0000_0001);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_b(ADDR_ERROR_STATUS, 32'h0000_03ff);
+            repeat (4) @(negedge clk);
+        end
+    endtask
+
+    task check_node_b_error;
+        input [2:0] expected_type;
+        input [3:0] expected_field;
+        input [4:0] expected_sticky_mask;
+        begin
+            wait_irq_b(16'h0040);
+            apb_read_b(ADDR_ERROR_STATUS, read_data);
+            check32("receiver error type", {29'd0, read_data[12:10]},
+                    {29'd0, expected_type});
+            check32("receiver error field", {28'd0, read_data[17:14]},
+                    {28'd0, expected_field});
+            check_true("receiver sticky error bit",
+                       (read_data[4:0] & expected_sticky_mask) != 0);
+            apb_read_b(ADDR_FIFO_STATUS, read_data);
+            check32("invalid frame does not enter RX FIFO",
+                    read_data & 32'h0000_ff00, 32'd0);
         end
     endtask
 
@@ -837,6 +1077,157 @@ module apb_can_tb;
         end
     endtask
 
+    task test_transmit_protocol_errors;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0001);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_a(ADDR_ERROR_STATUS, 32'h0000_03ff);
+            dominant_run_a = 0;
+            maximum_dominant_run_a = 0;
+            monitor_error_flag_a = 1'b1;
+            push_frame_a(29'h0000_0321, 1'b0, 1'b0, 4'd1, 64'h5a);
+            wait_irq_a(16'h0050);
+            wait_core_a_idle;
+            monitor_error_flag_a = 1'b0;
+            apb_read_a(ADDR_ERROR_COUNT, read_data);
+            check32("ACK error increments TEC by eight",
+                    read_data & 32'h0000_01ff, 32'd8);
+            apb_read_a(ADDR_ERROR_STATUS, read_data);
+            check_true("ACK error sticky status", read_data[3]);
+            check32("ACK error type", {29'd0, read_data[12:10]}, 32'd4);
+            check32("ACK error field", {28'd0, read_data[17:14]}, 32'd6);
+            check_true("ACK error emits six dominant flag bits",
+                       maximum_dominant_run_a >= 6);
+
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_b(ADDR_CTRL, 32'h0000_0001);
+            push_frame_a(29'h0000_0322, 1'b0, 1'b0, 4'd1, 64'ha5);
+            wait_irq_a(16'h0002);
+            apb_read_a(ADDR_ERROR_COUNT, read_data);
+            check32("successful TX decrements TEC",
+                    read_data & 32'h0000_01ff, 32'd7);
+
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0001);
+            apb_write_b(ADDR_CTRL, 32'h0000_0001);
+            dominant_run_a = 0;
+            maximum_dominant_run_a = 0;
+            monitor_error_flag_a = 1'b1;
+            push_frame_a(29'h0000_0400, 1'b0, 1'b0, 4'd0, 64'd0);
+            while (!((apb_can_inst_a.can_core_inst.state == 4'd2) &&
+                     (apb_can_inst_a.can_core_inst.raw_index > 8'd20) &&
+                     !apb_can_inst_a.can_core_inst.tx_drive_reg))
+                @(negedge clk);
+            bus_override_bit <= 1'b1;
+            bus_override_enable <= 1'b1;
+            while (!apb_can_inst_a.can_core_inst.timing_sample_point)
+                @(negedge clk);
+            @(negedge clk);
+            bus_override_enable <= 1'b0;
+            wait_irq_a(16'h0050);
+            wait_core_a_idle;
+            monitor_error_flag_a = 1'b0;
+            apb_read_a(ADDR_ERROR_COUNT, read_data);
+            check32("Bit Error increments TEC by eight",
+                    read_data & 32'h0000_01ff, 32'd8);
+            apb_read_a(ADDR_ERROR_STATUS, read_data);
+            check_true("Bit Error sticky status", read_data[4]);
+            check32("Bit Error type", {29'd0, read_data[12:10]}, 32'd5);
+            check32("Bit Error field", {28'd0, read_data[17:14]}, 32'd5);
+            check_true("Bit Error emits six dominant flag bits",
+                       maximum_dominant_run_a >= 6);
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] TRANSMIT_ERRORS");
+        end
+    endtask
+
+    task test_receive_protocol_errors;
+        begin
+            reset_node_b_for_external_frame;
+            dominant_run_b = 0;
+            maximum_dominant_run_b = 0;
+            monitor_error_flag_b = 1'b1;
+            send_external_stuff_error;
+            monitor_error_flag_b = 1'b0;
+            check_node_b_error(3'd1, 4'd2, 5'b00001);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("Stuff Error increments REC", read_data[23:16], 32'd1);
+            check_true("Stuff Error emits active flag",
+                       maximum_dominant_run_b >= 6);
+
+            reset_node_b_for_external_frame;
+            dominant_run_b = 0;
+            maximum_dominant_run_b = 0;
+            monitor_error_flag_b = 1'b1;
+            send_external_standard_frame(2'd1);
+            monitor_error_flag_b = 1'b0;
+            check_node_b_error(3'd3, 4'd5, 5'b00100);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("CRC Error increments REC", read_data[23:16], 32'd1);
+            check_true("CRC Error emits active flag",
+                       maximum_dominant_run_b >= 6);
+
+            reset_node_b_for_external_frame;
+            dominant_run_b = 0;
+            maximum_dominant_run_b = 0;
+            monitor_error_flag_b = 1'b1;
+            send_external_standard_frame(2'd2);
+            monitor_error_flag_b = 1'b0;
+            check_node_b_error(3'd2, 4'd5, 5'b00010);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("Form Error increments REC", read_data[23:16], 32'd1);
+            check_true("Form Error emits active flag",
+                       maximum_dominant_run_b >= 6);
+            $display("[PASS] PROTOCOL_ERRORS");
+        end
+    endtask
+
+    task test_error_confinement;
+        begin
+            reset_node_b_for_external_frame;
+            for (i = 0; i < 127; i = i + 1)
+                send_external_stuff_error;
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("REC reaches 127", read_data[23:16], 32'd127);
+            apb_read_b(ADDR_STATUS, read_data);
+            check_true("REC 127 remains Error Active", !read_data[8]);
+
+            dominant_run_b = 0;
+            maximum_dominant_run_b = 0;
+            monitor_error_flag_b = 1'b1;
+            send_external_stuff_error;
+            monitor_error_flag_b = 1'b0;
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("REC reaches Error Passive threshold",
+                    read_data[23:16], 32'd128);
+            apb_read_b(ADDR_STATUS, read_data);
+            check_true("receiver enters Error Passive", read_data[8]);
+            wait_irq_b(16'h0100);
+            check_true("Passive Error Flag stays recessive",
+                       maximum_dominant_run_b < 6);
+
+            send_external_standard_frame(2'd0);
+            wait_irq_b(16'h0001);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("valid RX normalizes REC from passive",
+                    read_data[23:16], 32'd127);
+            apb_read_b(ADDR_STATUS, read_data);
+            check_true("valid RX leaves Error Passive", !read_data[8]);
+            pop_and_check_frame_b(29'h0000_0123, 1'b0, 1'b0, 4'd0,
+                                  64'd0);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] ERROR_CONFINEMENT");
+        end
+    endtask
+
     initial begin
         // $dumpfile("apb_can_tb.vcd");
         // $dumpvars(0, apb_can_tb);
@@ -857,11 +1248,24 @@ module apb_can_tb;
         timing_hard_sync_enable = 1'b0;
         timing_resync_enable = 1'b1;
         timing_can_rx = 1'b1;
+        external_bus_enable = 1'b0;
+        external_bus_bit = 1'b1;
+        bus_override_enable = 1'b0;
+        bus_override_bit = 1'b1;
         failures   = 0;
         cycle_count = 0;
         poll_count = 0;
         monitor_loopback = 1'b0;
         loopback_dominant_seen = 1'b0;
+        monitor_error_flag_a = 1'b0;
+        monitor_error_flag_b = 1'b0;
+        dominant_run_a = 0;
+        dominant_run_b = 0;
+        maximum_dominant_run_a = 0;
+        maximum_dominant_run_b = 0;
+        external_crc = 15'd0;
+        external_stuff_last = 1'b1;
+        external_stuff_run = 0;
         read_data  = 32'd0;
 
         @(posedge rst_n);
@@ -872,6 +1276,9 @@ module apb_can_tb;
         test_loopback_frames;
         test_two_node_ack_filter;
         test_arbitration_retry_abort;
+        test_transmit_protocol_errors;
+        test_receive_protocol_errors;
+        test_error_confinement;
 
         if (failures == 0)
             $display("APB CAN TEST PASS");
