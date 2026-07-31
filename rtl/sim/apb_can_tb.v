@@ -758,6 +758,12 @@ module apb_can_tb;
                 apb_write_b(ADDR_CTRL, 32'h0000_0009);
             join
             wait_irq_a(16'h0020);
+            apb_read_a(ADDR_ERROR_STATUS, read_data);
+            check32("arbitration lost position for standard IDs",
+                    {26'd0, read_data[23:18]}, 32'd2);
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("arbitration loser retains frame for retry",
+                       read_data[5] && read_data[3]);
             wait_irq_b(16'h0002);
             wait_irq_a(16'h0002);
             wait_irq_a(16'h0001);
@@ -777,6 +783,9 @@ module apb_can_tb;
                 apb_write_b(ADDR_CTRL, 32'h0000_0009);
             join
             wait_irq_a(16'h0020);
+            apb_read_a(ADDR_ERROR_STATUS, read_data);
+            check32("standard frame wins at SRR/RTR position",
+                    {26'd0, read_data[23:18]}, 32'd11);
             wait_irq_b(16'h0002);
             wait_irq_a(16'h0002);
             pop_and_check_frame_a(29'h0000_0123, 1'b0, 1'b0, 4'd1,
@@ -813,6 +822,9 @@ module apb_can_tb;
             join
             wait_irq_a(16'h0020);
             apb_write_a(ADDR_TX_CMD, 32'h0000_0002);
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("abort remains pending until safe boundary",
+                       read_data[13] && read_data[3]);
             wait_irq_a(16'h8000);
             wait_irq_b(16'h0002);
             apb_read_a(ADDR_IRQ_STATUS, read_data);

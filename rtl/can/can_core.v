@@ -59,6 +59,7 @@ module can_core (
     localparam ST_ACK_DELIM    = 4'd5;
     localparam ST_EOF          = 4'd6;
     localparam ST_INTERMISSION = 4'd7;
+    localparam ST_ARB_LOST     = 4'd8;
 
     localparam RX_IDLE         = 3'd0;
     localparam RX_STUFFED      = 3'd1;
@@ -149,6 +150,11 @@ module can_core (
     reg  [2:0]  stuff_run_count;
     reg  [3:0]  tail_count;
     reg         ack_seen;
+    reg         tx_participating;
+    reg         tx_arbitration_field;
+    reg  [5:0]  tx_arbitration_pos;
+    reg         retry_pending_reg;
+    reg         tx_abort_pending_reg;
     reg         tx_crc_clear;
     reg         tx_crc_enable;
     reg         tx_crc_data_bit;
@@ -206,20 +212,22 @@ module can_core (
     wire [30:0] rx_filter_key;
     wire        rx_filter_match;
     wire [98:0] rx_complete_frame;
+    wire        arbitration_loss_now;
 
     assign running = enable_req;
     assign bus_idle = enable_req && (state == ST_IDLE);
     assign tx_active = active_frame_valid;
     assign rx_active = rx_phase != RX_IDLE;
-    assign retry_pending = 1'b0;
-    assign tx_abort_pending = 1'b0;
+    assign retry_pending = retry_pending_reg;
+    assign tx_abort_pending = tx_abort_pending_reg;
     assign error_warning = 1'b0;
     assign error_passive = 1'b0;
     assign bus_off = 1'b0;
     assign tec = 9'd0;
     assign rec = 8'd0;
     assign can_tx = (!running || listen_only || loopback) ? 1'b1 :
-                    (tx_drive_reg & ack_drive_reg);
+                    ((tx_participating ? tx_drive_reg : 1'b1) &
+                     ack_drive_reg);
     assign timing_rx_input = loopback ?
                              ((state == ST_ACK_SLOT) ? 1'b0 : tx_drive_reg) :
                              can_rx;
@@ -257,6 +265,11 @@ module can_core (
         (((rx_filter_key ^ accept_code) & accept_mask) == 31'd0);
     assign rx_complete_frame = {rx_identifier, rx_ide_work, rx_rtr_work,
                                 rx_dlc_work, rx_data_work};
+    assign arbitration_loss_now = timing_sample_point &&
+                                  (state == ST_FRAME) &&
+                                  tx_participating &&
+                                  tx_arbitration_field &&
+                                  tx_drive_reg && !timing_rx_bit;
 
     can_bit_timing can_bit_timing_inst (
         .clk              (clk                              ),
@@ -313,6 +326,11 @@ module can_core (
             stuff_run_count <= 3'd0;
             tail_count <= 4'd0;
             ack_seen <= 1'b0;
+            tx_participating <= 1'b0;
+            tx_arbitration_field <= 1'b0;
+            tx_arbitration_pos <= 6'd0;
+            retry_pending_reg <= 1'b0;
+            tx_abort_pending_reg <= 1'b0;
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
 
@@ -347,6 +365,9 @@ module can_core (
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
 
+            if (tx_abort && active_frame_valid)
+                tx_abort_pending_reg <= 1'b1;
+
             if (rx_commit_valid) begin
                 rx_frame <= rx_commit_frame;
                 rx_frame_valid <= 1'b1;
@@ -355,6 +376,8 @@ module can_core (
             if (!enable_req) begin
                 state <= ST_STOP;
                 tx_drive_reg <= 1'b1;
+                tx_participating <= 1'b0;
+                tx_arbitration_field <= 1'b0;
                 request_cooldown <= 1'b0;
             end else begin
                 if (state == ST_STOP)
@@ -388,13 +411,36 @@ module can_core (
                 if (timing_sample_point && (state == ST_ACK_SLOT))
                     ack_seen <= !timing_rx_bit;
 
+                if (arbitration_loss_now) begin
+                    state <= ST_ARB_LOST;
+                    tx_drive_reg <= 1'b1;
+                    tx_participating <= 1'b0;
+                    tx_arbitration_field <= 1'b0;
+                    arbitration_lost_event <= 1'b1;
+                    arbitration_lost_pos <= tx_arbitration_pos;
+                    retry_pending_reg <= auto_retry;
+                    if (!auto_retry) begin
+                        active_frame_valid <= 1'b0;
+                        tx_failed_event <= 1'b1;
+                    end
+                end
+
                 if (timing_bit_start) begin
+                    tx_arbitration_field <= 1'b0;
                     case (state)
                         ST_IDLE: begin
                             tx_drive_reg <= 1'b1;
-                            if (active_frame_valid && !listen_only) begin
+                            if (active_frame_valid &&
+                                (tx_abort_pending_reg || tx_abort)) begin
+                                active_frame_valid <= 1'b0;
+                                retry_pending_reg <= 1'b0;
+                                tx_abort_pending_reg <= 1'b0;
+                                tx_aborted_event <= 1'b1;
+                            end else if (active_frame_valid &&
+                                         !listen_only) begin
                                 state <= ST_FRAME;
                                 tx_drive_reg <= 1'b0;
+                                tx_participating <= 1'b1;
                                 raw_index <= 8'd1;
                                 raw_complete <= 1'b0;
                                 stuff_pending <= 1'b0;
@@ -424,6 +470,14 @@ module can_core (
                                 stuff_pending <= 1'b0;
                             end else begin
                                 tx_drive_reg <= next_raw_bit;
+                                if ((raw_index >= 8'd1) &&
+                                    ((!active_frame[69] &&
+                                      (raw_index <= 8'd12)) ||
+                                     (active_frame[69] &&
+                                      (raw_index <= 8'd32)))) begin
+                                    tx_arbitration_field <= 1'b1;
+                                    tx_arbitration_pos <= raw_index - 8'd1;
+                                end
                                 if (raw_index < crc_start_index) begin
                                     tx_crc_enable <= 1'b1;
                                     tx_crc_data_bit <= next_raw_bit;
@@ -484,14 +538,41 @@ module can_core (
                             if (tail_count == 4'd3) begin
                                 state <= ST_IDLE;
                                 active_frame_valid <= 1'b0;
-                                tx_done_event <= 1'b1;
-                                if (loopback && active_filter_match) begin
-                                    rx_frame <= loopback_frame;
-                                    rx_frame_valid <= 1'b1;
+                                tx_participating <= 1'b0;
+                                retry_pending_reg <= 1'b0;
+                                if (tx_abort_pending_reg) begin
+                                    tx_abort_pending_reg <= 1'b0;
+                                    tx_aborted_event <= 1'b1;
+                                end else begin
+                                    tx_done_event <= 1'b1;
+                                    if (loopback && active_filter_match) begin
+                                        rx_frame <= loopback_frame;
+                                        rx_frame_valid <= 1'b1;
+                                    end
                                 end
                                 tail_count <= 4'd0;
                             end else begin
                                 tail_count <= tail_count + 4'd1;
+                            end
+                        end
+
+                        ST_ARB_LOST: begin
+                            tx_drive_reg <= 1'b1;
+                            tx_participating <= 1'b0;
+                            if (rx_phase == RX_IDLE) begin
+                                state <= ST_IDLE;
+                                if (tx_abort_pending_reg) begin
+                                    active_frame_valid <= 1'b0;
+                                    retry_pending_reg <= 1'b0;
+                                    tx_abort_pending_reg <= 1'b0;
+                                    tx_aborted_event <= 1'b1;
+                                end else if (active_frame_valid &&
+                                             auto_retry) begin
+                                    retry_pending_reg <= 1'b0;
+                                    tx_crc_clear <= 1'b1;
+                                end else begin
+                                    retry_pending_reg <= 1'b0;
+                                end
                             end
                         end
 
@@ -546,6 +627,9 @@ module can_core (
                 rx_frame_good <= 1'b0;
                 rx_origin_local <= 1'b0;
             end else begin
+                if (arbitration_loss_now)
+                    rx_origin_local <= 1'b0;
+
                 if (timing_bit_start) begin
                     if ((rx_phase == RX_ACK_SLOT) && rx_frame_good &&
                         !rx_origin_local && !listen_only)
