@@ -215,6 +215,10 @@ module can_core (
     reg         error_retry_allowed_reg;
     reg  [8:0]  tec_reg;
     reg  [7:0]  rec_reg;
+    reg         running_reg;
+    reg         stop_pending_reg;
+    reg  [3:0]  bus_off_bit_count;
+    reg  [7:0]  bus_off_group_count;
     reg         tx_crc_clear;
     reg         tx_crc_enable;
     reg         tx_crc_data_bit;
@@ -285,8 +289,9 @@ module can_core (
     wire [3:0]  protocol_error_field;
     wire        error_recovery_active;
 
-    assign running = enable_req;
-    assign bus_idle = enable_req && (state == ST_IDLE);
+    assign running = running_reg;
+    assign bus_idle = running_reg && (state == ST_IDLE) &&
+                      (rx_phase == RX_IDLE);
     assign tx_active = active_frame_valid;
     assign rx_active = rx_phase != RX_IDLE;
     assign retry_pending = retry_pending_reg;
@@ -367,7 +372,7 @@ module can_core (
         ((((state == ST_FRAME) || (state == ST_CRC_DELIM) ||
            (state == ST_ACK_DELIM) || (state == ST_EOF)) &&
           (timing_rx_bit != tx_drive_reg)));
-    assign protocol_error_now = enable_req && !loopback &&
+    assign protocol_error_now = running_reg && !loopback &&
                                 !error_recovery_active &&
                                 (tx_bit_error_now || tx_ack_error_now ||
                                  rx_stuff_error_now || rx_form_error_now ||
@@ -394,7 +399,7 @@ module can_core (
     can_bit_timing can_bit_timing_inst (
         .clk              (clk                              ),
         .rst_n            (rst_n                            ),
-        .enable           (enable_req                       ),
+        .enable           (running_reg                      ),
         .hard_sync_enable (!loopback && (state == ST_IDLE) &&
                            (rx_phase == RX_IDLE)              ),
         .resync_enable    ((state != ST_IDLE) ||
@@ -462,6 +467,10 @@ module can_core (
             error_retry_allowed_reg <= 1'b0;
             tec_reg <= 9'd0;
             rec_reg <= 8'd0;
+            running_reg <= 1'b0;
+            stop_pending_reg <= 1'b0;
+            bus_off_bit_count <= 4'd0;
+            bus_off_group_count <= 8'd0;
             tx_crc_clear <= 1'b0;
             tx_crc_enable <= 1'b0;
 
@@ -511,18 +520,26 @@ module can_core (
                     rec_reg <= rec_reg - 8'd1;
             end
 
-            if (!enable_req) begin
+            if (!running_reg) begin
                 state <= ST_STOP;
                 tx_drive_reg <= 1'b1;
                 tx_participating <= 1'b0;
                 tx_arbitration_field <= 1'b0;
                 error_drive_reg <= 1'b1;
                 request_cooldown <= 1'b0;
+                if (enable_req) begin
+                    running_reg <= 1'b1;
+                    stop_pending_reg <= 1'b0;
+                    state <= bus_off ? ST_BUS_OFF : ST_IDLE;
+                end
             end else begin
-                if (state == ST_STOP)
-                    state <= ST_IDLE;
+                if (!enable_req)
+                    stop_pending_reg <= 1'b1;
+                else
+                    stop_pending_reg <= 1'b0;
 
-                if ((state == ST_IDLE) && !active_frame_valid) begin
+                if ((state == ST_IDLE) && !active_frame_valid &&
+                    enable_req && !stop_pending_reg) begin
                     if (!request_cooldown) begin
                         tx_frame_request <= 1'b1;
                         request_cooldown <= 1'b1;
@@ -597,9 +614,16 @@ module can_core (
                         if ((tec_reg < 9'd128) &&
                             ((tec_reg + 9'd8) >= 9'd128))
                             passive_enter_event <= 1'b1;
-                        if ((tec_reg <= 9'd255) &&
-                            ((tec_reg + 9'd8) > 9'd255))
+                        if ((tec_reg >= 9'd248) &&
+                            (tec_reg <= 9'd255)) begin
                             bus_off_enter_event <= 1'b1;
+                            state <= ST_BUS_OFF;
+                            error_drive_reg <= 1'b1;
+                            bus_off_bit_count <= 4'd0;
+                            bus_off_group_count <= 8'd0;
+                            if (!auto_retry)
+                                active_frame_valid <= 1'b0;
+                        end
                         retry_pending_reg <= auto_retry;
                         if (!auto_retry)
                             tx_failed_event <= 1'b1;
@@ -647,6 +671,17 @@ module can_core (
                                 retry_pending_reg <= 1'b0;
                                 tx_abort_pending_reg <= 1'b0;
                                 tx_aborted_event <= 1'b1;
+                            end else if (stop_pending_reg || !enable_req) begin
+                                state <= ST_STOP;
+                                running_reg <= 1'b0;
+                                if (error_transmitter_reg &&
+                                    error_retry_allowed_reg)
+                                    tx_crc_clear <= 1'b1;
+                                if (error_transmitter_reg &&
+                                    !error_retry_allowed_reg) begin
+                                    active_frame_valid <= 1'b0;
+                                    retry_pending_reg <= 1'b0;
+                                end
                             end else if (error_transmitter_reg &&
                                          active_frame_valid &&
                                          error_retry_allowed_reg &&
@@ -678,10 +713,15 @@ module can_core (
                 if (timing_sample_point && (state == ST_SUSPEND)) begin
                     if (timing_rx_bit) begin
                         if (error_intermission_count == 3'd7) begin
-                            state <= ST_IDLE;
                             error_intermission_count <= 3'd0;
-                            retry_pending_reg <= 1'b0;
-                            tx_crc_clear <= 1'b1;
+                            if (stop_pending_reg || !enable_req) begin
+                                state <= ST_STOP;
+                                running_reg <= 1'b0;
+                            end else begin
+                                state <= ST_IDLE;
+                                retry_pending_reg <= 1'b0;
+                                tx_crc_clear <= 1'b1;
+                            end
                         end else begin
                             error_intermission_count <=
                                 error_intermission_count + 3'd1;
@@ -691,13 +731,48 @@ module can_core (
                     end
                 end
 
+                if (state == ST_BUS_OFF) begin
+                    if (stop_pending_reg || !enable_req) begin
+                        state <= ST_STOP;
+                        running_reg <= 1'b0;
+                    end else if (timing_sample_point) begin
+                        if (timing_rx_bit) begin
+                            if (bus_off_bit_count == 4'd10) begin
+                                bus_off_bit_count <= 4'd0;
+                                if (bus_off_group_count == 8'd127) begin
+                                    bus_off_group_count <= 8'd0;
+                                    tec_reg <= 9'd0;
+                                    rec_reg <= 8'd0;
+                                    state <= ST_IDLE;
+                                    retry_pending_reg <= 1'b0;
+                                    tx_crc_clear <= 1'b1;
+                                    bus_recovered_event <= 1'b1;
+                                end else begin
+                                    bus_off_group_count <=
+                                        bus_off_group_count + 8'd1;
+                                end
+                            end else begin
+                                bus_off_bit_count <= bus_off_bit_count + 4'd1;
+                            end
+                        end else begin
+                            bus_off_bit_count <= 4'd0;
+                        end
+                    end
+                end
+
                 if (timing_bit_start) begin
                     tx_arbitration_field <= 1'b0;
                     case (state)
                         ST_IDLE: begin
                             tx_drive_reg <= 1'b1;
                             error_drive_reg <= 1'b1;
-                            if (active_frame_valid &&
+                            if ((stop_pending_reg || !enable_req) &&
+                                (rx_phase == RX_IDLE)) begin
+                                state <= ST_STOP;
+                                running_reg <= 1'b0;
+                            end else if (rx_phase != RX_IDLE) begin
+                                tx_participating <= 1'b0;
+                            end else if (active_frame_valid &&
                                 (tx_abort_pending_reg || tx_abort)) begin
                                 active_frame_valid <= 1'b0;
                                 retry_pending_reg <= 1'b0;
@@ -798,7 +873,14 @@ module can_core (
                         ST_INTERMISSION: begin
                             tx_drive_reg <= 1'b1;
                             if (tail_count == 4'd3) begin
-                                state <= ST_IDLE;
+                                if (stop_pending_reg || !enable_req) begin
+                                    state <= ST_STOP;
+                                    running_reg <= 1'b0;
+                                    if (active_frame_valid && auto_retry)
+                                        tx_crc_clear <= 1'b1;
+                                end else begin
+                                    state <= ST_IDLE;
+                                end
                                 active_frame_valid <= 1'b0;
                                 tx_participating <= 1'b0;
                                 retry_pending_reg <= 1'b0;
@@ -824,7 +906,12 @@ module can_core (
                             tx_drive_reg <= 1'b1;
                             tx_participating <= 1'b0;
                             if (rx_phase == RX_IDLE) begin
-                                state <= ST_IDLE;
+                                if (stop_pending_reg || !enable_req) begin
+                                    state <= ST_STOP;
+                                    running_reg <= 1'b0;
+                                end else begin
+                                    state <= ST_IDLE;
+                                end
                                 if (tx_abort_pending_reg) begin
                                     active_frame_valid <= 1'b0;
                                     retry_pending_reg <= 1'b0;
@@ -925,7 +1012,7 @@ module can_core (
             rx_commit_valid <= 1'b0;
             rx_success_valid <= 1'b0;
 
-            if (!enable_req || loopback || error_recovery_active) begin
+            if (!running_reg || loopback || error_recovery_active) begin
                 ack_drive_reg <= 1'b1;
                 rx_phase <= RX_IDLE;
                 rx_raw_index <= 8'd0;

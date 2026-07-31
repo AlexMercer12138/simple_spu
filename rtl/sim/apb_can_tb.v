@@ -21,7 +21,11 @@ module apb_can_tb;
     localparam ADDR_RX_DATA1     = 32'h0000_002c;
     localparam ADDR_RX_CMD       = 32'h0000_0030;
     localparam ADDR_FIFO_STATUS  = 32'h0000_0034;
+    localparam ADDR_FIFO_THRESH  = 32'h0000_0038;
+    localparam ADDR_ACCEPT_CODE  = 32'h0000_003c;
+    localparam ADDR_ACCEPT_MASK  = 32'h0000_0040;
     localparam ADDR_IRQ_STATUS   = 32'h0000_0044;
+    localparam ADDR_IRQ_ENABLE   = 32'h0000_0048;
     localparam ADDR_ERROR_COUNT  = 32'h0000_004c;
     localparam ADDR_ERROR_STATUS = 32'h0000_0050;
 
@@ -608,13 +612,58 @@ module apb_can_tb;
         end
     endtask
 
+    task drive_bus_off_recovery_bit;
+        input bit_value;
+        begin
+            @(negedge clk);
+            bus_override_enable <= 1'b1;
+            bus_override_bit <= bit_value;
+            repeat (6) @(negedge clk);
+            while (apb_can_inst_a.can_core_inst.timing_sample_point)
+                @(negedge clk);
+            while (!apb_can_inst_a.can_core_inst.timing_sample_point)
+                @(negedge clk);
+        end
+    endtask
+
+    task wait_running_a;
+        input expected_running;
+        integer timeout_count;
+        begin
+            timeout_count = 0;
+            apb_read_a(ADDR_STATUS, read_data);
+            while ((read_data[1] != expected_running) &&
+                   (timeout_count < 5000)) begin
+                timeout_count = timeout_count + 1;
+                apb_read_a(ADDR_STATUS, read_data);
+            end
+            check_true("RUNNING reaches requested safe state",
+                       read_data[1] == expected_running);
+        end
+    endtask
+
+    task wait_tx_idle_a;
+        integer timeout_count;
+        begin
+            timeout_count = 0;
+            apb_read_a(ADDR_FIFO_STATUS, read_data);
+            while (((read_data[7:0] != 8'd0) || read_data[20]) &&
+                   (timeout_count < 20000)) begin
+                timeout_count = timeout_count + 1;
+                apb_read_a(ADDR_FIFO_STATUS, read_data);
+            end
+            check_true("TX queue drains before timeout",
+                       (read_data[7:0] == 8'd0) && !read_data[20]);
+        end
+    endtask
+
     task wait_irq_a;
         input [15:0] mask;
         begin
             poll_count = 0;
             apb_read_a(ADDR_IRQ_STATUS, read_data);
             while (((read_data[15:0] & mask) == 0) &&
-                   (poll_count < 5000)) begin
+                   (poll_count < 50000)) begin
                 poll_count = poll_count + 1;
                 apb_read_a(ADDR_IRQ_STATUS, read_data);
             end
@@ -629,7 +678,7 @@ module apb_can_tb;
             poll_count = 0;
             apb_read_b(ADDR_IRQ_STATUS, read_data);
             while (((read_data[15:0] & mask) == 0) &&
-                   (poll_count < 5000)) begin
+                   (poll_count < 50000)) begin
                 poll_count = poll_count + 1;
                 apb_read_b(ADDR_IRQ_STATUS, read_data);
             end
@@ -1228,6 +1277,204 @@ module apb_can_tb;
         end
     endtask
 
+    task test_bus_off_recovery;
+        integer group_index;
+        integer bit_index;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0009);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            push_frame_a(29'h0000_0600, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_irq_a(16'h0200);
+            bus_override_enable <= 1'b1;
+            bus_override_bit <= 1'b0;
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("TEC overflow enters Bus-off", read_data[9]);
+            check_true("Bus-off keeps CAN TX recessive", can_tx_a);
+            apb_read_a(ADDR_ERROR_COUNT, read_data);
+            check_true("Bus-off TEC exceeds 255", read_data[8:0] > 9'd255);
+
+            drive_bus_off_recovery_bit(1'b0);
+            for (group_index = 0; group_index < 100;
+                 group_index = group_index + 1)
+                for (bit_index = 0; bit_index < 11;
+                     bit_index = bit_index + 1)
+                    drive_bus_off_recovery_bit(1'b1);
+
+            for (bit_index = 0; bit_index < 5; bit_index = bit_index + 1)
+                drive_bus_off_recovery_bit(1'b1);
+            drive_bus_off_recovery_bit(1'b0);
+
+            apb_write_b(ADDR_CTRL, 32'h0000_0001);
+            for (group_index = 0; group_index < 27;
+                 group_index = group_index + 1)
+                for (bit_index = 0; bit_index < 11;
+                     bit_index = bit_index + 1)
+                    drive_bus_off_recovery_bit(1'b1);
+            for (bit_index = 0; bit_index < 10; bit_index = bit_index + 1)
+                drive_bus_off_recovery_bit(1'b1);
+
+            check_true("127 groups plus ten bits remain Bus-off",
+                       apb_can_inst_a.can_core_inst.bus_off);
+            check_true("Bus recovery event waits for final bit",
+                       !apb_can_inst_a.irq_status_reg[10]);
+            drive_bus_off_recovery_bit(1'b1);
+            bus_override_enable <= 1'b0;
+            wait_irq_a(16'h0400);
+            wait_irq_a(16'h0002);
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("Bus-off recovery returns Error Active",
+                       !read_data[9] && !read_data[8] && !read_data[7]);
+            apb_read_a(ADDR_ERROR_COUNT, read_data);
+            check32("Bus-off recovery clears TEC and REC",
+                    read_data & 32'h00ff_01ff, 32'd0);
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] BUS_OFF_RECOVERY");
+        end
+    endtask
+
+    task test_modes_safe_stop_interrupts;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_CTRL, 32'h0000_0003);
+            dominant_run_b = 0;
+            maximum_dominant_run_b = 0;
+            monitor_error_flag_b = 1'b1;
+            send_external_standard_frame(2'd1);
+            wait_irq_b(16'h0040);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("Listen-only error leaves counters unchanged",
+                    read_data & 32'h00ff_01ff, 32'd0);
+            check_true("Listen-only never drives an error flag",
+                       maximum_dominant_run_b == 0);
+            apb_write_b(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            send_external_standard_frame(2'd0);
+            wait_irq_b(16'h0001);
+            monitor_error_flag_b = 1'b0;
+            pop_and_check_frame_b(29'h0000_0123, 1'b0, 1'b0, 4'd0,
+                                  64'd0);
+
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0009);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            push_frame_a(29'h0000_0700, 1'b0, 1'b0, 4'd8,
+                         64'h7070_7070_7070_7070);
+            wait_irq_a(16'h0040);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0000_0000);
+            apb_write_a(ADDR_ACCEPT_CODE, 32'h1234_5678);
+            apb_write_a(ADDR_CTRL, 32'h0000_000b);
+            apb_read_a(ADDR_BIT_TIMING, read_data);
+            check32("running core locks bit timing", read_data,
+                    32'h0016_0001);
+            apb_read_a(ADDR_ACCEPT_CODE, read_data);
+            check32("running core locks acceptance code", read_data, 32'd0);
+            apb_read_a(ADDR_CTRL, read_data);
+            check32("running core locks mode bits", read_data,
+                    32'h0000_0009);
+            apb_read_a(ADDR_ERROR_STATUS, read_data);
+            check_true("locked configuration reports error", read_data[9]);
+            check_true("masked IRQ output remains low", !interrupt_a);
+            apb_write_a(ADDR_IRQ_ENABLE, 32'h0000_4000);
+            check_true("enabling pending IRQ asserts output", interrupt_a);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_4000);
+            check_true("W1C deasserts enabled IRQ", !interrupt_a);
+
+            apb_write_a(ADDR_CTRL, 32'h0000_0008);
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("stop request clears ENABLE before RUNNING",
+                       !read_data[0] && read_data[1]);
+            check_true("safe stop retains active retry frame", read_data[3]);
+            wait_running_a(1'b0);
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("stopped core retains frame for re-enable",
+                       read_data[3]);
+            apb_write_b(ADDR_CTRL, 32'h0000_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0009);
+            wait_irq_a(16'h0002);
+            apb_read_a(ADDR_FIFO_STATUS, read_data);
+            check_true("retained frame releases after successful retry",
+                       !read_data[20]);
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] MODES");
+            $display("[PASS] INTERRUPTS");
+        end
+    endtask
+
+    task test_fifo_threshold_interrupts;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_FIFO_THRESH, 32'h0000_0202);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            apb_write_a(ADDR_IRQ_ENABLE, 32'h0000_0000);
+            apb_write_a(ADDR_CTRL, 32'h0000_000d);
+
+            push_frame_a(29'h0000_0101, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_tx_idle_a;
+            apb_read_a(ADDR_IRQ_STATUS, read_data);
+            check_true("RX below threshold has no crossing", !read_data[2]);
+            push_frame_a(29'h0000_0102, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_tx_idle_a;
+            wait_irq_a(16'h0004);
+            check_true("masked threshold IRQ leaves output low", !interrupt_a);
+            apb_write_a(ADDR_IRQ_ENABLE, 32'h0000_0004);
+            check_true("threshold pending obeys IRQ enable", interrupt_a);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0004);
+            check_true("threshold W1C clears output", !interrupt_a);
+
+            push_frame_a(29'h0000_0103, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_tx_idle_a;
+            apb_read_a(ADDR_IRQ_STATUS, read_data);
+            check_true("RX threshold does not retrigger while above",
+                       !read_data[2]);
+            apb_write_a(ADDR_RX_CMD, 32'h0000_0001);
+            apb_write_a(ADDR_RX_CMD, 32'h0000_0001);
+            push_frame_a(29'h0000_0104, 1'b0, 1'b0, 4'd0, 64'd0);
+            wait_tx_idle_a;
+            wait_irq_a(16'h0004);
+
+            apb_write_a(ADDR_CTRL, 32'h0000_000c);
+            wait_running_a(1'b0);
+            apb_write_a(ADDR_CTRL, 32'h0000_030c);
+            apb_write_a(ADDR_FIFO_THRESH, 32'h0000_0200);
+            apb_write_a(ADDR_IRQ_ENABLE, 32'h0000_0008);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_ffff);
+            push_frame_a(29'h0000_0201, 1'b0, 1'b0, 4'd0, 64'd0);
+            push_frame_a(29'h0000_0202, 1'b0, 1'b0, 4'd0, 64'd0);
+            push_frame_a(29'h0000_0203, 1'b0, 1'b0, 4'd0, 64'd0);
+            push_frame_a(29'h0000_0204, 1'b0, 1'b0, 4'd0, 64'd0);
+            apb_write_a(ADDR_CTRL, 32'h0000_000d);
+            wait_irq_a(16'h0008);
+            check_true("TX threshold crossing asserts IRQ", interrupt_a);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0008);
+            wait_tx_idle_a;
+            apb_read_a(ADDR_IRQ_STATUS, read_data);
+            check_true("TX threshold does not retrigger while below",
+                       !read_data[3]);
+
+            apb_write_a(ADDR_CTRL, 32'h0000_000c);
+            wait_running_a(1'b0);
+            push_frame_a(29'h0000_0301, 1'b0, 1'b0, 4'd0, 64'd0);
+            push_frame_a(29'h0000_0302, 1'b0, 1'b0, 4'd0, 64'd0);
+            push_frame_a(29'h0000_0303, 1'b0, 1'b0, 4'd0, 64'd0);
+            apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0008);
+            apb_write_a(ADDR_CTRL, 32'h0000_000d);
+            wait_irq_a(16'h0008);
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] FIFO_THRESHOLDS");
+        end
+    endtask
+
     initial begin
         // $dumpfile("apb_can_tb.vcd");
         // $dumpvars(0, apb_can_tb);
@@ -1279,6 +1526,9 @@ module apb_can_tb;
         test_transmit_protocol_errors;
         test_receive_protocol_errors;
         test_error_confinement;
+        test_bus_off_recovery;
+        test_modes_safe_stop_interrupts;
+        test_fifo_threshold_interrupts;
 
         if (failures == 0)
             $display("APB CAN TEST PASS");

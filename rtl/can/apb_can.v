@@ -107,6 +107,7 @@ module apb_can #(
     wire [7:0]              rx_level;
 
     wire        ctrl_write;
+    wire        fifo_threshold_write;
     wire        soft_reset_write;
     wire        tx_clear_write;
     wire        rx_clear_write;
@@ -131,6 +132,10 @@ module apb_can #(
 
     reg         tx_load_pending;
     reg         tx_frame_valid_reg;
+    reg         rx_threshold_above_reg;
+    reg         tx_threshold_above_reg;
+    reg         rx_threshold_event_reg;
+    reg         tx_threshold_event_reg;
     wire        core_tx_frame_request;
     wire        core_rx_frame_valid;
     wire [98:0] core_rx_frame;
@@ -171,6 +176,8 @@ module apb_can #(
     assign interrupt = |(irq_status_reg & irq_enable_reg);
 
     assign ctrl_write = apb_write_access && (word_addr == 10'd0);
+    assign fifo_threshold_write = apb_write_access &&
+                                  (word_addr == 10'd14);
     assign soft_reset_write = ctrl_write && s_apb_pwdata[31];
     assign tx_clear_write = ctrl_write && !soft_reset_write &&
                             s_apb_pwdata[8];
@@ -229,6 +236,8 @@ module apb_can #(
     assign irq_set_mask =
         ({15'd0, (core_rx_frame_valid && !rx_fifo_full)} << 0) |
         ({15'd0, core_tx_done_event} << 1) |
+        ({15'd0, rx_threshold_event_reg} << 2) |
+        ({15'd0, tx_threshold_event_reg} << 3) |
         ({15'd0, core_tx_failed_event} << 4) |
         ({15'd0, core_arbitration_lost_event} << 5) |
         ({15'd0, core_protocol_error_event} << 6) |
@@ -417,6 +426,48 @@ module apb_can #(
                 tx_load_pending <= 1'b0;
             else if (tx_fifo_rd_en)
                 tx_load_pending <= 1'b1;
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n || soft_reset_write) begin
+            rx_threshold_above_reg <= 1'b0;
+            tx_threshold_above_reg <= 1'b0;
+            rx_threshold_event_reg <= 1'b0;
+            tx_threshold_event_reg <= 1'b0;
+        end else begin
+            rx_threshold_event_reg <= 1'b0;
+            tx_threshold_event_reg <= 1'b0;
+
+            if (rx_clear_write) begin
+                rx_threshold_above_reg <= 1'b0;
+            end else if (fifo_threshold_write) begin
+                rx_threshold_above_reg <=
+                    (s_apb_pwdata[7:0] != 8'd0) &&
+                    (rx_level >= s_apb_pwdata[7:0]);
+            end else if (fifo_threshold_reg[7:0] == 8'd0) begin
+                rx_threshold_above_reg <= 1'b0;
+            end else if (!rx_threshold_above_reg &&
+                         (rx_level >= fifo_threshold_reg[7:0])) begin
+                rx_threshold_above_reg <= 1'b1;
+                rx_threshold_event_reg <= 1'b1;
+            end else if (rx_level < fifo_threshold_reg[7:0]) begin
+                rx_threshold_above_reg <= 1'b0;
+            end
+
+            if (tx_clear_write) begin
+                tx_threshold_above_reg <= 1'b0;
+            end else if (fifo_threshold_write) begin
+                tx_threshold_above_reg <=
+                    tx_level > s_apb_pwdata[15:8];
+            end else if (!tx_threshold_above_reg &&
+                         (tx_level > fifo_threshold_reg[15:8])) begin
+                tx_threshold_above_reg <= 1'b1;
+            end else if (tx_threshold_above_reg &&
+                         (tx_level <= fifo_threshold_reg[15:8])) begin
+                tx_threshold_above_reg <= 1'b0;
+                tx_threshold_event_reg <= 1'b1;
+            end
         end
     end
 
