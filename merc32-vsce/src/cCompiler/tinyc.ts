@@ -791,6 +791,7 @@ const ABI_RETURN_REG = 'r4';
 const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
+const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
 
 class CodeGenerator {
     private readonly lines: string[] = [];
@@ -960,6 +961,7 @@ class CodeGenerator {
             return;
         }
 
+        const isInterruptHandler = fn.name === IRQ_HANDLER_NAME;
         const layout = this.buildLayout(fn);
         const ctx: FunctionContext = {
             fn,
@@ -976,6 +978,11 @@ class CodeGenerator {
         this.adjustSp(-layout.frameSize);
         this.emit('mov [r13 + 0], r14');
         this.emit('mov [r13 + 4], r12');
+        if (isInterruptHandler) {
+            IRQ_CONTEXT_REGS.forEach((reg, index) => {
+                this.emit(`mov [r13 + ${8 + index * 4}], ${reg}`);
+            });
+        }
         this.emit('mov r12, r13');
 
         fn.params.forEach((param, index) => {
@@ -999,11 +1006,22 @@ class CodeGenerator {
         this.emit(`jmp ${ctx.returnLabel}`);
 
         this.emit(`${ctx.returnLabel}:`);
-        this.emit('mov r14, [r12 + 0]');
-        this.emit('mov r8, [r12 + 4]');
-        this.emit(`mov r13, r12 + ${layout.frameSize}`);
-        this.emit('mov r12, r8');
-        this.emit(`jmp ${fn.name === IRQ_HANDLER_NAME ? 'r3' : 'r14'}`);
+        if (isInterruptHandler) {
+            this.emit('mov r14, [r12 + 0]');
+            IRQ_CONTEXT_REGS.forEach((reg, index) => {
+                this.emit(`mov ${reg}, [r12 + ${8 + index * 4}]`);
+            });
+            this.emit(`mov r13, r12 + ${layout.frameSize}`);
+            this.emit('mov r12, [r12 + 4]');
+            this.emit('mov r1, r1 | 1');
+            this.emit('jmp r3');
+        } else {
+            this.emit('mov r14, [r12 + 0]');
+            this.emit('mov r8, [r12 + 4]');
+            this.emit(`mov r13, r12 + ${layout.frameSize}`);
+            this.emit('mov r12, r8');
+            this.emit('jmp r14');
+        }
         this.current = undefined;
     }
 
@@ -1013,7 +1031,9 @@ class CodeGenerator {
         }
 
         const slots = new Map<string, Slot>();
-        let offset = 8;
+        let offset = fn.name === IRQ_HANDLER_NAME
+            ? 8 + IRQ_CONTEXT_REGS.length * 4
+            : 8;
         for (const param of fn.params) {
             if (slots.has(param.name)) {
                 throw new CompilerError(`duplicate parameter '${param.name}' in function '${fn.name}'`);
@@ -1022,7 +1042,7 @@ class CodeGenerator {
             offset += 4;
         }
 
-        const collector = new FunctionCollector(fn.name, slots);
+        const collector = new FunctionCollector(fn.name, slots, offset);
         collector.collect(fn.body);
         offset = collector.nextOffset;
         const tempBase = offset;
@@ -1639,8 +1659,9 @@ class FunctionCollector {
     constructor(
         private readonly functionName: string,
         private readonly slots: Map<string, Slot>,
+        firstOffset = 8,
     ) {
-        let maxOffset = 8;
+        let maxOffset = firstOffset;
         for (const slot of slots.values()) {
             if (slot.offset !== undefined) {
                 maxOffset = Math.max(maxOffset, slot.offset + slot.sizeBytes);
