@@ -86,6 +86,8 @@ module apb_can_tb;
     reg         loopback_parser_seen;
     reg         monitor_error_flag_a;
     reg         monitor_error_flag_b;
+    reg         monitor_passive_suspend_a;
+    reg         passive_suspend_seen_a;
     integer     dominant_run_a;
     integer     dominant_run_b;
     integer     maximum_dominant_run_a;
@@ -176,6 +178,9 @@ module apb_can_tb;
         if (monitor_loopback &&
             (apb_can_inst_a.can_core_inst.rx_phase != 3'd0))
             loopback_parser_seen <= 1'b1;
+        if (monitor_passive_suspend_a &&
+            (apb_can_inst_a.can_core_inst.state == 5'd11))
+            passive_suspend_seen_a <= 1'b1;
     end
 
     always @(negedge clk) begin
@@ -578,6 +583,34 @@ module apb_can_tb;
             for (zero_index = 0; zero_index < 5;
                  zero_index = zero_index + 1)
                 external_send_bus_bit(1'b0);
+            external_bus_bit <= 1'b1;
+            wait_core_b_idle;
+            @(negedge clk);
+            external_bus_enable <= 1'b0;
+        end
+    endtask
+
+    task send_external_control_form_error;
+        input invalid_dlc;
+        integer bit_index;
+        reg [10:0] identifier;
+        begin
+            identifier = 11'h123;
+            external_start_frame;
+            for (bit_index = 10; bit_index >= 0;
+                 bit_index = bit_index - 1)
+                external_send_raw_bit(identifier[bit_index], 1'b1);
+            external_send_raw_bit(1'b0, 1'b1);
+            external_send_raw_bit(1'b0, 1'b1);
+            if (!invalid_dlc) begin
+                external_send_raw_bit(1'b1, 1'b1);
+            end else begin
+                external_send_raw_bit(1'b0, 1'b1);
+                external_send_raw_bit(1'b1, 1'b1);
+                external_send_raw_bit(1'b0, 1'b1);
+                external_send_raw_bit(1'b0, 1'b1);
+                external_send_raw_bit(1'b1, 1'b1);
+            end
             external_bus_bit <= 1'b1;
             wait_core_b_idle;
             @(negedge clk);
@@ -1205,6 +1238,48 @@ module apb_can_tb;
         end
     endtask
 
+    task test_passive_arbitration_suspend;
+        begin
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            apb_write_a(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_b(ADDR_BIT_TIMING, 32'h0016_0001);
+            apb_write_a(ADDR_CTRL, 32'h0000_0001);
+
+            for (i = 0; i < 16; i = i + 1) begin
+                push_frame_a(29'h0000_0500 + i, 1'b0, 1'b0,
+                             4'd0, 64'd0);
+                wait_irq_a(16'h0010);
+                wait_core_a_idle;
+                apb_write_a(ADDR_IRQ_STATUS, 32'h0000_0050);
+            end
+            apb_read_a(ADDR_STATUS, read_data);
+            check_true("repeated TX errors make node Error Passive",
+                       read_data[8]);
+            apb_write_a(ADDR_CTRL, 32'h0000_0000);
+            wait_running_a(1'b0);
+
+            prepare_arbitration_nodes(5'b01000);
+            push_frame_a(29'h0000_0700, 1'b0, 1'b0, 4'd1, 64'h70);
+            push_frame_b(29'h0000_0001, 1'b0, 1'b0, 4'd1, 64'h01);
+            passive_suspend_seen_a = 1'b0;
+            monitor_passive_suspend_a = 1'b1;
+            fork
+                apb_write_a(ADDR_CTRL, 32'h0000_0009);
+                apb_write_b(ADDR_CTRL, 32'h0000_0009);
+            join
+            wait_irq_a(16'h0020);
+            wait_irq_b(16'h0002);
+            wait_irq_a(16'h0002);
+            monitor_passive_suspend_a = 1'b0;
+            check_true("passive arbitration loser waits eight bits",
+                       passive_suspend_seen_a);
+            apb_write_a(ADDR_CTRL, 32'h8000_0000);
+            apb_write_b(ADDR_CTRL, 32'h8000_0000);
+            $display("[PASS] PASSIVE_SUSPEND");
+        end
+    endtask
+
     task test_receive_protocol_errors;
         begin
             reset_node_b_for_external_frame;
@@ -1242,6 +1317,20 @@ module apb_can_tb;
             check32("Form Error increments REC", read_data[23:16], 32'd1);
             check_true("Form Error emits active flag",
                        maximum_dominant_run_b >= 6);
+
+            reset_node_b_for_external_frame;
+            send_external_control_form_error(1'b0);
+            check_node_b_error(3'd2, 4'd3, 5'b00010);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("reserved-bit Form Error increments REC",
+                    read_data[23:16], 32'd1);
+
+            reset_node_b_for_external_frame;
+            send_external_control_form_error(1'b1);
+            check_node_b_error(3'd2, 4'd3, 5'b00010);
+            apb_read_b(ADDR_ERROR_COUNT, read_data);
+            check32("invalid DLC Form Error increments REC",
+                    read_data[23:16], 32'd1);
             $display("[PASS] PROTOCOL_ERRORS");
         end
     endtask
@@ -1514,6 +1603,8 @@ module apb_can_tb;
         loopback_parser_seen = 1'b0;
         monitor_error_flag_a = 1'b0;
         monitor_error_flag_b = 1'b0;
+        monitor_passive_suspend_a = 1'b0;
+        passive_suspend_seen_a = 1'b0;
         dominant_run_a = 0;
         dominant_run_b = 0;
         maximum_dominant_run_a = 0;
@@ -1532,6 +1623,7 @@ module apb_can_tb;
         test_two_node_ack_filter;
         test_arbitration_retry_abort;
         test_transmit_protocol_errors;
+        test_passive_arbitration_suspend;
         test_receive_protocol_errors;
         test_error_confinement;
         test_bus_off_recovery;

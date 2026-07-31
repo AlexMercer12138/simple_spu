@@ -276,6 +276,7 @@ module can_core (
     wire [98:0] rx_complete_frame;
     wire        arbitration_loss_now;
     wire        rx_stuff_error_now;
+    wire        rx_control_form_error_now;
     wire        rx_form_error_now;
     wire        rx_crc_error_now;
     wire        tx_ack_error_now;
@@ -350,8 +351,18 @@ module can_core (
                               (rx_phase == RX_CRC_DELIM) &&
                               timing_rx_bit &&
                               (rx_crc_received != rx_crc_value);
+    assign rx_control_form_error_now = timing_sample_point &&
+        (rx_phase == RX_STUFFED) && !rx_expect_stuff &&
+        (((!rx_ide_work && (rx_raw_index == 8'd14) && timing_rx_bit)) ||
+         ((rx_ide_work && ((rx_raw_index == 8'd33) ||
+                           (rx_raw_index == 8'd34)) && timing_rx_bit)) ||
+         ((!rx_ide_work && (rx_raw_index == 8'd18) &&
+           (rx_dlc_next > 4'd8))) ||
+         ((rx_ide_work && (rx_raw_index == 8'd38) &&
+           (rx_dlc_next > 4'd8))));
     assign rx_form_error_now = timing_sample_point &&
-        (((rx_phase == RX_CRC_DELIM) && !timing_rx_bit) ||
+        (rx_control_form_error_now ||
+         ((rx_phase == RX_CRC_DELIM) && !timing_rx_bit) ||
          ((rx_phase == RX_ACK_DELIM) && !timing_rx_bit) ||
          ((rx_phase == RX_EOF) && !timing_rx_bit) ||
          ((rx_phase == RX_INTERMISSION) && !timing_rx_bit));
@@ -383,9 +394,12 @@ module can_core (
          (rx_stuff_error_now ?
           receive_field_at_index(rx_ide_work, rx_raw_index,
                                  rx_crc_start_index) :
-          ((rx_phase == RX_CRC_DELIM) ? 4'd5 :
+          ((rx_phase == RX_STUFFED) ?
+           receive_field_at_index(rx_ide_work, rx_raw_index,
+                                  rx_crc_start_index) :
+           ((rx_phase == RX_CRC_DELIM) ? 4'd5 :
            ((rx_phase == RX_ACK_DELIM) ? 4'd6 :
-            ((rx_phase == RX_EOF) ? 4'd7 : 4'd9)))));
+            ((rx_phase == RX_EOF) ? 4'd7 : 4'd9))))));
 
     can_bit_timing can_bit_timing_inst (
         .clk              (clk                              ),
@@ -896,19 +910,26 @@ module can_core (
                                 if (stop_pending_reg || !enable_req) begin
                                     state <= ST_STOP;
                                     running_reg <= 1'b0;
-                                end else begin
+                                    if (active_frame_valid && auto_retry)
+                                        tx_crc_clear <= 1'b1;
+                                end else if (tx_abort_pending_reg) begin
                                     state <= ST_IDLE;
-                                end
-                                if (tx_abort_pending_reg) begin
                                     active_frame_valid <= 1'b0;
                                     retry_pending_reg <= 1'b0;
                                     tx_abort_pending_reg <= 1'b0;
                                     tx_aborted_event <= 1'b1;
                                 end else if (active_frame_valid &&
                                              auto_retry) begin
-                                    retry_pending_reg <= 1'b0;
                                     tx_crc_clear <= 1'b1;
+                                    if (error_passive) begin
+                                        state <= ST_SUSPEND;
+                                        error_intermission_count <= 3'd0;
+                                    end else begin
+                                        state <= ST_IDLE;
+                                        retry_pending_reg <= 1'b0;
+                                    end
                                 end else begin
+                                    state <= ST_IDLE;
                                     retry_pending_reg <= 1'b0;
                                 end
                             end

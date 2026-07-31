@@ -294,6 +294,9 @@ TEC 或 REC 达到 96 时进入 Error Warning，达到 128 时进入 Error Passi
 大于 255 时进入 Bus-off。成功发送会降低 TEC，成功接收会降低或规范化 REC。
 Listen-only 可以记录错误状态，但不会修改 TEC/REC。
 
+Error Passive 发送节点在协议错误恢复后或仲裁失败后重发前，会额外观察 8 个
+连续隐性位的 Suspend Transmission；期间出现显性位会重新开始该等待。
+
 | `ERROR_STATUS` 位 | 名称 | 访问 | 说明 |
 |---:|---|---|---|
 | `0` | `STUFF_ERROR` | R/W1C | 位填充错误 |
