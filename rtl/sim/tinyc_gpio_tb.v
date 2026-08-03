@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 //================================================================================
 //  Module      : tinyc_gpio_tb
-//  Description : Tiny C firmware integration test for MERC32 and APB GPIO
+//  Description : Tiny C black-box integration test for MERC32 and APB GPIO
 //================================================================================
 
 module tinyc_gpio_tb();

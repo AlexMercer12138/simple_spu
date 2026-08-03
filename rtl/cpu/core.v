@@ -115,10 +115,16 @@ module merc32_core #(
     input       [31:0]                  ilb_rdata
     );
 
-    localparam  OP_IMM                  = 4'd1;
-    localparam  OP_REG                  = 4'd2;
-    localparam  OP_ICMP                 = 4'd3;
-    localparam  OP_RCMP                 = 4'd4;
+    localparam  OPC_ALU                 = 3'd0;
+    localparam  OPC_PCU                 = 3'd1;
+    localparam  OPC_MCU                 = 3'd2;
+
+    localparam  OP_IALU                 = 4'd0;
+    localparam  OP_RALU                 = 4'd1;
+    localparam  OP_IPCU                 = 4'd2;
+    localparam  OP_RPCU                 = 4'd3;
+    localparam  OP_IMCU                 = 4'd4;
+    localparam  OP_RMCU                 = 4'd5;
 
     localparam  FUNC_SET                = 4'd0;
     localparam  FUNC_ADD                = 4'd1;
@@ -129,13 +135,11 @@ module merc32_core #(
     localparam  FUNC_SLL                = 4'd6;
     localparam  FUNC_SRL                = 4'd7;
     localparam  FUNC_SRA                = 4'd8;
-    localparam  FUNC_MWR                = 4'd9;
-    localparam  FUNC_MRD                = 4'd10;
-    localparam  FUNC_BEZ                = 4'd11;
-    localparam  FUNC_BNZ                = 4'd12;
-    localparam  FUNC_JAL                = 4'd13;
-    localparam  FUNC_MUL                = 4'd14;
-    localparam  FUNC_DIV                = 4'd15;
+    localparam  FUNC_MUL                = 4'd9;
+    localparam  FUNC_DIV                = 4'd10;
+    localparam  FUNC_DIU                = 4'd11;
+    localparam  FUNC_REM                = 4'd12;
+    localparam  FUNC_REU                = 4'd13;
 
     localparam  FCMP_EQ                 = 4'd0;
     localparam  FCMP_NE                 = 4'd1;
@@ -147,6 +151,18 @@ module merc32_core #(
     localparam  FCMP_ULT                = 4'd7;
     localparam  FCMP_UGT                = 4'd8;
     localparam  FCMP_ULE                = 4'd9;
+    localparam  FUNC_BEZ                = 4'd10;
+    localparam  FUNC_BNZ                = 4'd11;
+    localparam  FUNC_JAL                = 4'd12;
+
+    localparam  FUNC_LW                 = 4'd0;
+    localparam  FUNC_LH                 = 4'd1;
+    localparam  FUNC_LHU                = 4'd2;
+    localparam  FUNC_LB                 = 4'd3;
+    localparam  FUNC_LBU                = 4'd4;
+    localparam  FUNC_SW                 = 4'd8;
+    localparam  FUNC_SH                 = 4'd9;
+    localparam  FUNC_SB                 = 4'd10;
 
     localparam  ST_IDLE                 = 6'b000000;
     localparam  ST_LOAD                 = 6'b000001;
@@ -167,13 +183,14 @@ module merc32_core #(
     reg     [31:0]                      prog_next;
 
     reg                                 exec_start;
+    reg                                 exec_busen;
+    reg     [31:0]                      exec_baddr;
     reg                                 exec_done;
     reg                                 wback_req;
 
     reg     [3:0]                       alu_ptr;
     reg     signed  [31:0]              alu_data;
 
-    reg                                 intr_en;
     reg                                 intr_ff0;
     reg                                 intr_ff1;
     reg                                 intr_ff2;
@@ -299,12 +316,12 @@ module merc32_core #(
             prog_next <= 0;
         end else if(cpu_state == ST_EXEC) begin
             case({opc, fun})
-                {OP_IMM, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
-                {OP_IMM, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
-                {OP_IMM, FUNC_JAL}:prog_next <= regi_int[rs2] + imm;
-                {OP_REG, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
-                {OP_REG, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
-                {OP_REG, FUNC_JAL}:prog_next <= regi_int[rs2] + regi_int[rs1];
+                {OP_IPCU, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
+                {OP_IPCU, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
+                {OP_IPCU, FUNC_JAL}:prog_next <= regi_int[rs2] + imm;
+                {OP_RPCU, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
+                {OP_RPCU, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
+                {OP_RPCU, FUNC_JAL}:prog_next <= regi_int[rs2] + regi_int[rs1];
                 default:prog_next <= prog_addr + 4;
             endcase
         end
@@ -315,8 +332,12 @@ module merc32_core #(
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
             exec_start <= 1'b0;
+            exec_busen <= 1'b0;
+            exec_baddr <= 32'h0;
         end else begin
             exec_start <= cpu_state == ST_LOAD;
+            exec_busen <= (opc[3:1] == OPC_MCU) && exec_start;
+            exec_baddr <= exec_start ? regi_int[rs2] + (opc[0] ? imm : regi_int[rs1]) : exec_baddr;
         end
     end
 
@@ -327,10 +348,32 @@ module merc32_core #(
             exec_done <= 1'b0;
         end else if(cpu_state == ST_EXEC) begin
             case({opc, fun})
-                {OP_IMM, FUNC_MRD}:exec_done <= cpu_ack;
-                {OP_IMM, FUNC_MWR}:exec_done <= cpu_ack;
-                {OP_REG, FUNC_MRD}:exec_done <= cpu_ack;
-                {OP_REG, FUNC_MWR}:exec_done <= cpu_ack;
+                {OP_IALU, FUNC_MUL} : exec_done <= mul_done;
+                {OP_IALU, FUNC_DIV} : exec_done <= div_done;
+                {OP_IALU, FUNC_DIU} : exec_done <= div_done;
+                {OP_IALU, FUNC_REM} : exec_done <= div_done;
+                {OP_IALU, FUNC_REU} : exec_done <= div_done;
+                {OP_RALU, FUNC_MUL} : exec_done <= mul_done;
+                {OP_RALU, FUNC_DIV} : exec_done <= div_done;
+                {OP_RALU, FUNC_DIU} : exec_done <= div_done;
+                {OP_RALU, FUNC_REM} : exec_done <= div_done;
+                {OP_RALU, FUNC_REU} : exec_done <= div_done;
+                {OP_IMCU, FUNC_LW}  : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_LH}  : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_LHU} : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_LB}  : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_LBU} : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_SW}  : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_SH}  : exec_done <= cpu_ack;
+                {OP_IMCU, FUNC_SB}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_LW}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_LH}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_LHU} : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_LB}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_LBU} : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_SW}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_SH}  : exec_done <= cpu_ack;
+                {OP_RMCU, FUNC_SB}  : exec_done <= cpu_ack;
                 default:exec_done <= 1'b1;
             endcase
         end else begin
@@ -345,12 +388,16 @@ module merc32_core #(
             wback_req <= 1'b0;
         end else if(cpu_state == ST_EXEC) begin
             case({opc, fun})
-                {OP_IMM, FUNC_MWR}:wback_req <= 1'b0;
-                {OP_IMM, FUNC_BEZ}:wback_req <= 1'b0;
-                {OP_IMM, FUNC_BNZ}:wback_req <= 1'b0;
-                {OP_REG, FUNC_MWR}:wback_req <= 1'b0;
-                {OP_REG, FUNC_BEZ}:wback_req <= 1'b0;
-                {OP_REG, FUNC_BNZ}:wback_req <= 1'b0;
+                {OP_IMCU, FUNC_SW}  : wback_req <= 1'b0;
+                {OP_IMCU, FUNC_SH}  : wback_req <= 1'b0;
+                {OP_IMCU, FUNC_SB}  : wback_req <= 1'b0;
+                {OP_IPCU, FUNC_BEZ} : wback_req <= 1'b0;
+                {OP_IPCU, FUNC_BNZ} : wback_req <= 1'b0;
+                {OP_RMCU, FUNC_SW}  : wback_req <= 1'b0;
+                {OP_RMCU, FUNC_SH}  : wback_req <= 1'b0;
+                {OP_RMCU, FUNC_SB}  : wback_req <= 1'b0;
+                {OP_RPCU, FUNC_BEZ} : wback_req <= 1'b0;
+                {OP_RPCU, FUNC_BNZ} : wback_req <= 1'b0;
                 default:wback_req <= 1'b1;
             endcase
         end else begin
@@ -367,48 +414,56 @@ module merc32_core #(
         end else if(cpu_state == ST_EXEC) begin
             alu_ptr  <= rd;
             case({opc, fun})
-                {OP_IMM, FUNC_SET}  : alu_data <= imm;
-                {OP_IMM, FUNC_ADD}  : alu_data <= regi_int[rs2] + imm;
-                {OP_IMM, FUNC_SUB}  : alu_data <= regi_int[rs2] - imm;
-                {OP_IMM, FUNC_AND}  : alu_data <= regi_int[rs2] & imm;
-                {OP_IMM, FUNC_OR}   : alu_data <= regi_int[rs2] | imm;
-                {OP_IMM, FUNC_XOR}  : alu_data <= regi_int[rs2] ^ imm;
-                {OP_IMM, FUNC_SLL}  : alu_data <= regi_int[rs2] << imm;
-                {OP_IMM, FUNC_SRL}  : alu_data <= regi_int[rs2] >> imm;
-                {OP_IMM, FUNC_SRA}  : alu_data <= regi_int[rs2] >>> imm;
-                {OP_IMM, FUNC_MRD}  : alu_data <= cpu_rdata;
-                {OP_IMM, FUNC_JAL}  : alu_data <= prog_addr + 4;
-                {OP_REG, FUNC_SET}  : alu_data <= regi_int[rs1];
-                {OP_REG, FUNC_ADD}  : alu_data <= regi_int[rs2] + regi_int[rs1];
-                {OP_REG, FUNC_SUB}  : alu_data <= regi_int[rs2] - regi_int[rs1];
-                {OP_REG, FUNC_AND}  : alu_data <= regi_int[rs2] & regi_int[rs1];
-                {OP_REG, FUNC_OR}   : alu_data <= regi_int[rs2] | regi_int[rs1];
-                {OP_REG, FUNC_XOR}  : alu_data <= regi_int[rs2] ^ regi_int[rs1];
-                {OP_REG, FUNC_SLL}  : alu_data <= regi_int[rs2] << regi_int[rs1];
-                {OP_REG, FUNC_SRL}  : alu_data <= regi_int[rs2] >> regi_int[rs1];
-                {OP_REG, FUNC_SRA}  : alu_data <= regi_int[rs2] >>> regi_int[rs1];
-                {OP_REG, FUNC_MRD}  : alu_data <= cpu_rdata;
-                {OP_REG, FUNC_JAL}  : alu_data <= prog_addr + 4;
-                {OP_ICMP, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(imm);
-                {OP_ICMP, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(imm);
-                {OP_ICMP, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(imm);
-                {OP_ICMP, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(imm);
-                {OP_ICMP, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(imm);
-                {OP_ICMP, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(imm);
-                {OP_ICMP, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(imm);
-                {OP_ICMP, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(imm);
-                {OP_ICMP, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(imm);
-                {OP_ICMP, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(imm);
-                {OP_RCMP, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(regi_int[rs1]);
-                {OP_RCMP, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(regi_int[rs1]);
-                {OP_RCMP, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(regi_int[rs1]);
-                {OP_RCMP, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(regi_int[rs1]);
-                {OP_RCMP, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(regi_int[rs1]);
+                {OP_IALU, FUNC_SET} : alu_data <= imm;
+                {OP_IALU, FUNC_ADD} : alu_data <= regi_int[rs2] + imm;
+                {OP_IALU, FUNC_SUB} : alu_data <= regi_int[rs2] - imm;
+                {OP_IALU, FUNC_AND} : alu_data <= regi_int[rs2] & imm;
+                {OP_IALU, FUNC_OR}  : alu_data <= regi_int[rs2] | imm;
+                {OP_IALU, FUNC_XOR} : alu_data <= regi_int[rs2] ^ imm;
+                {OP_IALU, FUNC_SLL} : alu_data <= regi_int[rs2] << imm;
+                {OP_IALU, FUNC_SRL} : alu_data <= regi_int[rs2] >> imm;
+                {OP_IALU, FUNC_SRA} : alu_data <= regi_int[rs2] >>> imm;
+                {OP_RALU, FUNC_SET} : alu_data <= regi_int[rs1];
+                {OP_RALU, FUNC_ADD} : alu_data <= regi_int[rs2] + regi_int[rs1];
+                {OP_RALU, FUNC_SUB} : alu_data <= regi_int[rs2] - regi_int[rs1];
+                {OP_RALU, FUNC_AND} : alu_data <= regi_int[rs2] & regi_int[rs1];
+                {OP_RALU, FUNC_OR}  : alu_data <= regi_int[rs2] | regi_int[rs1];
+                {OP_RALU, FUNC_XOR} : alu_data <= regi_int[rs2] ^ regi_int[rs1];
+                {OP_RALU, FUNC_SLL} : alu_data <= regi_int[rs2] << regi_int[rs1];
+                {OP_RALU, FUNC_SRL} : alu_data <= regi_int[rs2] >> regi_int[rs1];
+                {OP_RALU, FUNC_SRA} : alu_data <= regi_int[rs2] >>> regi_int[rs1];
+                {OP_IPCU, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(imm);
+                {OP_IPCU, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(imm);
+                {OP_IPCU, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(imm);
+                {OP_IPCU, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(imm);
+                {OP_IPCU, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(imm);
+                {OP_IPCU, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(imm);
+                {OP_IPCU, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(imm);
+                {OP_IPCU, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(imm);
+                {OP_IPCU, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(imm);
+                {OP_IPCU, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(imm);
+                {OP_IPCU, FUNC_JAL} : alu_data <= prog_addr + 4;
+                {OP_RPCU, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(regi_int[rs1]);
+                {OP_RPCU, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(regi_int[rs1]);
+                {OP_RPCU, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(regi_int[rs1]);
+                {OP_RPCU, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(regi_int[rs1]);
+                {OP_RPCU, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(regi_int[rs1]);
+                {OP_RPCU, FUNC_JAL} : alu_data <= prog_addr + 4;
+                {OP_IMCU, FUNC_LW}  : alu_data <= cpu_rdata;
+                {OP_IMCU, FUNC_LH}  : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_IMCU, FUNC_LHU} : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_IMCU, FUNC_LB}  : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_IMCU, FUNC_LBU} : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_RMCU, FUNC_LW}  : alu_data <= cpu_rdata;
+                {OP_RMCU, FUNC_LH}  : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_RMCU, FUNC_LHU} : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_RMCU, FUNC_LB}  : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
+                {OP_RMCU, FUNC_LBU} : alu_data <= cpu_rdata << 8*exec_baddr[1:0];
                 default             : alu_data <= alu_data;
             endcase
         end
@@ -455,7 +510,6 @@ module merc32_core #(
     // configuration, and register the selected trigger condition.
     always @(posedge clk) begin
         if (!cpu_rst_n) begin
-            intr_en   <= 1'b0;
             intr_ff0  <= 1'b0;
             intr_ff1  <= 1'b0;
             intr_ff2  <= 1'b0;
@@ -463,7 +517,6 @@ module merc32_core #(
             intr_addr <= 32'h0;
             intr_trig <= 1'b0;
         end else begin
-            intr_en   <= cpu_state == ST_INTR ? 1'b0 : regi_int[1][0];
             intr_ff0  <= interrupt;
             intr_ff1  <= intr_ff0;
             intr_ff2  <= intr_ff1;
@@ -484,7 +537,7 @@ module merc32_core #(
             intr_flag <= 1'b0;
         end else if(cpu_state == ST_INTR) begin
             intr_flag <= 1'b0;
-        end else if(intr_en & regi_int[1][0] & intr_trig) begin
+        end else if(regi_int[1][0] & intr_trig) begin
             intr_flag <= 1'b1;
         end
     end
@@ -496,12 +549,26 @@ module merc32_core #(
             cpu_rden  <= 1'b0;
             cpu_wren  <= 1'b0;
             cpu_addr  <= 32'h0;
+            cpu_wstrb <= 4'b0;
             cpu_wdata <= 32'h0;
         end else begin
-            cpu_rden  <= ({opc, fun} == {OP_IMM, FUNC_MRD} || {opc, fun} == {OP_REG, FUNC_MRD}) && exec_start;
-            cpu_wren  <= ({opc, fun} == {OP_IMM, FUNC_MWR} || {opc, fun} == {OP_REG, FUNC_MWR}) && exec_start;
-            cpu_addr  <= regi_int[rs2] + (opc[0] ? imm : regi_int[rs1]);
-            cpu_wdata <= regi_int[rd];
+            cpu_rden  <= exec_busen && ~fun[3];
+            cpu_wren  <= exec_busen && fun[3];
+            cpu_addr  <= exec_baddr;
+            case(fun)
+                FUNC_SW:begin
+                    cpu_wstrb <= 4'b1111;
+                    cpu_wdata <= regi_int[rd];
+                end
+                FUNC_SH:begin
+                    cpu_wstrb <= 4'b0011 << exec_baddr[1:0];
+                    cpu_wdata <= regi_int[rd] << 8*exec_baddr[1:0];
+                end
+                FUNC_SB:begin
+                    cpu_wstrb <= 4'b0001 << exec_baddr[1:0];
+                    cpu_wdata <= regi_int[rd] << 8*exec_baddr[1:0];
+                end
+            endcase
         end
     end
 

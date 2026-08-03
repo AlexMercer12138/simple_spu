@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 //================================================================================
 //  Module      : tinyc_uart_tb
-//  Description : Tiny C firmware integration test for MERC32 and APB UART
+//  Description : Tiny C black-box integration test for MERC32 and APB UART
 //================================================================================
 
 module tinyc_uart_tb();
@@ -270,13 +270,9 @@ module tinyc_uart_tb();
                          MERC32_top_inst.u_merc32_core.prog_addr,
                          dlb_ram[STATUS_ADDR],
                          received_count);
-                $display("UART RX state: rx_enable=%0d fifo_count=%0d rx_busy=%0d rx_valid=%0d rx_full=%0d rx_empty=%0d",
-                         apb_uart_inst.rx_enable,
-                         apb_uart_inst.rx_fifo_count,
-                         apb_uart_inst.rx_busy,
-                         apb_uart_inst.uart_rx_valid,
-                         apb_uart_inst.rx_full,
-                         apb_uart_inst.rx_empty);
+                $display("UART ports: irq=%0d tx=%0d rx=%0d APB=%0d/%0d/%0d",
+                         uart_interrupt, uart_tx, uart_rx,
+                         apb_psel, apb_penable, apb_pready);
                 $finish;
             end
         end

@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 //================================================================================
 //  Module      : tinyc_timer_tb
-//  Description : Tiny C firmware integration test for MERC32 and APB timer
+//  Description : Tiny C black-box integration test for MERC32 and APB timer
 //================================================================================
 
 module tinyc_timer_tb();
@@ -242,12 +242,9 @@ module tinyc_timer_tb();
                 done <= 1'b1;
                 $display("TEST FAIL: firmware status=0x%08h detail=0x%08h",
                          dlb_wdata, detail_value);
-                $display("Timer state: ctrl=0x%08h pending=0x%08h enable=0x%08h t0_count=%0d t1_count=%0d",
-                         {30'd0, apb_timer_inst.timer_enable_reg},
-                         {29'd0, apb_timer_inst.irq_status_reg},
-                         {29'd0, apb_timer_inst.irq_enable_reg},
-                         apb_timer_inst.timer0_count,
-                         apb_timer_inst.timer1_count);
+                $display("Timer ports: irq=%0d pwm0=%0d pwm1=%0d irq_rises=%0d period_checks=%0d width_checks=%0d",
+                         timer_interrupt, pwm0, pwm1, irq_rise_count,
+                         pwm_period_checks, pwm_width_checks);
                 $finish;
             end else if ((firmware_pass_seen || firmware_pass_write) &&
                          timer_checks_done) begin

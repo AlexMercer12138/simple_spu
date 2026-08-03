@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 //================================================================================
 //  Module      : tinyc_i2c_tb
-//  Description : Tiny C firmware integration test for MERC32 and APB I2C
+//  Description : Tiny C black-box integration test for MERC32 and APB I2C
 //================================================================================
 
 module tinyc_i2c_tb();
@@ -340,16 +340,11 @@ module tinyc_i2c_tb();
 
             if (firmware_fail_write) begin
                 done <= 1'b1;
-                $display("TEST FAIL: firmware status=0x%08h detail=0x%08h i2c_status=0x%08h",
-                         dlb_wdata, detail_value,
-                         master_i2c_inst.irq_status_reg);
-                $display("I2C DEBUG: peer_enable=%0d peer_addr=0x%02h peer_state=%0d peer_bits=%0d filtered_scl=%0d filtered_sda=%0d starts=%0d stops=%0d",
-                         peer_i2c_inst.enable_reg,
-                         peer_i2c_inst.slave_addr_reg,
-                         peer_i2c_inst.i2c_slave_inst.state,
-                         peer_i2c_inst.i2c_slave_inst.bit_count,
-                         peer_i2c_inst.i2c_slave_inst.scl_filtered,
-                         peer_i2c_inst.i2c_slave_inst.sda_filtered,
+                $display("TEST FAIL: firmware status=0x%08h detail=0x%08h",
+                         dlb_wdata, detail_value);
+                $display("I2C ports: master_irq=%0d peer_irq=%0d scl=%0d sda=%0d starts=%0d stops=%0d",
+                         master_interrupt, peer_interrupt,
+                         shared_scl, shared_sda,
                          start_count, stop_count);
                 $finish;
             end else if ((firmware_pass_seen || firmware_pass_write) &&
