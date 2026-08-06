@@ -1,12 +1,32 @@
 const assert = require('assert');
-const { compileC } = require('../out/cCompiler');
+const { compileC, CompilerError } = require('../out/cCompiler');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
-function expectCompilerError(testSource, pattern) {
+function expectCompilerError(testSource, pattern, expectedLocation) {
     assert.throws(
         () => compileC(testSource, { moduleName: 'irq_negative_test' }),
-        pattern,
+        (error) => {
+            assert.match(error.message, pattern);
+            if (expectedLocation) {
+                assert.ok(
+                    error instanceof CompilerError,
+                    `expected CompilerError, got ${error.constructor.name}`,
+                );
+                assert.strictEqual(error.line, expectedLocation.line);
+                assert.strictEqual(error.column, expectedLocation.column);
+            }
+            return true;
+        },
     );
+}
+
+function expectFunctionImmediate(assembly, functionName, value) {
+    const functionBody = assembly.match(
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+    )?.[1];
+    assert.ok(functionBody, `missing assembly body for ${functionName}`);
+    const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
+    assert.match(functionBody, new RegExp(`^mov r4, ${immediate}\\r?$`, 'm'));
 }
 
 const source = `
@@ -188,34 +208,47 @@ const narrowResult = narrowAssembler.assemble(narrowAssembly, { sourceFileName: 
 assert.ok(narrowResult.machineCodes.length > 0);
 
 const characterLiteralSource = String.raw`
-int main(void) {
-    int ascii = 'A';
-    int newline = '\n';
-    int quote = '\'';
-    int backslash = '\\';
-    int octal = '\101';
-    int octal_with_leading_zero = '\012';
-    int hex = '\xFF';
-    int carriage_return = '\r';
-    int tab = '\t';
-    int nul = '\0';
-    int double_quote = '\"';
-    int alert = '\a';
-    int backspace = '\b';
-    int form_feed = '\f';
-    int vertical_tab = '\v';
-    return ascii + newline + quote + backslash + octal + octal_with_leading_zero + hex
-        + carriage_return + tab + nul + double_quote + alert
-        + backspace + form_feed + vertical_tab;
-}
+int literal_ascii(void) { return 'A'; }
+int literal_newline(void) { return '\n'; }
+int literal_carriage_return(void) { return '\r'; }
+int literal_tab(void) { return '\t'; }
+int literal_nul(void) { return '\0'; }
+int literal_backslash(void) { return '\\'; }
+int literal_quote(void) { return '\''; }
+int literal_double_quote(void) { return '\"'; }
+int literal_alert(void) { return '\a'; }
+int literal_backspace(void) { return '\b'; }
+int literal_form_feed(void) { return '\f'; }
+int literal_vertical_tab(void) { return '\v'; }
+int literal_octal(void) { return '\101'; }
+int literal_octal_with_leading_zero(void) { return '\012'; }
+int literal_hex(void) { return '\xFF'; }
+int main(void) { return 0; }
 `;
 
 const { assembly: characterLiteralAssembly } = compileC(characterLiteralSource, {
     moduleName: 'character_literal_test',
 });
-assert.match(characterLiteralAssembly, /mov r7, 0x41/);
-assert.match(characterLiteralAssembly, /mov r7, 0xA/);
-assert.match(characterLiteralAssembly, /mov r7, 0xFF/);
+const characterLiteralExpectations = [
+    ['literal_ascii', 0x41],
+    ['literal_newline', 0x0a],
+    ['literal_carriage_return', 0x0d],
+    ['literal_tab', 0x09],
+    ['literal_nul', 0x00],
+    ['literal_backslash', 0x5c],
+    ['literal_quote', 0x27],
+    ['literal_double_quote', 0x22],
+    ['literal_alert', 0x07],
+    ['literal_backspace', 0x08],
+    ['literal_form_feed', 0x0c],
+    ['literal_vertical_tab', 0x0b],
+    ['literal_octal', 0x41],
+    ['literal_octal_with_leading_zero', 0x0a],
+    ['literal_hex', 0xff],
+];
+for (const [functionName, value] of characterLiteralExpectations) {
+    expectFunctionImmediate(characterLiteralAssembly, functionName, value);
+}
 
 const characterLiteralAssembler = new SimpleCPUAssembler();
 const characterLiteralResult = characterLiteralAssembler.assemble(characterLiteralAssembly, {
@@ -223,18 +256,33 @@ const characterLiteralResult = characterLiteralAssembler.assemble(characterLiter
 });
 assert.ok(characterLiteralResult.machineCodes.length > 0);
 
-expectCompilerError("int main(void) { return ''; }", /empty character literal/);
+expectCompilerError(
+    "int main(void) { return ''; }",
+    /empty character literal/,
+    { line: 1, column: 25 },
+);
 expectCompilerError("int main(void) { return 'ab'; }", /character literal must contain exactly one byte/);
 expectCompilerError("int main(void) { return '\u4E2D'; }", /character literal must contain exactly one byte/);
 expectCompilerError(String.raw`int main(void) { return '\400'; }`, /escape value \\400 exceeds one byte/);
 expectCompilerError(String.raw`int main(void) { return '\x100'; }`, /escape value 0x100 exceeds one byte/);
-expectCompilerError(String.raw`int main(void) { return '\q'; }`, /unknown escape '\\q'/);
+expectCompilerError(
+    String.raw`int main(void) { return '\q'; }`,
+    /unknown escape '\\q'/,
+    { line: 1, column: 25 },
+);
 expectCompilerError("int main(void) { return 'A", /unterminated character literal/);
 expectCompilerError(`
 int main(void) {
     return 'A
 }
-`, /unterminated character literal/);
+`, /unterminated character literal/, { line: 3, column: 12 });
+
+const longCharacterLiteralSource = `int main(void) { return '${'A'.repeat(200000)}'; }`;
+expectCompilerError(
+    longCharacterLiteralSource,
+    /character literal must contain exactly one byte/,
+    { line: 1, column: 25 },
+);
 
 const irqSource = `
 volatile unsigned int irq_count = 0;

@@ -333,7 +333,9 @@ class Lexer {
                 bytes.push(this.readEscapeByte(line, column));
                 continue;
             }
-            bytes.push(...this.readRawLiteralBytes(terminator));
+            for (const byte of this.readRawLiteralBytes(terminator)) {
+                bytes.push(byte);
+            }
         }
     }
 
