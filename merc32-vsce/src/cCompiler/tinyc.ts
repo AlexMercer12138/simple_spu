@@ -1098,11 +1098,13 @@ class CodeGenerator {
     private readonly globals = new Map<string, Slot>();
     private readonly staticStrings = new Map<string, StaticString>();
     private readonly functionMap = new Map<string, FunctionDecl>();
+    private readonly occupiedAssemblyLabels = new Set<string>();
     private readonly dataBase: number;
     private readonly dataLimit: number;
     private readonly moduleName: string;
     private readonly tempSlots: number;
     private nextGlobalAddress: number;
+    private internalLabelId = 0;
     private current?: FunctionContext;
     private interruptHandler?: FunctionDecl;
 
@@ -1134,23 +1136,28 @@ class CodeGenerator {
 
     generate(): string {
         this.indexProgram();
+        const startLabel = this.allocateInternalLabel('__start');
+        const haltLabel = this.allocateInternalLabel('__halt');
+        const interruptVectorLabel = this.interruptHandler
+            ? this.allocateInternalLabel('__irq_vector')
+            : undefined;
 
         this.emit(`.prog ${this.moduleName}`);
-        this.emit('.entry __start');
+        this.emit(`.entry ${startLabel}`);
         this.emit('');
-        if (this.interruptHandler) {
-            this.emitInterruptVector();
+        if (this.interruptHandler && interruptVectorLabel) {
+            this.emitInterruptVector(interruptVectorLabel);
             this.emit('');
         }
-        this.emit('__start:');
+        this.emit(`${startLabel}:`);
         this.loadImm('r13', this.dataLimit === 0x1_0000_0000 ? 0 : this.dataLimit);
         this.emitGlobalInitializers();
         if (this.interruptHandler) {
             this.loadImm('r2', IRQ_VECTOR_ADDRESS);
         }
         this.emit('jmp main, r14');
-        this.emit('__halt:');
-        this.emit('jmp __halt');
+        this.emit(`${haltLabel}:`);
+        this.emit(`jmp ${haltLabel}`);
         this.emit('');
 
         for (const fn of this.program.functions) {
@@ -1164,6 +1171,7 @@ class CodeGenerator {
     }
 
     private indexProgram(): void {
+        this.reserveUserAssemblyLabels();
         for (const global of this.program.globals) {
             if (this.globals.has(global.name)) {
                 throw new CompilerError(`duplicate global '${global.name}'`);
@@ -1234,6 +1242,43 @@ class CodeGenerator {
                 this.loadImm('r8', entry.address + offset);
                 this.emit('sb [r8], r7');
             }
+        }
+    }
+
+    private reserveUserAssemblyLabels(): void {
+        for (const fn of this.program.functions) {
+            this.occupiedAssemblyLabels.add(fn.name);
+            if (fn.body) {
+                this.reserveUserLabelsInStatement(fn.name, fn.body);
+            }
+        }
+    }
+
+    private reserveUserLabelsInStatement(functionName: string, stmt: Statement): void {
+        switch (stmt.kind) {
+            case 'block':
+                stmt.statements.forEach((inner) => this.reserveUserLabelsInStatement(functionName, inner));
+                return;
+            case 'if':
+                this.reserveUserLabelsInStatement(functionName, stmt.thenBranch);
+                if (stmt.elseBranch) this.reserveUserLabelsInStatement(functionName, stmt.elseBranch);
+                return;
+            case 'while':
+            case 'for':
+                this.reserveUserLabelsInStatement(functionName, stmt.body);
+                return;
+            case 'label':
+                this.occupiedAssemblyLabels.add(`__${functionName}_${stmt.label}`);
+                this.reserveUserLabelsInStatement(functionName, stmt.statement);
+                return;
+            case 'var':
+            case 'expr':
+            case 'return':
+            case 'break':
+            case 'continue':
+            case 'goto':
+            case 'empty':
+                return;
         }
     }
 
@@ -1461,7 +1506,11 @@ class CodeGenerator {
                 this.collectStaticStringsInExpr(init.expr);
                 return;
             case 'list-init':
-                init.values.forEach((value) => this.collectStaticStringsInExpr(value));
+                init.values.forEach((value) => {
+                    if (!isArrayType(type) || value.kind !== 'string') {
+                        this.collectStaticStringsInExpr(value);
+                    }
+                });
                 return;
         }
     }
@@ -1520,8 +1569,8 @@ class CodeGenerator {
         }
     }
 
-    private emitInterruptVector(): void {
-        this.emit('__irq_vector:');
+    private emitInterruptVector(label: string): void {
+        this.emit(`${label}:`);
         this.emit(`jmp ${IRQ_HANDLER_NAME}`);
     }
 
@@ -1535,7 +1584,7 @@ class CodeGenerator {
         const ctx: FunctionContext = {
             fn,
             layout,
-            returnLabel: `__${fn.name}_return`,
+            returnLabel: this.allocateInternalLabel(`__${fn.name}_return`),
             breakLabels: [],
             continueLabels: [],
             tempDepth: 0,
@@ -2353,7 +2402,16 @@ class CodeGenerator {
 
     private newLabel(prefix: string): string {
         const ctx = this.ctx();
-        return `__${ctx.fn.name}_${prefix}_${ctx.labelId++}`;
+        return this.allocateInternalLabel(`__${ctx.fn.name}_${prefix}_${ctx.labelId++}`);
+    }
+
+    private allocateInternalLabel(preferred: string): string {
+        let label = preferred;
+        while (this.occupiedAssemblyLabels.has(label)) {
+            label = `${preferred}_internal_${this.internalLabelId++}`;
+        }
+        this.occupiedAssemblyLabels.add(label);
+        return label;
     }
 
     private userLabel(label: string): string {

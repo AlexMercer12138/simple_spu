@@ -2,9 +2,9 @@ const assert = require('assert');
 const { compileC, CompilerError } = require('../out/cCompiler');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
-function expectCompilerError(testSource, pattern, expectedLocation) {
+function expectCompilerError(testSource, pattern, expectedLocation, options = {}) {
     assert.throws(
-        () => compileC(testSource, { moduleName: 'irq_negative_test' }),
+        () => compileC(testSource, { moduleName: 'irq_negative_test', ...options }),
         (error) => {
             assert.ok(
                 error instanceof CompilerError,
@@ -476,6 +476,31 @@ for (const [offset, store, stride] of [
     );
 }
 
+const { assembly: internalLabelAssembly } = compileC(`
+int main(void) {
+    array_zero_0: ;
+    array_zero_0_internal_0: ;
+    array_zero_0_internal_1: ;
+    char a[5] = {1};
+    goto done;
+    done: return a[0];
+}
+`, {
+    moduleName: 'internal_label_collision_test',
+});
+assert.match(internalLabelAssembly, /^jmp __main_done$/m);
+assert.match(internalLabelAssembly, /^__main_done:$/m);
+const emittedLabelNames = [...internalLabelAssembly.matchAll(/^([A-Za-z_][A-Za-z0-9_]*):$/gm)]
+    .map((match) => match[1]);
+assert.strictEqual(
+    new Set(emittedLabelNames).size,
+    emittedLabelNames.length,
+    'compiler-internal labels must not collide with user labels',
+);
+assert.ok(new SimpleCPUAssembler().assemble(internalLabelAssembly, {
+    sourceFileName: 'internal_label_collision_test.asm',
+}).machineCodes.length > 0);
+
 const collectorInitializerSource = `
 int sum5(int a, int b, int c, int d, int e) { return a + b + c + d + e; }
 int main(void) {
@@ -509,7 +534,7 @@ assert.match(
     /^mov r7, 0x73\r?\nmov r8, 0x40C\r?\nsb \[r8\], r7$/m,
 );
 
-for (const [testSource, pattern, expectedLocation] of [
+for (const [testSource, pattern, expectedLocation, options] of [
     ['int a[]; int main(void) { return 0; }', /incomplete array requires an initializer/, { line: 1, column: 8 }],
     ['int a[] = {}; int main(void) { return 0; }', /cannot infer.*empty initializer/, { line: 1, column: 11 }],
     ['int a[2] = {1, 2, 3}; int main(void) { return 0; }', /too many array initializer elements/, { line: 1, column: 12 }],
@@ -522,6 +547,8 @@ for (const [testSource, pattern, expectedLocation] of [
     ['int main(void) { int local[]; return 0; }', /incomplete array requires an initializer/, { line: 1, column: 29 }],
     ['int a[] = {"x"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }],
     ['int main(void) { int a[] = {"x"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
+    ['int a[] = {"ABCDE"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }, { dataBase: 0x200, dlbAddrWidth: 0 }],
+    ['int main(void) { int a[] = {"ABCDE"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }, { dataBase: 0x200, dlbAddrWidth: 0 }],
     ['void noop(void) {}\nint a[] = {noop()};\nint main(void) { return 0; }', /array initializer element cannot have void type/, { line: 2, column: 11 }],
     ['void noop(void) {}\nint main(void) { int a[] = {noop()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
     ['void __irq_handler(void) {}\nint main(void) { int a[] = {__irq_enable()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
@@ -529,7 +556,7 @@ for (const [testSource, pattern, expectedLocation] of [
     ['int main(void) { int a[] = {(int *)0}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
     ['int *a[1] = {0}; int main(void) { return 0; }', /arrays of pointers are not supported/, { line: 1, column: 8 }],
 ]) {
-    expectCompilerError(testSource, pattern, expectedLocation);
+    expectCompilerError(testSource, pattern, expectedLocation, options);
 }
 
 const sameStringAddress = parseImmediate(globalStringAddressText);
