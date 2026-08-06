@@ -29,6 +29,27 @@ function expectFunctionImmediate(assembly, functionName, value) {
     assert.match(functionBody, new RegExp(`^mov r4, ${immediate}\\r?$`, 'm'));
 }
 
+function functionAssemblyBody(assembly, functionName) {
+    const body = assembly.match(
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+    )?.[1];
+    assert.ok(body, `missing assembly body for ${functionName}`);
+    return body;
+}
+
+function sourceLocation(sourceText, needle, occurrence = 1) {
+    let index = -1;
+    for (let count = 0; count < occurrence; count++) {
+        index = sourceText.indexOf(needle, index + 1);
+    }
+    assert.notStrictEqual(index, -1, `missing source marker ${needle}`);
+    const prefix = sourceText.slice(0, index);
+    return {
+        line: prefix.split('\n').length,
+        column: index - prefix.lastIndexOf('\n'),
+    };
+}
+
 const source = `
 int data[4];
 
@@ -1163,6 +1184,316 @@ expectCompilerError(
     /void conditional expression cannot be used where a value is required/,
     { line: 1, column: 21 },
 );
+
+const controlFlowSource = `
+int do_once(void) {
+    int count = 0;
+    do {
+        count += 1;
+    } while (0);
+    return count;
+}
+
+int do_continue(void) {
+    int count = 0;
+    do {
+        count++;
+        if (count < 2) continue;
+        count += 10;
+    } while (count < 3);
+    return count;
+}
+
+int switch_cases(int value) {
+    int result = 0;
+    switch (value) {
+    case 'a':
+        result += 1;
+    case 'b':
+        result += 2;
+        break;
+    case 3:
+    case 4:
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int switch_without_default(int value) {
+    int result = 1;
+    switch (value) {
+    case 7:
+        result += 2;
+    }
+    return result;
+}
+
+int nested_switch(int outer, int inner) {
+    int result = 0;
+    switch (outer) {
+    case 1:
+        switch (inner) {
+        case 2:
+            result += 1;
+            break;
+        default:
+            result += 2;
+        }
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int switch_in_loop(int value) {
+    int result = 0;
+    while (value < 3) {
+        switch (value) {
+        case 0:
+            value++;
+            continue;
+        case 1:
+            result += 1;
+            break;
+        default:
+            result += 2;
+        }
+        break;
+    }
+    return result;
+}
+
+int loop_in_switch(int value) {
+    int result = 0;
+    switch (value) {
+    case 1:
+        while (result < 3) {
+            result++;
+            break;
+        }
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int dispatch_once(int value) {
+    int index = value;
+    switch (index++) {
+    case 0: return 10;
+    case 1: return 20;
+    default: return index;
+    }
+}
+
+int control_label_collision(int value) {
+    do_body_0: ;
+    do_condition_1: ;
+    enddo_2: ;
+    switch_end_3: ;
+    switch_case_4: ;
+    do { value++; } while (value < 0);
+    switch (value) { case 0: break; default: break; }
+    return value;
+}
+
+int main(void) {
+    return do_once() + do_continue() + switch_cases('a')
+        + switch_without_default(0) + nested_switch(1, 2)
+        + switch_in_loop(0) + loop_in_switch(1) + dispatch_once(0)
+        + control_label_collision(0);
+}
+`;
+
+const { assembly: controlFlowAssembly } = compileC(controlFlowSource, {
+    moduleName: 'control_flow_test',
+});
+assert.ok(new SimpleCPUAssembler().assemble(controlFlowAssembly, {
+    sourceFileName: 'control_flow_test.asm',
+}).machineCodes.length > 0);
+
+const doOnceBody = functionAssemblyBody(controlFlowAssembly, 'do_once');
+const doOnceBodyLabel = doOnceBody.match(/^(__do_once_do_body_\d+):$/m)?.[1];
+const doOnceConditionLabel = doOnceBody.match(/^(__do_once_do_condition_\d+):$/m)?.[1];
+assert.ok(doOnceBodyLabel && doOnceConditionLabel, 'do/while must emit body and condition labels');
+assert.ok(
+    doOnceBody.indexOf(`${doOnceBodyLabel}:`) < doOnceBody.indexOf(`${doOnceConditionLabel}:`),
+    'do/while body must be entered before its first condition check',
+);
+assert.match(doOnceBody, new RegExp(`^bnz r7, r0 \\+ ${doOnceBodyLabel}$`, 'm'));
+
+const doContinueBody = functionAssemblyBody(controlFlowAssembly, 'do_continue');
+const doContinueConditionLabel = doContinueBody.match(/^(__do_continue_do_condition_\d+):$/m)?.[1];
+assert.ok(doContinueConditionLabel, 'do/while continue target must exist');
+assert.match(doContinueBody, new RegExp(`^jmp ${doContinueConditionLabel}$`, 'm'));
+
+const switchCasesBody = functionAssemblyBody(controlFlowAssembly, 'switch_cases');
+const switchCaseLabels = [...switchCasesBody.matchAll(/^(__switch_cases_switch_case_\d+):$/gm)]
+    .map((match) => match[1]);
+const switchDefaultLabel = switchCasesBody.match(/^(__switch_cases_switch_default_\d+):$/m)?.[1];
+assert.strictEqual(switchCaseLabels.length, 4, 'switch must allocate one label per case');
+assert.ok(switchDefaultLabel, 'switch must allocate a default label');
+const switchDispatch = switchCasesBody.slice(0, switchCasesBody.indexOf(`${switchCaseLabels[0]}:`));
+const dispatchConstants = [0x61, 0x62, 3, 4].map((value) => {
+    const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
+    return switchDispatch.indexOf(`mov r8, ${immediate}`);
+});
+assert.ok(dispatchConstants.every((index) => index >= 0), 'dispatch must compare every case value');
+assert.deepStrictEqual(
+    [...dispatchConstants].sort((left, right) => left - right),
+    dispatchConstants,
+    'case comparisons must follow source order',
+);
+assert.doesNotMatch(
+    switchCasesBody.slice(
+        switchCasesBody.indexOf(`${switchCaseLabels[0]}:`),
+        switchCasesBody.indexOf(`${switchCaseLabels[1]}:`),
+    ),
+    /^jmp /m,
+    'fallthrough must not gain an implicit jump',
+);
+assert.match(
+    switchCasesBody,
+    new RegExp(`^${switchCaseLabels[2]}:\\r?\\n${switchCaseLabels[3]}:$`, 'm'),
+    'shared empty cases must emit adjacent labels',
+);
+
+const noDefaultBody = functionAssemblyBody(controlFlowAssembly, 'switch_without_default');
+const noDefaultEndLabel = noDefaultBody.match(/^(__switch_without_default_switch_end_\d+):$/m)?.[1];
+assert.ok(noDefaultEndLabel, 'switch without default must have an end target');
+assert.match(noDefaultBody, new RegExp(`^jmp ${noDefaultEndLabel}$`, 'm'));
+
+const nestedSwitchBody = functionAssemblyBody(controlFlowAssembly, 'nested_switch');
+assert.strictEqual(
+    (nestedSwitchBody.match(/^__nested_switch_switch_end_\d+:$/gm) || []).length,
+    2,
+    'nested switches must retain independent contexts',
+);
+
+const switchInLoopBody = functionAssemblyBody(controlFlowAssembly, 'switch_in_loop');
+const switchInLoopStart = switchInLoopBody.match(/^(__switch_in_loop_while_\d+):$/m)?.[1];
+const switchInLoopEnd = switchInLoopBody.match(/^(__switch_in_loop_endwhile_\d+):$/m)?.[1];
+const innerSwitchEnd = switchInLoopBody.match(/^(__switch_in_loop_switch_end_\d+):$/m)?.[1];
+assert.ok(switchInLoopStart && switchInLoopEnd && innerSwitchEnd);
+assert.ok(
+    (switchInLoopBody.match(new RegExp(`^jmp ${switchInLoopStart}$`, 'gm')) || []).length >= 2,
+    'continue inside switch must target the surrounding loop',
+);
+assert.match(switchInLoopBody, new RegExp(`^jmp ${innerSwitchEnd}$`, 'm'));
+assert.match(switchInLoopBody, new RegExp(`^jmp ${switchInLoopEnd}$`, 'm'));
+
+const loopInSwitchBody = functionAssemblyBody(controlFlowAssembly, 'loop_in_switch');
+const innerLoopEnd = loopInSwitchBody.match(/^(__loop_in_switch_endwhile_\d+):$/m)?.[1];
+const outerSwitchEnd = loopInSwitchBody.match(/^(__loop_in_switch_switch_end_\d+):$/m)?.[1];
+assert.ok(innerLoopEnd && outerSwitchEnd);
+assert.match(loopInSwitchBody, new RegExp(`^jmp ${innerLoopEnd}$`, 'm'));
+assert.match(loopInSwitchBody, new RegExp(`^jmp ${outerSwitchEnd}$`, 'm'));
+
+const dispatchOnceBody = functionAssemblyBody(controlFlowAssembly, 'dispatch_once');
+assert.strictEqual(
+    (dispatchOnceBody.match(/^sw \[r8\], r7$/gm) || []).length,
+    1,
+    'switch control expression must be evaluated exactly once',
+);
+
+const controlFlowLabels = [...controlFlowAssembly.matchAll(/^([A-Za-z_][A-Za-z0-9_]*):$/gm)]
+    .map((match) => match[1]);
+assert.strictEqual(
+    new Set(controlFlowLabels).size,
+    controlFlowLabels.length,
+    'control-flow internal labels must avoid user labels',
+);
+
+const controlFlowErrorCases = [
+    {
+        source: 'int main(void) { unsigned int value = 0; switch (value) { case -1: ; case (unsigned int)0xFFFFFFFF: ; } return 0; }',
+        pattern: /duplicate case value/,
+        marker: 'case (unsigned int)',
+    },
+    {
+        source: 'int main(void) { switch (0) { default: ; default: ; } return 0; }',
+        pattern: /multiple default labels/,
+        marker: 'default',
+        occurrence: 2,
+    },
+    {
+        source: 'int main(void) { int value = 1; switch (value) { case value: return 1; } return 0; }',
+        pattern: /case value must be an integer constant expression/,
+        marker: 'case value',
+    },
+    {
+        source: 'int main(void) { switch (0) { case "a string too large for the configured DLB": return 1; } return 0; }',
+        pattern: /case value must be an integer constant expression/,
+        marker: 'case',
+        options: { dataBase: 0x200, dlbAddrWidth: 0 },
+    },
+    {
+        source: 'int main(void) { int values[1]; int *pointer = values; switch (pointer) { default: break; } return 0; }',
+        pattern: /switch expression must have integer type/,
+        marker: 'switch',
+    },
+    {
+        source: 'void noop(void) {} int main(void) { switch (noop()) { default: break; } return 0; }',
+        pattern: /switch expression must have integer type/,
+        marker: 'switch',
+    },
+    {
+        source: 'int main(void) { case 1: return 1; }',
+        pattern: /case label used outside switch/,
+        marker: 'case',
+    },
+    {
+        source: 'int main(void) { default: return 1; }',
+        pattern: /default label used outside switch/,
+        marker: 'default',
+    },
+    {
+        source: 'int main(void) { break; return 0; }',
+        pattern: /break used outside loop or switch/,
+        marker: 'break',
+    },
+    {
+        source: 'int main(void) { continue; return 0; }',
+        pattern: /continue used outside loop/,
+        marker: 'continue',
+    },
+    {
+        source: 'int main(void) { do ; return 0; }',
+        pattern: /expected 'while'/,
+        marker: 'return',
+    },
+    {
+        source: 'int main(void) { do ; while (0) return 0; }',
+        pattern: /expected ';'/,
+        marker: 'return',
+    },
+    {
+        source: 'int main(void) { switch (0) { case 1 return 1; } }',
+        pattern: /expected ':'/,
+        marker: 'return',
+    },
+    {
+        source: 'int main(void) { switch (0) { default return 1; } }',
+        pattern: /expected ':'/,
+        marker: 'return',
+    },
+];
+
+for (const { source: testSource, pattern, marker, occurrence, options } of controlFlowErrorCases) {
+    expectCompilerError(
+        testSource,
+        pattern,
+        sourceLocation(testSource, marker, occurrence),
+        options,
+    );
+}
 
 for (const [testSource, pattern] of [
     ['int main(void) { return 1++; }', /operand of '\+\+' must be a modifiable lvalue/],

@@ -80,6 +80,9 @@ type Statement =
     | IfStmt
     | WhileStmt
     | ForStmt
+    | DoWhileStmt
+    | SwitchStmt
+    | CaseStmt
     | ReturnStmt
     | BreakStmt
     | ContinueStmt
@@ -125,6 +128,30 @@ interface ForStmt {
     body: Statement;
 }
 
+interface DoWhileStmt {
+    kind: 'do-while';
+    body: Statement;
+    test: Expr;
+    line: number;
+    column: number;
+}
+
+interface SwitchStmt {
+    kind: 'switch';
+    test: Expr;
+    body: Statement;
+    line: number;
+    column: number;
+}
+
+interface CaseStmt {
+    kind: 'case';
+    value?: Expr;
+    statement: Statement;
+    line: number;
+    column: number;
+}
+
 interface ReturnStmt {
     kind: 'return';
     expr?: Expr;
@@ -132,10 +159,14 @@ interface ReturnStmt {
 
 interface BreakStmt {
     kind: 'break';
+    line: number;
+    column: number;
 }
 
 interface ContinueStmt {
     kind: 'continue';
+    line: number;
+    column: number;
 }
 
 interface GotoStmt {
@@ -262,6 +293,10 @@ const KEYWORDS = new Set([
     'else',
     'while',
     'for',
+    'do',
+    'switch',
+    'case',
+    'default',
     'break',
     'continue',
     'goto',
@@ -654,6 +689,57 @@ class Parser {
             this.expect(')');
             return { kind: 'while', test, body: this.parseStatement() };
         }
+        if (this.isKeyword('do')) {
+            const token = this.advance();
+            const body = this.parseStatement();
+            this.expectKeyword('while');
+            this.expect('(');
+            const test = this.parseExpression();
+            this.expect(')');
+            this.expect(';');
+            return {
+                kind: 'do-while',
+                body,
+                test,
+                line: token.line,
+                column: token.column,
+            };
+        }
+        if (this.isKeyword('switch')) {
+            const token = this.advance();
+            this.expect('(');
+            const test = this.parseExpression();
+            this.expect(')');
+            return {
+                kind: 'switch',
+                test,
+                body: this.parseStatement(),
+                line: token.line,
+                column: token.column,
+            };
+        }
+        if (this.isKeyword('case')) {
+            const token = this.advance();
+            const value = this.parseExpression();
+            this.expect(':');
+            return {
+                kind: 'case',
+                value,
+                statement: this.parseStatement(),
+                line: token.line,
+                column: token.column,
+            };
+        }
+        if (this.isKeyword('default')) {
+            const token = this.advance();
+            this.expect(':');
+            return {
+                kind: 'case',
+                statement: this.parseStatement(),
+                line: token.line,
+                column: token.column,
+            };
+        }
         if (this.matchKeyword('for')) {
             this.expect('(');
             let init: VarDeclStmt | Expr | undefined;
@@ -687,13 +773,15 @@ class Parser {
             }
             return { kind: 'return', expr };
         }
-        if (this.matchKeyword('break')) {
+        if (this.isKeyword('break')) {
+            const token = this.advance();
             this.expect(';');
-            return { kind: 'break' };
+            return { kind: 'break', line: token.line, column: token.column };
         }
-        if (this.matchKeyword('continue')) {
+        if (this.isKeyword('continue')) {
+            const token = this.advance();
             this.expect(';');
-            return { kind: 'continue' };
+            return { kind: 'continue', line: token.line, column: token.column };
         }
         if (this.matchKeyword('goto')) {
             const label = this.expectIdentifier();
@@ -1213,12 +1301,23 @@ interface FunctionLayout {
     maxCallArgs: number;
 }
 
+interface SwitchCaseEntry {
+    statement: CaseStmt;
+    value?: number;
+    label: string;
+}
+
+interface SwitchContext {
+    labels: Map<CaseStmt, string>;
+}
+
 interface FunctionContext {
     fn: FunctionDecl;
     layout: FunctionLayout;
     returnLabel: string;
     breakLabels: string[];
     continueLabels: string[];
+    switchContexts: SwitchContext[];
     tempDepth: number;
     labelId: number;
 }
@@ -1310,6 +1409,7 @@ class CodeGenerator {
 
     private indexProgram(): void {
         this.reserveUserAssemblyLabels();
+        this.validateControlFlowStatements();
         for (const global of this.program.globals) {
             if (this.globals.has(global.name)) {
                 throw new CompilerError(`duplicate global '${global.name}'`);
@@ -1403,7 +1503,12 @@ class CodeGenerator {
                 return;
             case 'while':
             case 'for':
+            case 'do-while':
+            case 'switch':
                 this.reserveUserLabelsInStatement(functionName, stmt.body);
+                return;
+            case 'case':
+                this.reserveUserLabelsInStatement(functionName, stmt.statement);
                 return;
             case 'label':
                 this.occupiedAssemblyLabels.add(`__${functionName}_${stmt.label}`);
@@ -1414,6 +1519,74 @@ class CodeGenerator {
             case 'return':
             case 'break':
             case 'continue':
+            case 'goto':
+            case 'empty':
+                return;
+        }
+    }
+
+    private validateControlFlowStatements(): void {
+        for (const fn of this.program.functions) {
+            if (fn.body) {
+                this.validateControlFlowStatement(fn.body, 0, 0);
+            }
+        }
+    }
+
+    private validateControlFlowStatement(
+        stmt: Statement,
+        loopDepth: number,
+        switchDepth: number,
+    ): void {
+        switch (stmt.kind) {
+            case 'block':
+                stmt.statements.forEach((inner) => {
+                    this.validateControlFlowStatement(inner, loopDepth, switchDepth);
+                });
+                return;
+            case 'if':
+                this.validateControlFlowStatement(stmt.thenBranch, loopDepth, switchDepth);
+                if (stmt.elseBranch) {
+                    this.validateControlFlowStatement(stmt.elseBranch, loopDepth, switchDepth);
+                }
+                return;
+            case 'while':
+            case 'for':
+            case 'do-while':
+                this.validateControlFlowStatement(stmt.body, loopDepth + 1, switchDepth);
+                return;
+            case 'switch':
+                this.validateControlFlowStatement(stmt.body, loopDepth, switchDepth + 1);
+                return;
+            case 'case':
+                if (switchDepth === 0) {
+                    throw new CompilerError(
+                        `${stmt.value ? 'case' : 'default'} label used outside switch`,
+                        stmt.line,
+                        stmt.column,
+                    );
+                }
+                if (stmt.value) {
+                    this.evalCaseConstant(stmt);
+                }
+                this.validateControlFlowStatement(stmt.statement, loopDepth, switchDepth);
+                return;
+            case 'break':
+                if (loopDepth === 0 && switchDepth === 0) {
+                    throw new CompilerError('break used outside loop or switch', stmt.line, stmt.column);
+                }
+                return;
+            case 'continue':
+                if (loopDepth === 0) {
+                    throw new CompilerError('continue used outside loop', stmt.line, stmt.column);
+                }
+                return;
+            case 'label':
+                this.validateControlFlowStatement(stmt.statement, loopDepth, switchDepth);
+                return;
+            case 'var':
+            case 'expr':
+            case 'return':
             case 'goto':
             case 'empty':
                 return;
@@ -1773,6 +1946,18 @@ class CodeGenerator {
                 this.collectStaticStringsInExpr(stmt.test);
                 this.collectStaticStringsInStatement(stmt.body);
                 return;
+            case 'do-while':
+                this.collectStaticStringsInStatement(stmt.body);
+                this.collectStaticStringsInExpr(stmt.test);
+                return;
+            case 'switch':
+                this.collectStaticStringsInExpr(stmt.test);
+                this.collectStaticStringsInStatement(stmt.body);
+                return;
+            case 'case':
+                if (stmt.value) this.collectStaticStringsInExpr(stmt.value);
+                this.collectStaticStringsInStatement(stmt.statement);
+                return;
             case 'for':
                 if (stmt.init) {
                     if (isVarDecl(stmt.init)) this.collectStaticStringsInStatement(stmt.init);
@@ -1898,6 +2083,7 @@ class CodeGenerator {
             returnLabel: this.allocateInternalLabel(`__${fn.name}_return`),
             breakLabels: [],
             continueLabels: [],
+            switchContexts: [],
             tempDepth: 0,
             labelId: 0,
         };
@@ -2046,6 +2232,24 @@ class CodeGenerator {
                 this.emit(`${endLabel}:`);
                 return;
             }
+            case 'do-while': {
+                const bodyLabel = this.newLabel('do_body');
+                const conditionLabel = this.newLabel('do_condition');
+                const endLabel = this.newLabel('enddo');
+                this.emit(`${bodyLabel}:`);
+                this.ctx().breakLabels.push(endLabel);
+                this.ctx().continueLabels.push(conditionLabel);
+                this.emitStatement(stmt.body);
+                this.ctx().breakLabels.pop();
+                this.ctx().continueLabels.pop();
+                this.emit(`${conditionLabel}:`);
+                this.emitBranchIfTrue(stmt.test, bodyLabel);
+                this.emit(`${endLabel}:`);
+                return;
+            }
+            case 'switch':
+                this.emitSwitch(stmt);
+                return;
             case 'for': {
                 const startLabel = this.newLabel('for');
                 const stepLabel = this.newLabel('for_step');
@@ -2076,14 +2280,31 @@ class CodeGenerator {
             }
             case 'break': {
                 const label = last(this.ctx().breakLabels);
-                if (!label) throw new CompilerError('break used outside loop');
+                if (!label) {
+                    throw new CompilerError('break used outside loop or switch', stmt.line, stmt.column);
+                }
                 this.emit(`jmp ${label}`);
                 return;
             }
             case 'continue': {
                 const label = last(this.ctx().continueLabels);
-                if (!label) throw new CompilerError('continue used outside loop');
+                if (!label) {
+                    throw new CompilerError('continue used outside loop', stmt.line, stmt.column);
+                }
                 this.emit(`jmp ${label}`);
+                return;
+            }
+            case 'case': {
+                const label = last(this.ctx().switchContexts)?.labels.get(stmt);
+                if (!label) {
+                    throw new CompilerError(
+                        `${stmt.value ? 'case' : 'default'} label used outside switch`,
+                        stmt.line,
+                        stmt.column,
+                    );
+                }
+                this.emit(`${label}:`);
+                this.emitStatement(stmt.statement);
                 return;
             }
             case 'goto':
@@ -2096,6 +2317,112 @@ class CodeGenerator {
             case 'empty':
                 return;
         }
+    }
+
+    private emitSwitch(stmt: SwitchStmt): void {
+        const testType = this.exprType(stmt.test);
+        if (!isIntegerType(testType)) {
+            throw new CompilerError(
+                'switch expression must have integer type',
+                stmt.line,
+                stmt.column,
+            );
+        }
+        const switchType = promoteIntegerType(testType);
+        const endLabel = this.newLabel('switch_end');
+        const entries = this.collectSwitchCases(stmt.body, switchType);
+        const labels = new Map(entries.map((entry) => [entry.statement, entry.label]));
+        const defaultEntry = entries.find((entry) => entry.value === undefined);
+
+        const testTemp = this.allocTemp();
+        this.emitExpr(stmt.test, 'r7');
+        this.convertValue('r7', switchType);
+        this.storeTemp(testTemp, 'r7');
+        for (const entry of entries) {
+            if (entry.value === undefined) {
+                continue;
+            }
+            this.loadTemp(testTemp, 'r7');
+            this.loadImm('r8', entry.value);
+            this.emit(`${isUnsignedType(switchType) ? 'cmpu' : 'cmp'} r7, r7 == r8`);
+            this.emit(`bnz r7, r0 + ${entry.label}`);
+        }
+        this.emit(`jmp ${defaultEntry?.label || endLabel}`);
+        this.freeTemp();
+
+        this.ctx().breakLabels.push(endLabel);
+        this.ctx().switchContexts.push({ labels });
+        this.emitStatement(stmt.body);
+        this.ctx().switchContexts.pop();
+        this.ctx().breakLabels.pop();
+        this.emit(`${endLabel}:`);
+    }
+
+    private collectSwitchCases(stmt: Statement, switchType: CType): SwitchCaseEntry[] {
+        const entries: SwitchCaseEntry[] = [];
+        const values = new Map<number, CaseStmt>();
+        let defaultStatement: CaseStmt | undefined;
+
+        const collect = (current: Statement): void => {
+            switch (current.kind) {
+                case 'block':
+                    current.statements.forEach(collect);
+                    return;
+                case 'if':
+                    collect(current.thenBranch);
+                    if (current.elseBranch) collect(current.elseBranch);
+                    return;
+                case 'while':
+                case 'for':
+                case 'do-while':
+                    collect(current.body);
+                    return;
+                case 'switch':
+                    return;
+                case 'label':
+                    collect(current.statement);
+                    return;
+                case 'case': {
+                    const label = this.newLabel(current.value ? 'switch_case' : 'switch_default');
+                    if (!current.value) {
+                        if (defaultStatement) {
+                            throw new CompilerError(
+                                'multiple default labels in one switch',
+                                current.line,
+                                current.column,
+                            );
+                        }
+                        defaultStatement = current;
+                        entries.push({ statement: current, label });
+                    } else {
+                        const constant = this.evalCaseConstant(current);
+                        const value = convertConstant(constant.value, switchType);
+                        if (values.has(value)) {
+                            throw new CompilerError(
+                                'duplicate case value after switch type conversion',
+                                current.line,
+                                current.column,
+                            );
+                        }
+                        values.set(value, current);
+                        entries.push({ statement: current, value, label });
+                    }
+                    collect(current.statement);
+                    return;
+                }
+                case 'var':
+                case 'expr':
+                case 'return':
+                case 'break':
+                case 'continue':
+                case 'goto':
+                case 'empty':
+                    return;
+            }
+        };
+
+        collect(stmt);
+        return entries;
     }
 
     private emitLocalArrayInitializer(stmt: VarDeclStmt): void {
@@ -2801,6 +3128,27 @@ class CodeGenerator {
         return this.evalIntegerConstantExpression(expr).value === 0;
     }
 
+    private evalCaseConstant(stmt: CaseStmt): { value: number; type: CType } {
+        if (!stmt.value) {
+            throw new CompilerError('internal error: default label has no case value');
+        }
+        try {
+            if (!this.isIntegerConstantExpression(stmt.value)) {
+                throw new CompilerError(
+                    'case value must be an integer constant expression',
+                    stmt.line,
+                    stmt.column,
+                );
+            }
+            return this.evalIntegerConstantExpression(stmt.value);
+        } catch (error) {
+            if (error instanceof CompilerError && error.line === undefined) {
+                throw new CompilerError(error.message, stmt.line, stmt.column);
+            }
+            throw error;
+        }
+    }
+
     private isIntegerConstantExpression(expr: Expr): boolean {
         switch (expr.kind) {
             case 'number':
@@ -3154,6 +3502,18 @@ class FunctionCollector {
             case 'while':
                 this.collectExpr(stmt.test);
                 this.collect(stmt.body);
+                return;
+            case 'do-while':
+                this.collect(stmt.body);
+                this.collectExpr(stmt.test);
+                return;
+            case 'switch':
+                this.collectExpr(stmt.test);
+                this.collect(stmt.body);
+                return;
+            case 'case':
+                if (stmt.value) this.collectExpr(stmt.value);
+                this.collect(stmt.statement);
                 return;
             case 'for':
                 if (stmt.init) {
