@@ -6,12 +6,12 @@ function expectCompilerError(testSource, pattern, expectedLocation) {
     assert.throws(
         () => compileC(testSource, { moduleName: 'irq_negative_test' }),
         (error) => {
+            assert.ok(
+                error instanceof CompilerError,
+                `expected CompilerError, got ${error?.constructor?.name || typeof error}`,
+            );
             assert.match(error.message, pattern);
             if (expectedLocation) {
-                assert.ok(
-                    error instanceof CompilerError,
-                    `expected CompilerError, got ${error.constructor.name}`,
-                );
                 assert.strictEqual(error.line, expectedLocation.line);
                 assert.strictEqual(error.column, expectedLocation.column);
             }
@@ -431,6 +431,51 @@ const initializerResult = initializerAssembler.assemble(initializerAssembly, {
 });
 assert.ok(initializerResult.machineCodes.length > 0);
 
+const { assembly: largeLocalInitializerAssembly } = compileC(`
+int main(void) {
+    char bytes[4096] = {1};
+    short halves[4096] = {2};
+    int words[4096] = {3};
+    return bytes[0] + bytes[4095] + halves[0] + halves[4095]
+        + words[0] + words[4095];
+}
+`, {
+    moduleName: 'large_local_array_initializer_test',
+});
+const largeLocalInitializerResult = new SimpleCPUAssembler().assemble(
+    largeLocalInitializerAssembly,
+    { sourceFileName: 'large_local_array_initializer_test.asm' },
+);
+assert.ok(largeLocalInitializerResult.machineCodes.length > 0);
+assert.ok(
+    largeLocalInitializerAssembly.split(/\r?\n/).length < 300,
+    'large local array initialization must have near-constant assembly size',
+);
+const largeLocalInitializerMainBody = largeLocalInitializerAssembly.match(
+    /^main:\r?\n([\s\S]*?)^__main_return:/m,
+)?.[1];
+assert.ok(largeLocalInitializerMainBody, 'missing large local array initializer main body');
+for (const [offset, store, stride] of [
+    ['9', 'sb', 1],
+    ['0x100A', 'sh', 2],
+    ['0x300C', 'sw', 4],
+]) {
+    assert.match(
+        largeLocalInitializerMainBody,
+        new RegExp(
+            `^mov r8, ${offset}\\r?\\n` +
+            'mov r8, r12 \\+ r8\\r?\\n' +
+            'mov r7, 0xFFF\\r?\\n' +
+            '(__main_array_zero_\\d+):\\r?\\n' +
+            `${store} \\[r8\\], r0\\r?\\n` +
+            `mov r8, r8 \\+ ${stride}\\r?\\n` +
+            'mov r7, r7 - 1\\r?\\n' +
+            'bnz r7, r0 \\+ \\1$',
+            'm',
+        ),
+    );
+}
+
 const collectorInitializerSource = `
 int sum5(int a, int b, int c, int d, int e) { return a + b + c + d + e; }
 int main(void) {
@@ -464,19 +509,27 @@ assert.match(
     /^mov r7, 0x73\r?\nmov r8, 0x40C\r?\nsb \[r8\], r7$/m,
 );
 
-for (const [testSource, pattern] of [
-    ['int a[]; int main(void) { return 0; }', /incomplete array requires an initializer/],
-    ['int a[] = {}; int main(void) { return 0; }', /cannot infer.*empty initializer/],
-    ['int a[2] = {1, 2, 3}; int main(void) { return 0; }', /too many array initializer elements/],
-    ['int a[2] = "x"; int main(void) { return 0; }', /string initializer requires a character array/],
-    ['char a[2] = "hi"; int main(void) { return 0; }', /string initializer.*does not fit/],
-    ['int a[2] = {{1}, {2}}; int main(void) { return 0; }', /nested initializers are not supported/],
-    ['int scalar = {1}; int main(void) { return scalar; }', /initializer list requires an array/],
-    ['char scalar = "x"; int main(void) { return scalar; }', /string initializer requires an array or pointer/],
-    ['int a[2] = 1; int main(void) { return 0; }', /array initializer must be a list or string literal/],
-    ['int main(void) { int local[]; return 0; }', /incomplete array requires an initializer/],
+for (const [testSource, pattern, expectedLocation] of [
+    ['int a[]; int main(void) { return 0; }', /incomplete array requires an initializer/, { line: 1, column: 8 }],
+    ['int a[] = {}; int main(void) { return 0; }', /cannot infer.*empty initializer/, { line: 1, column: 11 }],
+    ['int a[2] = {1, 2, 3}; int main(void) { return 0; }', /too many array initializer elements/, { line: 1, column: 12 }],
+    ['int a[2] = "x"; int main(void) { return 0; }', /string initializer requires a character array/, { line: 1, column: 12 }],
+    ['char a[2] = "hi"; int main(void) { return 0; }', /string initializer.*does not fit/, { line: 1, column: 13 }],
+    ['int a[2] = {{1}, {2}}; int main(void) { return 0; }', /nested initializers are not supported/, { line: 1, column: 13 }],
+    ['int scalar = {1}; int main(void) { return scalar; }', /initializer list requires an array/, { line: 1, column: 14 }],
+    ['char scalar = "x"; int main(void) { return scalar; }', /string initializer requires an array or pointer/, { line: 1, column: 15 }],
+    ['int a[2] = 1; int main(void) { return 0; }', /array initializer must be a list or string literal/, { line: 1, column: 13 }],
+    ['int main(void) { int local[]; return 0; }', /incomplete array requires an initializer/, { line: 1, column: 29 }],
+    ['int a[] = {"x"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }],
+    ['int main(void) { int a[] = {"x"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
+    ['void noop(void) {}\nint a[] = {noop()};\nint main(void) { return 0; }', /array initializer element cannot have void type/, { line: 2, column: 11 }],
+    ['void noop(void) {}\nint main(void) { int a[] = {noop()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
+    ['void __irq_handler(void) {}\nint main(void) { int a[] = {__irq_enable()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
+    ['int a[] = {(int *)0}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }],
+    ['int main(void) { int a[] = {(int *)0}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
+    ['int *a[1] = {0}; int main(void) { return 0; }', /arrays of pointers are not supported/, { line: 1, column: 8 }],
 ]) {
-    expectCompilerError(testSource, pattern);
+    expectCompilerError(testSource, pattern, expectedLocation);
 }
 
 const sameStringAddress = parseImmediate(globalStringAddressText);

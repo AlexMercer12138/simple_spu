@@ -1090,6 +1090,8 @@ const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
 const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
+// At two instructions per element, three inline zero stores cost no more than the loop path.
+const MAX_INLINE_LOCAL_ARRAY_ZERO_STORES = 3;
 
 class CodeGenerator {
     private readonly lines: string[] = [];
@@ -1239,6 +1241,7 @@ class CodeGenerator {
         if (slot.globalAddress === undefined) {
             throw new CompilerError('internal error: global array has no address');
         }
+        this.validateArrayListInitializer(type, init);
         const normalized = normalizeArrayInitializer(type, init);
         const elementType = arrayElementType(type);
         const elementSize = typeSizeBytes(elementType);
@@ -1272,6 +1275,37 @@ class CodeGenerator {
             throw new CompilerError('internal error: expected expression initializer');
         }
         return init.expr;
+    }
+
+    private validateArrayListInitializer(type: CType, init?: Initializer): void {
+        if (init?.kind !== 'list-init') {
+            return;
+        }
+        const elementType = arrayElementType(type);
+        if (!isIntegerType(elementType)) {
+            throw new CompilerError(
+                'initializer list requires a non-pointer integer array',
+                init.line,
+                init.column,
+            );
+        }
+        for (const value of init.values) {
+            const valueType = this.exprType(value);
+            if (isVoidType(valueType)) {
+                throw new CompilerError(
+                    'array initializer element cannot have void type',
+                    init.line,
+                    init.column,
+                );
+            }
+            if (!isIntegerType(valueType)) {
+                throw new CompilerError(
+                    'array initializer element cannot have pointer type',
+                    init.line,
+                    init.column,
+                );
+            }
+        }
     }
 
     private evalConstant(expr: Expr): number {
@@ -1708,6 +1742,7 @@ class CodeGenerator {
         if (!stmt.init) {
             return;
         }
+        this.validateArrayListInitializer(stmt.type, stmt.init);
         const slot = this.lookupVar(stmt.name);
         if (slot.offset === undefined) {
             throw new CompilerError(`internal error: local array '${stmt.name}' has no offset`);
@@ -1732,10 +1767,23 @@ class CodeGenerator {
             }
         }
 
-        for (let count = 0; count < normalized.zeroFill; count++, index++) {
-            this.loadImm('r7', 0);
-            this.emitStoreToAddress(`r12 + ${slot.offset + index * elementSize}`, 'r7', elementType);
+        if (normalized.zeroFill <= MAX_INLINE_LOCAL_ARRAY_ZERO_STORES) {
+            for (let count = 0; count < normalized.zeroFill; count++, index++) {
+                this.loadImm('r7', 0);
+                this.emitStoreToAddress(`r12 + ${slot.offset + index * elementSize}`, 'r7', elementType);
+            }
+            return;
         }
+
+        const loopLabel = this.newLabel('array_zero');
+        this.loadImm('r8', slot.offset + index * elementSize);
+        this.emit('mov r8, r12 + r8');
+        this.loadImm('r7', normalized.zeroFill);
+        this.emit(`${loopLabel}:`);
+        this.emitStoreToAddress('r8', 'r0', elementType);
+        this.emit(`mov r8, r8 + ${elementSize}`);
+        this.emit('mov r7, r7 - 1');
+        this.emit(`bnz r7, r0 + ${loopLabel}`);
     }
 
     private emitExpr(expr: Expr, target: string): CType {
@@ -2158,6 +2206,7 @@ class CodeGenerator {
                 if (isComparison(expr.op) || expr.op === '&&' || expr.op === '||') return intType();
                 return this.binaryResultType(expr.op, this.exprType(expr.left), this.exprType(expr.right));
             case 'call':
+                if (expr.name === '__irq_enable' || expr.name === '__irq_disable') return voidType();
                 if (expr.name === '__load32' || expr.name === '__store32') return uintType();
                 return this.functionMap.get(expr.name)?.returnType || intType();
             case 'cast':
@@ -2486,6 +2535,10 @@ function voidType(): CType {
 
 function isVoidType(type: CType): boolean {
     return type.base === 'void' && type.pointerDepth === 0;
+}
+
+function isIntegerType(type: CType): boolean {
+    return type.pointerDepth === 0 && type.base !== 'void' && !isArrayType(type);
 }
 
 function isArrayType(type: CType): type is CType & { arrayLength: number | null } {
