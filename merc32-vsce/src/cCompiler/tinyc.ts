@@ -246,6 +246,8 @@ interface CastExpr {
     kind: 'cast';
     type: CType;
     expr: Expr;
+    line: number;
+    column: number;
 }
 
 const KEYWORDS = new Set([
@@ -1010,11 +1012,18 @@ class Parser {
     }
 
     private parsePrimary(): Expr {
-        if (this.match('(')) {
+        if (this.is('(')) {
+            const openParen = this.advance();
             if (this.isTypeStart()) {
                 const type = this.parseType();
                 this.expect(')');
-                return { kind: 'cast', type, expr: this.parseUnary() };
+                return {
+                    kind: 'cast',
+                    type,
+                    expr: this.parseUnary(),
+                    line: openParen.line,
+                    column: openParen.column,
+                };
             }
             const expr = this.parseExpression();
             this.expect(')');
@@ -1499,36 +1508,43 @@ class CodeGenerator {
                 expr.column,
             );
         }
+        if (expr.kind === 'cast') {
+            throw new CompilerError(
+                'void expression cannot be used where a value is required',
+                expr.line,
+                expr.column,
+            );
+        }
         throw new CompilerError('void expression cannot be used where a value is required');
     }
 
-    private validateConstantExpression(expr: Expr): void {
+    private validateConstantExpression(expr: Expr, valueRequired = true): void {
         switch (expr.kind) {
             case 'number':
             case 'string':
-                return;
+                break;
             case 'cast':
-                this.validateConstantExpression(expr.expr);
-                return;
+                this.validateConstantExpression(expr.expr, !isVoidType(expr.type));
+                break;
             case 'unary': {
                 if (!['-', '~', '!'].includes(expr.op)) {
                     throw new CompilerError('global initializer must be a constant expression');
                 }
                 this.validateUnaryOperand(expr);
                 this.validateConstantExpression(expr.expr);
-                return;
+                break;
             }
             case 'binary':
                 this.validateBinaryOperands(expr);
                 this.validateConstantExpression(expr.left);
                 this.validateConstantExpression(expr.right);
-                return;
+                break;
             case 'conditional':
                 this.validateConstantExpression(expr.test);
-                this.validateConstantExpression(expr.consequent);
-                this.validateConstantExpression(expr.alternate);
+                this.validateConstantExpression(expr.consequent, false);
+                this.validateConstantExpression(expr.alternate, false);
                 this.conditionalResultType(expr);
-                return;
+                break;
             case 'varref':
             case 'assign':
             case 'compound-assign':
@@ -1537,6 +1553,7 @@ class CodeGenerator {
             case 'index':
                 throw new CompilerError('global initializer must be a constant expression');
         }
+        this.requireExpressionValue(expr, this.exprType(expr), valueRequired);
     }
 
     private validateUnaryOperand(expr: UnaryExpr): void {

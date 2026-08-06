@@ -932,6 +932,7 @@ void choose_user_void(int condition) {
 }
 
 void casted_void_conditionals(int condition) {
+    (void)pass(condition);
     (void)(condition ? void_true() : void_false());
     condition ? (void)void_true() : (void)void_false();
 }
@@ -1028,6 +1029,7 @@ const castedVoidBody = conditionalExpressionAssembly.match(
     /^casted_void_conditionals:\r?\n([\s\S]*?)^__casted_void_conditionals_return:/m,
 )?.[1];
 assert.ok(castedVoidBody, 'missing casted void conditional assembly body');
+assert.match(castedVoidBody, /^jmp pass, r14$/m);
 assert.strictEqual((castedVoidBody.match(/^jmp void_true, r14$/gm) || []).length, 2);
 assert.strictEqual((castedVoidBody.match(/^jmp void_false, r14$/gm) || []).length, 2);
 assert.doesNotMatch(castedVoidBody, /^mov r7, r4$/m);
@@ -1145,6 +1147,22 @@ for (const [testSource, pattern] of [
 ]) {
     expectCompilerError(testSource, pattern);
 }
+
+expectCompilerError(
+    'int g = 1 ? 7 : (int)(void)2; int main(void) { return g; }',
+    /void expression cannot be used where a value is required/,
+    { line: 1, column: 22 },
+);
+expectCompilerError(
+    'int g = (int)(1 ? (void)1 : (void)2); int main(void) { return g; }',
+    /void conditional expression cannot be used where a value is required/,
+    { line: 1, column: 17 },
+);
+expectCompilerError(
+    'int g[1] = {(int)(1 ? (void)1 : (void)2)}; int main(void) { return g[0]; }',
+    /void conditional expression cannot be used where a value is required/,
+    { line: 1, column: 21 },
+);
 
 for (const [testSource, pattern] of [
     ['int main(void) { return 1++; }', /operand of '\+\+' must be a modifiable lvalue/],
