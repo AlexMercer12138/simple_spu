@@ -21,7 +21,7 @@ type BaseType = 'char' | 'uchar' | 'short' | 'ushort' | 'int' | 'uint' | 'void';
 interface CType {
     base: BaseType;
     pointerDepth: number;
-    arrayLength?: number;
+    arrayLength?: number | null;
     volatile: boolean;
 }
 
@@ -39,11 +39,25 @@ interface Program {
     functions: FunctionDecl[];
 }
 
+type Initializer = ExprInitializer | ListInitializer;
+
+interface ExprInitializer {
+    kind: 'expr-init';
+    expr: Expr;
+}
+
+interface ListInitializer {
+    kind: 'list-init';
+    values: Expr[];
+    line: number;
+    column: number;
+}
+
 interface GlobalDecl {
     kind: 'global';
     type: CType;
     name: string;
-    init?: Expr;
+    init?: Initializer;
 }
 
 interface FunctionDecl {
@@ -82,7 +96,7 @@ interface VarDeclStmt {
     kind: 'var';
     type: CType;
     name: string;
-    init?: Expr;
+    init?: Initializer;
 }
 
 interface ExprStmt {
@@ -489,25 +503,26 @@ class Parser {
                 throw this.error('void pointers are not supported yet');
             }
             const name = this.expectIdentifier();
-            const declaredType = this.parseDeclaratorSuffix(type);
+            const declaratorType = this.parseDeclaratorSuffix(type);
             if (this.match('(')) {
                 const params = this.parseParams();
                 if (this.match(';')) {
-                    if (declaredType.arrayLength !== undefined) {
+                    if (isArrayType(declaratorType)) {
                         throw this.error('function cannot return an array');
                     }
-                    functions.push({ kind: 'function', returnType: declaredType, name, params });
+                    functions.push({ kind: 'function', returnType: declaratorType, name, params });
                 } else {
-                    if (declaredType.arrayLength !== undefined) {
+                    if (isArrayType(declaratorType)) {
                         throw this.error('function cannot return an array');
                     }
-                    functions.push({ kind: 'function', returnType: declaredType, name, params, body: this.parseBlock() });
+                    functions.push({ kind: 'function', returnType: declaratorType, name, params, body: this.parseBlock() });
                 }
             } else {
-                let init: Expr | undefined;
+                let init: Initializer | undefined;
                 if (this.match('=')) {
-                    init = this.parseExpression();
+                    init = this.parseInitializer();
                 }
+                const declaredType = this.finalizeDeclaratorType(declaratorType, init);
                 this.expect(';');
                 globals.push({ kind: 'global', type: declaredType, name, init });
             }
@@ -534,7 +549,7 @@ class Parser {
             }
             const name = this.expectIdentifier();
             const declaredType = this.parseDeclaratorSuffix(type);
-            if (declaredType.arrayLength !== undefined) {
+            if (isArrayType(declaredType)) {
                 throw this.error('array parameters are not supported yet; use a pointer parameter');
             }
             params.push({ type: declaredType, name });
@@ -642,8 +657,9 @@ class Parser {
 
     private parseVarDeclAfterType(type: CType, expectSemicolon: boolean): VarDeclStmt {
         const name = this.expectIdentifier();
-        const declaredType = this.parseDeclaratorSuffix(type);
-        const init = this.match('=') ? this.parseExpression() : undefined;
+        const declaratorType = this.parseDeclaratorSuffix(type);
+        const init = this.match('=') ? this.parseInitializer() : undefined;
+        const declaredType = this.finalizeDeclaratorType(declaratorType, init);
         if (expectSemicolon) {
             this.expect(';');
         }
@@ -654,19 +670,127 @@ class Parser {
         if (!this.match('[')) {
             return type;
         }
-        const sizeToken = this.current();
-        if (sizeToken.kind !== 'number' || sizeToken.value === undefined || sizeToken.value <= 0) {
-            throw this.error('array size must be a positive numeric constant');
-        }
-        this.advance();
-        this.expect(']');
         if (type.pointerDepth > 0) {
             throw this.error('arrays of pointers are not supported yet');
         }
         if (isVoidType(type)) {
             throw this.error('array element type cannot be void');
         }
-        return { ...type, arrayLength: sizeToken.value };
+
+        let arrayLength: number | null;
+        if (this.match(']')) {
+            arrayLength = null;
+        } else {
+            const sizeToken = this.current();
+            if (sizeToken.kind !== 'number' || sizeToken.value === undefined || sizeToken.value <= 0) {
+                throw this.error('array size must be a positive numeric constant');
+            }
+            this.advance();
+            this.expect(']');
+            arrayLength = sizeToken.value;
+        }
+        if (this.is('[')) {
+            throw this.error('multi-dimensional arrays are not supported');
+        }
+        return { ...type, arrayLength };
+    }
+
+    private parseInitializer(): Initializer {
+        if (!this.is('{')) {
+            return { kind: 'expr-init', expr: this.parseExpression() };
+        }
+
+        const openBrace = this.advance();
+        const values: Expr[] = [];
+        if (!this.match('}')) {
+            while (true) {
+                if (this.is('{')) {
+                    throw this.error('nested initializers are not supported');
+                }
+                values.push(this.parseExpression());
+                if (this.match('}')) {
+                    break;
+                }
+                this.expect(',');
+                if (this.match('}')) {
+                    break;
+                }
+            }
+        }
+        return {
+            kind: 'list-init',
+            values,
+            line: openBrace.line,
+            column: openBrace.column,
+        };
+    }
+
+    private finalizeDeclaratorType(type: CType, init?: Initializer): CType {
+        if (!isArrayType(type)) {
+            if (init?.kind === 'list-init') {
+                throw new CompilerError('initializer list requires an array', init.line, init.column);
+            }
+            if (init?.kind === 'expr-init' && init.expr.kind === 'string' && type.pointerDepth === 0) {
+                throw new CompilerError(
+                    'string initializer requires an array or pointer',
+                    init.expr.line,
+                    init.expr.column,
+                );
+            }
+            return type;
+        }
+
+        if (!init) {
+            if (type.arrayLength === null) {
+                throw this.error('incomplete array requires an initializer');
+            }
+            return type;
+        }
+
+        if (init.kind === 'list-init') {
+            if (type.arrayLength === null) {
+                if (init.values.length === 0) {
+                    throw new CompilerError(
+                        'cannot infer array length from empty initializer',
+                        init.line,
+                        init.column,
+                    );
+                }
+                return { ...type, arrayLength: init.values.length };
+            }
+            if (init.values.length > type.arrayLength) {
+                throw new CompilerError(
+                    'too many array initializer elements',
+                    init.line,
+                    init.column,
+                );
+            }
+            return type;
+        }
+
+        if (init.expr.kind !== 'string') {
+            throw this.error('array initializer must be a list or string literal');
+        }
+        if (type.pointerDepth !== 0 || (type.base !== 'char' && type.base !== 'uchar')) {
+            throw new CompilerError(
+                'string initializer requires a character array',
+                init.expr.line,
+                init.expr.column,
+            );
+        }
+
+        const requiredLength = init.expr.bytes.length + 1;
+        if (type.arrayLength === null) {
+            return { ...type, arrayLength: requiredLength };
+        }
+        if (requiredLength > type.arrayLength) {
+            throw new CompilerError(
+                'string initializer does not fit in character array',
+                init.expr.line,
+                init.expr.column,
+            );
+        }
+        return type;
     }
 
     private parseExpression(): Expr {
@@ -929,6 +1053,20 @@ interface StaticString {
     address: number;
 }
 
+type NormalizedArrayInitializer = ExprArrayInitializer | ByteArrayInitializer;
+
+interface ExprArrayInitializer {
+    kind: 'expr-elements';
+    values: Expr[];
+    zeroFill: number;
+}
+
+interface ByteArrayInitializer {
+    kind: 'byte-elements';
+    values: number[];
+    zeroFill: number;
+}
+
 interface FunctionLayout {
     slots: Map<string, Slot>;
     frameSize: number;
@@ -1078,20 +1216,11 @@ class CodeGenerator {
             if (slot?.globalAddress === undefined) {
                 throw new CompilerError(`internal error: missing global '${global.name}'`);
             }
-            if (global.type.arrayLength !== undefined) {
-                if (global.init) {
-                    throw new CompilerError('array initializers are not supported yet');
-                }
-                this.loadImm('r7', 0);
-                const elementType = arrayElementType(global.type);
-                const elementSize = typeSizeBytes(elementType);
-                for (let offset = 0; offset < slot.sizeBytes; offset += elementSize) {
-                    this.loadImm('r8', slot.globalAddress + offset);
-                    this.emitStoreToAddress('r8', 'r7', elementType);
-                }
+            if (isArrayType(global.type)) {
+                this.emitGlobalArrayInitializer(slot, global.type, global.init);
                 continue;
             }
-            const value = global.init ? this.evalConstant(global.init) : 0;
+            const value = global.init ? this.evalConstant(this.exprInitializer(global.init)) : 0;
             this.loadImm('r7', value);
             this.loadImm('r8', slot.globalAddress);
             this.emitStoreToAddress('r8', 'r7', global.type);
@@ -1104,6 +1233,45 @@ class CodeGenerator {
                 this.emit('sb [r8], r7');
             }
         }
+    }
+
+    private emitGlobalArrayInitializer(slot: Slot, type: CType, init?: Initializer): void {
+        if (slot.globalAddress === undefined) {
+            throw new CompilerError('internal error: global array has no address');
+        }
+        const normalized = normalizeArrayInitializer(type, init);
+        const elementType = arrayElementType(type);
+        const elementSize = typeSizeBytes(elementType);
+        let index = 0;
+
+        if (normalized.kind === 'expr-elements') {
+            for (const expr of normalized.values) {
+                this.loadImm('r7', convertConstant(this.evalConstant(expr), elementType));
+                this.loadImm('r8', slot.globalAddress + index * elementSize);
+                this.emitStoreToAddress('r8', 'r7', elementType);
+                index++;
+            }
+        } else {
+            for (const value of normalized.values) {
+                this.loadImm('r7', value);
+                this.loadImm('r8', slot.globalAddress + index * elementSize);
+                this.emitStoreToAddress('r8', 'r7', elementType);
+                index++;
+            }
+        }
+
+        for (let count = 0; count < normalized.zeroFill; count++, index++) {
+            this.loadImm('r7', 0);
+            this.loadImm('r8', slot.globalAddress + index * elementSize);
+            this.emitStoreToAddress('r8', 'r7', elementType);
+        }
+    }
+
+    private exprInitializer(init: Initializer): Expr {
+        if (init.kind !== 'expr-init') {
+            throw new CompilerError('internal error: expected expression initializer');
+        }
+        return init.expr;
     }
 
     private evalConstant(expr: Expr): number {
@@ -1197,7 +1365,7 @@ class CodeGenerator {
     private collectStaticStrings(): void {
         for (const global of this.program.globals) {
             if (global.init) {
-                this.collectStaticStringsInExpr(global.init);
+                this.collectStaticStringsInInitializer(global.init, global.type);
             }
         }
         for (const fn of this.program.functions) {
@@ -1213,7 +1381,7 @@ class CodeGenerator {
                 stmt.statements.forEach((inner) => this.collectStaticStringsInStatement(inner));
                 return;
             case 'var':
-                if (stmt.init) this.collectStaticStringsInExpr(stmt.init);
+                if (stmt.init) this.collectStaticStringsInInitializer(stmt.init, stmt.type);
                 return;
             case 'expr':
                 this.collectStaticStringsInExpr(stmt.expr);
@@ -1246,6 +1414,20 @@ class CodeGenerator {
             case 'continue':
             case 'goto':
             case 'empty':
+                return;
+        }
+    }
+
+    private collectStaticStringsInInitializer(init: Initializer, type: CType): void {
+        switch (init.kind) {
+            case 'expr-init':
+                if (isArrayType(type) && init.expr.kind === 'string') {
+                    return;
+                }
+                this.collectStaticStringsInExpr(init.expr);
+                return;
+            case 'list-init':
+                init.values.forEach((value) => this.collectStaticStringsInExpr(value));
                 return;
         }
     }
@@ -1423,8 +1605,12 @@ class CodeGenerator {
                 return;
             case 'var':
                 if (stmt.init) {
-                    this.emitExpr(stmt.init, 'r7');
-                    this.storeVar(stmt.name, 'r7');
+                    if (isArrayType(stmt.type)) {
+                        this.emitLocalArrayInitializer(stmt);
+                    } else {
+                        this.emitExpr(this.exprInitializer(stmt.init), 'r7');
+                        this.storeVar(stmt.name, 'r7');
+                    }
                 }
                 return;
             case 'expr':
@@ -1518,6 +1704,40 @@ class CodeGenerator {
         }
     }
 
+    private emitLocalArrayInitializer(stmt: VarDeclStmt): void {
+        if (!stmt.init) {
+            return;
+        }
+        const slot = this.lookupVar(stmt.name);
+        if (slot.offset === undefined) {
+            throw new CompilerError(`internal error: local array '${stmt.name}' has no offset`);
+        }
+        const normalized = normalizeArrayInitializer(stmt.type, stmt.init);
+        const elementType = arrayElementType(stmt.type);
+        const elementSize = typeSizeBytes(elementType);
+        let index = 0;
+
+        if (normalized.kind === 'expr-elements') {
+            for (const expr of normalized.values) {
+                this.emitExpr(expr, 'r7');
+                this.convertValue('r7', elementType);
+                this.emitStoreToAddress(`r12 + ${slot.offset + index * elementSize}`, 'r7', elementType);
+                index++;
+            }
+        } else {
+            for (const value of normalized.values) {
+                this.loadImm('r7', value);
+                this.emitStoreToAddress(`r12 + ${slot.offset + index * elementSize}`, 'r7', elementType);
+                index++;
+            }
+        }
+
+        for (let count = 0; count < normalized.zeroFill; count++, index++) {
+            this.loadImm('r7', 0);
+            this.emitStoreToAddress(`r12 + ${slot.offset + index * elementSize}`, 'r7', elementType);
+        }
+    }
+
     private emitExpr(expr: Expr, target: string): CType {
         switch (expr.kind) {
             case 'number':
@@ -1527,7 +1747,7 @@ class CodeGenerator {
                 this.loadImm(target, this.staticStringAddress(expr));
                 return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
-                if (this.lookupVar(expr.name).type.arrayLength !== undefined) {
+                if (isArrayType(this.lookupVar(expr.name).type)) {
                     this.emitAddress(expr, target);
                     return arrayDecayType(this.lookupVar(expr.name).type);
                 }
@@ -2130,14 +2350,11 @@ class FunctionCollector {
                 if (this.slots.has(stmt.name)) {
                     throw new CompilerError(`duplicate local '${stmt.name}' in function '${this.functionName}'`);
                 }
-                if (stmt.type.arrayLength !== undefined && stmt.init) {
-                    throw new CompilerError('array initializers are not supported yet');
-                }
                 this.nextOffset = alignTo(this.nextOffset, typeAlignmentBytes(stmt.type));
                 const sizeBytes = typeSizeBytes(stmt.type);
                 this.slots.set(stmt.name, { type: stmt.type, offset: this.nextOffset, sizeBytes });
                 this.nextOffset += sizeBytes;
-                if (stmt.init) this.collectExpr(stmt.init);
+                if (stmt.init) this.collectInitializer(stmt.init);
                 return;
             case 'expr':
                 this.collectExpr(stmt.expr);
@@ -2170,6 +2387,17 @@ class FunctionCollector {
             case 'continue':
             case 'goto':
             case 'empty':
+                return;
+        }
+    }
+
+    private collectInitializer(init: Initializer): void {
+        switch (init.kind) {
+            case 'expr-init':
+                this.collectExpr(init.expr);
+                return;
+            case 'list-init':
+                init.values.forEach((value) => this.collectExpr(value));
                 return;
         }
     }
@@ -2213,6 +2441,33 @@ export function compileC(source: string, options: CompileOptions = {}): CompileR
     return { assembly };
 }
 
+function normalizeArrayInitializer(type: CType, init?: Initializer): NormalizedArrayInitializer {
+    if (!isArrayType(type) || type.arrayLength === null) {
+        throw new CompilerError('internal error: expected complete array type');
+    }
+    if (!init) {
+        return { kind: 'expr-elements', values: [], zeroFill: type.arrayLength };
+    }
+
+    switch (init.kind) {
+        case 'list-init':
+            return {
+                kind: 'expr-elements',
+                values: init.values,
+                zeroFill: type.arrayLength - init.values.length,
+            };
+        case 'expr-init':
+            if (init.expr.kind !== 'string') {
+                throw new CompilerError('internal error: unsupported array expression initializer');
+            }
+            return {
+                kind: 'byte-elements',
+                values: [...init.expr.bytes, 0],
+                zeroFill: type.arrayLength - init.expr.bytes.length - 1,
+            };
+    }
+}
+
 function isComparison(op: string): boolean {
     return ['==', '!=', '<', '<=', '>', '>='].includes(op);
 }
@@ -2231,6 +2486,10 @@ function voidType(): CType {
 
 function isVoidType(type: CType): boolean {
     return type.base === 'void' && type.pointerDepth === 0;
+}
+
+function isArrayType(type: CType): type is CType & { arrayLength: number | null } {
+    return type.arrayLength !== undefined;
 }
 
 function isUnsignedType(type: CType): boolean {
@@ -2265,13 +2524,16 @@ function derefType(type: CType): CType {
 }
 
 function arrayDecayType(type: CType): CType {
-    if (type.arrayLength === undefined) {
+    if (!isArrayType(type)) {
         return type;
     }
     return { base: type.base, pointerDepth: type.pointerDepth + 1, volatile: type.volatile };
 }
 
 function typeSizeBytes(type: CType): number {
+    if (type.arrayLength === null) {
+        throw new CompilerError('internal error: incomplete array has no size');
+    }
     const elementCount = type.arrayLength ?? 1;
     if (type.pointerDepth > 0) {
         return elementCount * 4;

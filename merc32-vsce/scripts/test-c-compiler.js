@@ -317,6 +317,142 @@ const localStringAddressText = mainBody.match(
 assert.ok(localStringAddressText, 'missing local string pointer initializer');
 
 const parseImmediate = (text) => Number.parseInt(text, text.startsWith('0x') ? 16 : 10);
+
+const initializerSource = `
+char greeting[] = "hello";
+unsigned char utf8[8] = "中";
+short signed_table[] = {1, -2, 3,};
+unsigned short short_table[5] = {4, 5};
+int word_table[] = {6, 7, 8};
+unsigned int unsigned_table[4] = {9};
+
+int seed(void) { return 10; }
+
+int main(void) {
+    char local_text[4] = "ok";
+    int local_values[] = {seed(), 20, 30};
+    return greeting[1] + utf8[0] + signed_table[1] + short_table[4]
+        + word_table[2] + unsigned_table[3] + local_text[2] + local_values[0];
+}
+`;
+
+const { assembly: initializerAssembly } = compileC(initializerSource, {
+    moduleName: 'array_initializer_test',
+    dataBase: 0x300,
+});
+const initializerStartBody = initializerAssembly.match(
+    /^__start:\r?\n([\s\S]*?)^__halt:/m,
+)?.[1];
+assert.ok(initializerStartBody, 'missing array initializer startup body');
+
+const initializerGlobalStores = [...initializerStartBody.matchAll(
+    /^mov r8, (0x[0-9A-F]+|\d+)\r?\n(sb|sh|sw) \[r8\], r7$/gm,
+)].map((match) => [parseImmediate(match[1]), match[2]]);
+assert.deepStrictEqual(initializerGlobalStores, [
+    [0x300, 'sb'], [0x301, 'sb'], [0x302, 'sb'], [0x303, 'sb'], [0x304, 'sb'], [0x305, 'sb'],
+    [0x306, 'sb'], [0x307, 'sb'], [0x308, 'sb'], [0x309, 'sb'],
+    [0x30a, 'sb'], [0x30b, 'sb'], [0x30c, 'sb'], [0x30d, 'sb'],
+    [0x30e, 'sh'], [0x310, 'sh'], [0x312, 'sh'],
+    [0x314, 'sh'], [0x316, 'sh'], [0x318, 'sh'], [0x31a, 'sh'], [0x31c, 'sh'],
+    [0x320, 'sw'], [0x324, 'sw'], [0x328, 'sw'],
+    [0x32c, 'sw'], [0x330, 'sw'], [0x334, 'sw'], [0x338, 'sw'],
+], 'unexpected global array layout or hidden string-pool allocation');
+
+for (const [address, store, value] of [
+    [0x300, 'sb', 0x68], [0x301, 'sb', 0x65], [0x302, 'sb', 0x6c],
+    [0x303, 'sb', 0x6c], [0x304, 'sb', 0x6f], [0x305, 'sb', 0],
+    [0x306, 'sb', 0xe4], [0x307, 'sb', 0xb8], [0x308, 'sb', 0xad],
+    [0x309, 'sb', 0], [0x30a, 'sb', 0], [0x30b, 'sb', 0],
+    [0x30c, 'sb', 0], [0x30d, 'sb', 0],
+    [0x30e, 'sh', 1], [0x312, 'sh', 3],
+    [0x314, 'sh', 4], [0x316, 'sh', 5],
+    [0x318, 'sh', 0], [0x31a, 'sh', 0], [0x31c, 'sh', 0],
+    [0x320, 'sw', 6], [0x324, 'sw', 7], [0x328, 'sw', 8],
+    [0x32c, 'sw', 9], [0x330, 'sw', 0], [0x334, 'sw', 0], [0x338, 'sw', 0],
+]) {
+    const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
+    assert.match(
+        initializerStartBody,
+        new RegExp(`^mov r7, ${immediate}\\r?\\nmov r8, 0x${address.toString(16).toUpperCase()}\\r?\\n${store} \\[r8\\], r7$`, 'm'),
+    );
+}
+assert.match(
+    initializerStartBody,
+    /^mov r7, 0xFFFF\r?\nmov r7, r7 << 16\r?\nmov r7, r7 \+ 0xFFFE\r?\nmov r8, 0x310\r?\nsh \[r8\], r7$/m,
+);
+
+const initializerMainBody = initializerAssembly.match(
+    /^main:\r?\n([\s\S]*?)^__main_return:/m,
+)?.[1];
+assert.ok(initializerMainBody, 'missing array initializer main body');
+assert.match(initializerMainBody, /^mov r7, 0x6F\r?\nsb \[r12 \+ 8\], r7$/m);
+assert.match(initializerMainBody, /^mov r7, 0x6B\r?\nsb \[r12 \+ 9\], r7$/m);
+assert.match(initializerMainBody, /^mov r7, 0\r?\nsb \[r12 \+ 10\], r7$/m);
+assert.match(initializerMainBody, /^mov r7, 0\r?\nsb \[r12 \+ 11\], r7$/m);
+assert.strictEqual(
+    [...initializerMainBody.matchAll(/^jmp seed, r14$/gm)].length,
+    1,
+    'local initializer expression must be evaluated exactly once',
+);
+assert.match(
+    initializerMainBody,
+    /^jmp seed, r14\r?\nmov r7, r4\r?\nsw \[r12 \+ 12\], r7\r?\nmov r7, 0x14\r?\nsw \[r12 \+ 16\], r7\r?\nmov r7, 0x1E\r?\nsw \[r12 \+ 20\], r7$/m,
+);
+
+const initializerAssembler = new SimpleCPUAssembler();
+const initializerResult = initializerAssembler.assemble(initializerAssembly, {
+    sourceFileName: 'array_initializer_test.asm',
+});
+assert.ok(initializerResult.machineCodes.length > 0);
+
+const collectorInitializerSource = `
+int sum5(int a, int b, int c, int d, int e) { return a + b + c + d + e; }
+int main(void) {
+    int values[] = {sum5(1, 2, 3, 4, 5)};
+    return values[0];
+}
+`;
+const { assembly: collectorInitializerAssembly } = compileC(collectorInitializerSource, {
+    moduleName: 'array_initializer_collector_test',
+});
+assert.match(collectorInitializerAssembly, /^jmp sum5, r14$/m);
+assert.ok(new SimpleCPUAssembler().assemble(collectorInitializerAssembly, {
+    sourceFileName: 'array_initializer_collector_test.asm',
+}).machineCodes.length > 0);
+
+const { assembly: initializerStringPoolAssembly } = compileC(`
+char copied[] = "same";
+char *copied_pointer = "same";
+int main(void) { return copied[0] + copied_pointer[0]; }
+`, {
+    moduleName: 'array_initializer_string_pool_test',
+    dataBase: 0x400,
+});
+assert.match(
+    initializerStringPoolAssembly,
+    /^mov r7, 0x40C\r?\nmov r8, 0x408\r?\nsw \[r8\], r7$/m,
+    'a string expression must still allocate a pooled copy',
+);
+assert.match(
+    initializerStringPoolAssembly,
+    /^mov r7, 0x73\r?\nmov r8, 0x40C\r?\nsb \[r8\], r7$/m,
+);
+
+for (const [testSource, pattern] of [
+    ['int a[]; int main(void) { return 0; }', /incomplete array requires an initializer/],
+    ['int a[] = {}; int main(void) { return 0; }', /cannot infer.*empty initializer/],
+    ['int a[2] = {1, 2, 3}; int main(void) { return 0; }', /too many array initializer elements/],
+    ['int a[2] = "x"; int main(void) { return 0; }', /string initializer requires a character array/],
+    ['char a[2] = "hi"; int main(void) { return 0; }', /string initializer.*does not fit/],
+    ['int a[2] = {{1}, {2}}; int main(void) { return 0; }', /nested initializers are not supported/],
+    ['int scalar = {1}; int main(void) { return scalar; }', /initializer list requires an array/],
+    ['char scalar = "x"; int main(void) { return scalar; }', /string initializer requires an array or pointer/],
+    ['int a[2] = 1; int main(void) { return 0; }', /array initializer must be a list or string literal/],
+    ['int main(void) { int local[]; return 0; }', /incomplete array requires an initializer/],
+]) {
+    expectCompilerError(testSource, pattern);
+}
+
 const sameStringAddress = parseImmediate(globalStringAddressText);
 assert.strictEqual(
     parseImmediate(localStringAddressText),
