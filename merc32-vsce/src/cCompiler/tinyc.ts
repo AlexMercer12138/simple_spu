@@ -26,9 +26,10 @@ interface CType {
 }
 
 interface Token {
-    kind: 'identifier' | 'number' | 'keyword' | 'symbol' | 'eof';
+    kind: 'identifier' | 'number' | 'string' | 'keyword' | 'symbol' | 'eof';
     text: string;
     value?: number;
+    bytes?: number[];
     line: number;
     column: number;
 }
@@ -140,6 +141,7 @@ interface EmptyStmt {
 
 type Expr =
     | NumberExpr
+    | StringExpr
     | VarExpr
     | AssignExpr
     | BinaryExpr
@@ -151,6 +153,13 @@ type Expr =
 interface NumberExpr {
     kind: 'number';
     value: number;
+}
+
+interface StringExpr {
+    kind: 'string';
+    bytes: number[];
+    line: number;
+    column: number;
 }
 
 interface VarExpr {
@@ -256,6 +265,10 @@ class Lexer {
             return this.readCharacterLiteral(line, column);
         }
 
+        if (c === '"') {
+            return this.readStringLiteral(line, column);
+        }
+
         const two = c + this.peek(1);
         if (TWO_CHAR_SYMBOLS.has(two)) {
             this.advance();
@@ -312,6 +325,13 @@ class Lexer {
             throw new CompilerError('character literal must contain exactly one byte', line, column);
         }
         return { kind: 'number', text, value: bytes[0], line, column };
+    }
+
+    private readStringLiteral(line: number, column: number): Token {
+        const start = this.index;
+        this.advance();
+        const bytes = this.readLiteralBytes('"', line, column);
+        return { kind: 'string', text: this.source.slice(start, this.index), bytes, line, column };
     }
 
     private readLiteralBytes(terminator: "'" | '"', line: number, column: number): number[] {
@@ -751,6 +771,19 @@ class Parser {
             const token = this.advance();
             return { kind: 'number', value: token.value || 0 };
         }
+        if (this.current().kind === 'string') {
+            const firstToken = this.current();
+            const bytes: number[] = [];
+            while (this.current().kind === 'string') {
+                bytes.push(...(this.advance().bytes || []));
+            }
+            return {
+                kind: 'string',
+                bytes,
+                line: firstToken.line,
+                column: firstToken.column,
+            };
+        }
         if (this.current().kind === 'identifier') {
             const name = this.advance().text;
             if (this.match('(')) {
@@ -889,6 +922,11 @@ interface Slot {
     sizeBytes: number;
 }
 
+interface StaticString {
+    bytes: number[];
+    address: number;
+}
+
 interface FunctionLayout {
     slots: Map<string, Slot>;
     frameSize: number;
@@ -916,9 +954,11 @@ const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
 class CodeGenerator {
     private readonly lines: string[] = [];
     private readonly globals = new Map<string, Slot>();
+    private readonly staticStrings = new Map<string, StaticString>();
     private readonly functionMap = new Map<string, FunctionDecl>();
     private readonly dataBase: number;
     private readonly dlbAddrWidth: number;
+    private readonly dataLimit: number;
     private readonly moduleName: string;
     private readonly tempSlots: number;
     private nextGlobalAddress: number;
@@ -928,6 +968,7 @@ class CodeGenerator {
     constructor(private readonly program: Program, options: CompileOptions) {
         this.dataBase = options.dataBase ?? 0x0080_0000;
         this.dlbAddrWidth = options.dlbAddrWidth ?? 16;
+        this.dataLimit = this.dataBase + 2 ** (this.dlbAddrWidth + 2);
         this.moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
         this.tempSlots = options.tempSlots ?? 32;
         this.nextGlobalAddress = this.dataBase;
@@ -944,7 +985,7 @@ class CodeGenerator {
             this.emit('');
         }
         this.emit('__start:');
-        this.loadImm('r13', this.dataBase + (1 << (this.dlbAddrWidth + 2)));
+        this.loadImm('r13', this.dataLimit);
         this.emitGlobalInitializers();
         if (this.interruptHandler) {
             this.loadImm('r2', IRQ_VECTOR_ADDRESS);
@@ -980,6 +1021,9 @@ class CodeGenerator {
             });
             this.nextGlobalAddress += typeSizeBytes(global.type);
         }
+
+        this.ensureStaticDataFits();
+        this.collectStaticStrings();
 
         for (const fn of this.program.functions) {
             const previous = this.functionMap.get(fn.name);
@@ -1034,12 +1078,22 @@ class CodeGenerator {
             this.loadImm('r8', slot.globalAddress);
             this.emitStoreToAddress('r8', 'r7', global.type);
         }
+
+        for (const entry of this.staticStrings.values()) {
+            for (let offset = 0; offset <= entry.bytes.length; offset++) {
+                this.loadImm('r7', entry.bytes[offset] ?? 0);
+                this.loadImm('r8', entry.address + offset);
+                this.emit('sb [r8], r7');
+            }
+        }
     }
 
     private evalConstant(expr: Expr): number {
         switch (expr.kind) {
             case 'number':
                 return expr.value;
+            case 'string':
+                return this.staticStringAddress(expr);
             case 'unary': {
                 const value = this.evalConstant(expr.expr);
                 if (expr.op === '-') return -value;
@@ -1079,6 +1133,116 @@ class CodeGenerator {
             }
         }
         throw new CompilerError('global initializer must be a constant expression');
+    }
+
+    private collectStaticStrings(): void {
+        for (const global of this.program.globals) {
+            if (global.init) {
+                this.collectStaticStringsInExpr(global.init);
+            }
+        }
+        for (const fn of this.program.functions) {
+            if (fn.body) {
+                this.collectStaticStringsInStatement(fn.body);
+            }
+        }
+    }
+
+    private collectStaticStringsInStatement(stmt: Statement): void {
+        switch (stmt.kind) {
+            case 'block':
+                stmt.statements.forEach((inner) => this.collectStaticStringsInStatement(inner));
+                return;
+            case 'var':
+                if (stmt.init) this.collectStaticStringsInExpr(stmt.init);
+                return;
+            case 'expr':
+                this.collectStaticStringsInExpr(stmt.expr);
+                return;
+            case 'if':
+                this.collectStaticStringsInExpr(stmt.test);
+                this.collectStaticStringsInStatement(stmt.thenBranch);
+                if (stmt.elseBranch) this.collectStaticStringsInStatement(stmt.elseBranch);
+                return;
+            case 'while':
+                this.collectStaticStringsInExpr(stmt.test);
+                this.collectStaticStringsInStatement(stmt.body);
+                return;
+            case 'for':
+                if (stmt.init) {
+                    if (isVarDecl(stmt.init)) this.collectStaticStringsInStatement(stmt.init);
+                    else this.collectStaticStringsInExpr(stmt.init);
+                }
+                if (stmt.test) this.collectStaticStringsInExpr(stmt.test);
+                if (stmt.step) this.collectStaticStringsInExpr(stmt.step);
+                this.collectStaticStringsInStatement(stmt.body);
+                return;
+            case 'return':
+                if (stmt.expr) this.collectStaticStringsInExpr(stmt.expr);
+                return;
+            case 'label':
+                this.collectStaticStringsInStatement(stmt.statement);
+                return;
+            case 'break':
+            case 'continue':
+            case 'goto':
+            case 'empty':
+                return;
+        }
+    }
+
+    private collectStaticStringsInExpr(expr: Expr): void {
+        switch (expr.kind) {
+            case 'string': {
+                const key = this.staticStringKey(expr.bytes);
+                if (!this.staticStrings.has(key)) {
+                    this.staticStrings.set(key, { bytes: expr.bytes, address: this.nextGlobalAddress });
+                    this.nextGlobalAddress += expr.bytes.length + 1;
+                    this.ensureStaticDataFits(expr.line, expr.column);
+                }
+                return;
+            }
+            case 'assign':
+                this.collectStaticStringsInExpr(expr.target);
+                this.collectStaticStringsInExpr(expr.value);
+                return;
+            case 'binary':
+                this.collectStaticStringsInExpr(expr.left);
+                this.collectStaticStringsInExpr(expr.right);
+                return;
+            case 'unary':
+            case 'cast':
+                this.collectStaticStringsInExpr(expr.expr);
+                return;
+            case 'index':
+                this.collectStaticStringsInExpr(expr.target);
+                this.collectStaticStringsInExpr(expr.index);
+                return;
+            case 'call':
+                expr.args.forEach((arg) => this.collectStaticStringsInExpr(arg));
+                return;
+            case 'number':
+            case 'varref':
+                return;
+        }
+    }
+
+    private staticStringAddress(expr: StringExpr): number {
+        const entry = this.staticStrings.get(this.staticStringKey(expr.bytes));
+        if (!entry) {
+            throw new CompilerError('internal error: missing static string', expr.line, expr.column);
+        }
+        return entry.address;
+    }
+
+    private staticStringKey(bytes: number[]): string {
+        return bytes.join(',');
+    }
+
+    private ensureStaticDataFits(line?: number, column?: number): void {
+        if (this.nextGlobalAddress > this.dataLimit) {
+            throw new CompilerError('static data exceeds DLB address space', line, column);
+        }
     }
 
     private emitInterruptVector(): void {
@@ -1300,6 +1464,9 @@ class CodeGenerator {
             case 'number':
                 this.loadImm(target, expr.value);
                 return intType();
+            case 'string':
+                this.loadImm(target, this.staticStringAddress(expr));
+                return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
                 if (this.lookupVar(expr.name).type.arrayLength !== undefined) {
                     this.emitAddress(expr, target);
@@ -1695,6 +1862,8 @@ class CodeGenerator {
         switch (expr.kind) {
             case 'number':
                 return intType();
+            case 'string':
+                return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
                 return arrayDecayType(this.lookupVar(expr.name).type);
             case 'assign':
@@ -1971,6 +2140,7 @@ class FunctionCollector {
                 expr.args.forEach((arg) => this.collectExpr(arg));
                 return;
             case 'number':
+            case 'string':
             case 'varref':
                 return;
         }

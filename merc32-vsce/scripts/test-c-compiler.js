@@ -284,6 +284,103 @@ expectCompilerError(
     { line: 1, column: 25 },
 );
 
+const stringLiteralSource = String.raw`
+char *global_text = "same";
+
+int first(char *text) {
+    return text[0];
+}
+
+int main(void) {
+    char *local_text = "same";
+    return first("A" "B中\n") + global_text[0] + local_text[0];
+}
+`;
+
+const { assembly: stringLiteralAssembly } = compileC(stringLiteralSource, {
+    moduleName: 'string_literal_test',
+    dataBase: 0x200,
+});
+
+const globalStringAddressText = stringLiteralAssembly.match(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, 0x200\r?\nsw \[r8\], r7$/m,
+)?.[1];
+assert.ok(globalStringAddressText, 'missing global string pointer initializer');
+
+const mainBody = stringLiteralAssembly.match(
+    /^main:\r?\n([\s\S]*?)^__main_return:/m,
+)?.[1];
+assert.ok(mainBody, 'missing assembly body for main');
+const localStringAddressText = mainBody.match(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nsw \[r12 \+ 8\], r7$/m,
+)?.[1];
+assert.ok(localStringAddressText, 'missing local string pointer initializer');
+
+const parseImmediate = (text) => Number.parseInt(text, text.startsWith('0x') ? 16 : 10);
+const sameStringAddress = parseImmediate(globalStringAddressText);
+assert.strictEqual(
+    parseImmediate(localStringAddressText),
+    sameStringAddress,
+    'identical string literals must share one static address',
+);
+
+const stagedArgumentAddresses = [...mainBody.matchAll(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov \[r12 \+ \d+\], r7$/gm,
+)].map((match) => parseImmediate(match[1]));
+assert.strictEqual(stagedArgumentAddresses.length, 1, 'expected one staged string argument');
+const concatenatedStringAddress = stagedArgumentAddresses[0];
+assert.notStrictEqual(concatenatedStringAddress, sameStringAddress);
+
+const startBody = stringLiteralAssembly.match(
+    /^__start:\r?\n([\s\S]*?)^__halt:/m,
+)?.[1];
+assert.ok(startBody, 'missing startup assembly body');
+const staticBytes = new Map();
+for (const match of startBody.matchAll(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
+)) {
+    staticBytes.set(parseImmediate(match[2]), parseImmediate(match[1]));
+}
+
+assert.deepStrictEqual(
+    Array.from({ length: 5 }, (_, offset) => staticBytes.get(sameStringAddress + offset)),
+    [0x73, 0x61, 0x6d, 0x65, 0x00],
+);
+assert.deepStrictEqual(
+    Array.from({ length: 7 }, (_, offset) => staticBytes.get(concatenatedStringAddress + offset)),
+    [0x41, 0x42, 0xe4, 0xb8, 0xad, 0x0a, 0x00],
+);
+
+const stringLiteralAssembler = new SimpleCPUAssembler();
+const stringLiteralResult = stringLiteralAssembler.assemble(stringLiteralAssembly, {
+    sourceFileName: 'string_literal_test.asm',
+});
+assert.ok(stringLiteralResult.machineCodes.length > 0);
+
+expectCompilerError(
+    'int main(void) { return "unterminated; }',
+    /unterminated string literal/,
+    { line: 1, column: 25 },
+);
+
+compileC('char *text = "ABC"; int main(void) { return text[0]; }', {
+    moduleName: 'dlb_exact_fit_string_test',
+    dataBase: 0x200,
+    dlbAddrWidth: 1,
+});
+assert.throws(
+    () => compileC('char *text = "ABCD"; int main(void) { return text[0]; }', {
+        moduleName: 'dlb_overflow_string_test',
+        dataBase: 0x200,
+        dlbAddrWidth: 1,
+    }),
+    (error) => {
+        assert.ok(error instanceof CompilerError);
+        assert.match(error.message, /static data exceeds DLB address space/);
+        return true;
+    },
+);
+
 const irqSource = `
 volatile unsigned int irq_count = 0;
 
