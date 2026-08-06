@@ -52,9 +52,8 @@ u_lb2drp (
 //================================================================================
 
 module lb2drp #(
-    parameter LB_DATA_WIDTH             = 32,
+    parameter DATA_WIDTH                = 32,
     parameter LB_ADDR_WIDTH             = 32,
-    parameter DRP_DATA_WIDTH            = 16,
     parameter DRP_ADDR_WIDTH            = 7
 )(
     input                               clk,
@@ -62,20 +61,19 @@ module lb2drp #(
 
     input                               lb_rden,
     input                               lb_wren,
-    input   [LB_DATA_WIDTH-1:0]         lb_wdata,
+    input   [DATA_WIDTH-1:0]            lb_wdata,
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
-    output  reg [LB_DATA_WIDTH-1:0]     lb_rdata,
+    output  reg [DATA_WIDTH-1:0]        lb_rdata,
     output  reg                         lb_valid,
 
     output  reg [DRP_ADDR_WIDTH-1:0]    drp_addr,
     output  reg                         drp_en,
     output  reg                         drp_we,
     input                               drp_rdy,
-    output  reg [DRP_DATA_WIDTH-1:0]    drp_in,
-    input   [DRP_DATA_WIDTH-1:0]        drp_out
+    output  reg [DATA_WIDTH-1:0]        drp_in,
+    input   [DATA_WIDTH-1:0]            drp_out
 );
 
-    localparam MIN_DATA_WIDTH = LB_DATA_WIDTH > DRP_DATA_WIDTH ? DRP_DATA_WIDTH : LB_DATA_WIDTH;
     localparam MIN_ADDR_WIDTH = LB_ADDR_WIDTH > DRP_ADDR_WIDTH ? DRP_ADDR_WIDTH : LB_ADDR_WIDTH;
 
     reg     [1:0]                       drp_enseq;
@@ -85,10 +83,10 @@ module lb2drp #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            lb_rdata <= {LB_DATA_WIDTH{1'b0}};
+            lb_rdata <= {DATA_WIDTH{1'b0}};
             lb_valid <= 1'b0;
         end else begin
-            lb_rdata <= drp_out[MIN_DATA_WIDTH-1:0];
+            lb_rdata <= drp_out;
             lb_valid <= drp_rdy;
         end
     end
@@ -111,12 +109,12 @@ module lb2drp #(
         if (!rst_n) begin
             drp_en <= 1'b0;
             drp_we <= 1'b0;
-            drp_in <= {DRP_DATA_WIDTH{1'b0}};
+            drp_in <= {DATA_WIDTH{1'b0}};
             drp_addr <= {DRP_ADDR_WIDTH{1'b0}};
         end else begin
             drp_en <= drp_start;
             drp_we <= drp_start & drp_wflag;
-            drp_in <= lb_wdata[MIN_DATA_WIDTH-1:0];
+            drp_in <= lb_wdata;
             drp_addr <= lb_addr[MIN_ADDR_WIDTH-1:0];
         end
     end

@@ -7,18 +7,51 @@
     "description": "mov instruction"
   },
   "load": {
-    "prefix": "load",
+    "prefix": [
+      "load",
+      "lw"
+    ],
     "body": [
-      "mov ${1:r1}, [${2:r0} + ${3:0}]"
+      "${1|lw,lh,lhu,lb,lbu|} ${2:r1}, [${3:r0} + ${4:0}]"
     ],
     "description": "load from memory"
   },
   "store": {
-    "prefix": "store",
+    "prefix": [
+      "store",
+      "sw"
+    ],
     "body": [
-      "mov [${1:r0} + ${2:0}], ${3:r1}"
+      "${1|sw,sh,sb|} [${2:r0} + ${3:0}], ${4:r1}"
     ],
     "description": "store to memory"
+  },
+  "multiply": {
+    "prefix": "mul",
+    "body": [
+      "mul ${1:r1}, ${2:r2}, ${3:r3}"
+    ],
+    "description": "multiply and keep the low 32 bits"
+  },
+  "divide": {
+    "prefix": [
+      "div",
+      "divu"
+    ],
+    "body": [
+      "${1|div,divu|} ${2:r1}, ${3:r2}, ${4:r3}"
+    ],
+    "description": "signed or unsigned division"
+  },
+  "remainder": {
+    "prefix": [
+      "rem",
+      "remu"
+    ],
+    "body": [
+      "${1|rem,remu|} ${2:r1}, ${3:r2}, ${4:r3}"
+    ],
+    "description": "signed or unsigned remainder"
   },
   "jmp": {
     "prefix": "jmp",

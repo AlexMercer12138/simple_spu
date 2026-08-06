@@ -12,6 +12,7 @@ module apb4_interconnect #(
     input  wire        m_apb_penable,
     input  wire        m_apb_pwrite,
     input  wire [31:0] m_apb_paddr,
+    input  wire [3:0]  m_apb_pstrb,
     input  wire [31:0] m_apb_pwdata,
     output wire        m_apb_pready,
     output wire [31:0] m_apb_prdata,
@@ -31,6 +32,7 @@ module apb4_interconnect #(
 
     output wire        s_apb_penable,
     output wire        s_apb_pwrite,
+    output wire [3:0]  s_apb_pstrb,
     output wire [31:0] s_apb_paddr,
     output wire [31:0] s_apb_pwdata
 );
@@ -52,6 +54,7 @@ module apb4_interconnect #(
 
     assign s_apb_penable = m_apb_penable;
     assign s_apb_pwrite = m_apb_pwrite;
+    assign s_apb_pstrb = m_apb_pstrb;
     assign s_apb_paddr = m_apb_paddr;
     assign s_apb_pwdata = m_apb_pwdata;
 

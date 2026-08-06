@@ -21,6 +21,7 @@ module tinyc_uart_tb();
 
     reg         clk   = 1'b0;
     reg         rst_n = 1'b0;
+    reg         cpu_rst_n = 1'b0;
     reg         uart_rx = 1'b1;
 
     wire        ilb_en;
@@ -39,6 +40,7 @@ module tinyc_uart_tb();
     wire        apb_penable;
     wire [31:0] apb_paddr;
     wire        apb_pwrite;
+    wire [3:0]  apb_pstrb;
     wire [31:0] apb_pwdata;
     wire [31:0] apb_prdata;
     wire        apb_pready;
@@ -46,6 +48,20 @@ module tinyc_uart_tb();
 
     wire        uart_interrupt;
     wire        uart_tx;
+
+    reg         strb_test_active = 1'b1;
+    reg         strb_psel = 1'b0;
+    reg         strb_penable = 1'b0;
+    reg         strb_pwrite = 1'b0;
+    reg  [31:0] strb_paddr = 32'd0;
+    reg  [31:0] strb_pwdata = 32'd0;
+    reg  [3:0]  strb_pstrb = 4'b0000;
+    wire        uart_psel = strb_test_active ? strb_psel : apb_psel;
+    wire        uart_penable = strb_test_active ? strb_penable : apb_penable;
+    wire        uart_pwrite = strb_test_active ? strb_pwrite : apb_pwrite;
+    wire [31:0] uart_paddr = strb_test_active ? strb_paddr : apb_paddr;
+    wire [31:0] uart_pwdata = strb_test_active ? strb_pwdata : apb_pwdata;
+    wire [3:0]  uart_pstrb = strb_test_active ? strb_pstrb : apb_pstrb;
 
     reg  [31:0] program_rom [0:MEMORY_WORDS-1];
     reg  [31:0] dlb_ram     [0:MEMORY_WORDS-1];
@@ -76,7 +92,7 @@ module tinyc_uart_tb();
         .DLB_ADDR_WIDTH (16))
     MERC32_top_inst (
         .clk            (clk),
-        .rst_n          (rst_n),
+        .rst_n          (cpu_rst_n),
         .interrupt      (uart_interrupt),
         .tck            (1'b0),
         .tms            (1'b1),
@@ -99,6 +115,7 @@ module tinyc_uart_tb();
         .m_apb_penable  (apb_penable),
         .m_apb_paddr    (apb_paddr),
         .m_apb_pwrite   (apb_pwrite),
+        .m_apb_pstrb    (apb_pstrb),
         .m_apb_pwdata   (apb_pwdata),
         .m_apb_prdata   (apb_prdata),
         .m_apb_pready   (apb_pready));
@@ -109,17 +126,76 @@ module tinyc_uart_tb();
     apb_uart_inst (
         .s_apb_pclk     (clk),
         .s_apb_presetn  (rst_n),
-        .s_apb_psel     (apb_psel),
-        .s_apb_penable  (apb_penable),
-        .s_apb_pwrite   (apb_pwrite),
-        .s_apb_paddr    (apb_paddr),
-        .s_apb_pwdata   (apb_pwdata),
+        .s_apb_psel     (uart_psel),
+        .s_apb_penable  (uart_penable),
+        .s_apb_pwrite   (uart_pwrite),
+        .s_apb_paddr    (uart_paddr),
+        .s_apb_pwdata   (uart_pwdata),
+        .s_apb_pstrb    (uart_pstrb),
         .s_apb_pready   (apb_pready),
         .s_apb_pslverr  (apb_pslverr),
         .s_apb_prdata   (apb_prdata),
         .interrupt      (uart_interrupt),
         .uart_rx        (uart_rx),
         .uart_tx        (uart_tx));
+
+    task strb_apb_write;
+        input [31:0] address;
+        input [31:0] data;
+        input [3:0] strobe;
+        begin
+            @(negedge clk);
+            strb_psel <= 1'b1;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b1;
+            strb_paddr <= address;
+            strb_pwdata <= data;
+            strb_pstrb <= strobe;
+            @(negedge clk);
+            strb_penable <= 1'b1;
+            @(negedge clk);
+            strb_psel <= 1'b0;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b0;
+            strb_paddr <= 32'd0;
+            strb_pwdata <= 32'd0;
+            strb_pstrb <= 4'b0000;
+        end
+    endtask
+
+    task strb_apb_read;
+        input [31:0] address;
+        output [31:0] data;
+        begin
+            @(negedge clk);
+            strb_psel <= 1'b1;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b0;
+            strb_paddr <= address;
+            @(negedge clk);
+            strb_penable <= 1'b1;
+            @(posedge clk);
+            #1;
+            data = apb_prdata;
+            @(negedge clk);
+            strb_psel <= 1'b0;
+            strb_penable <= 1'b0;
+            strb_paddr <= 32'd0;
+        end
+    endtask
+
+    task check_uart;
+        input [8*40-1:0] name;
+        input [31:0] actual;
+        input [31:0] expected;
+        begin
+            if (actual !== expected) begin
+                $display("TEST FAIL: %0s expected=%08h actual=%08h",
+                         name, expected, actual);
+                uart_error_count = uart_error_count + 1;
+            end
+        end
+    endtask
 
     function [7:0] expected_uart_byte;
         input integer index;
@@ -175,6 +251,36 @@ module tinyc_uart_tb();
     always #(CLK_PERIOD/2) clk = ~clk;
 
     initial #(CLK_PERIOD*RESET_CYCLES) rst_n = 1'b1;
+
+    initial begin : uart_strb_verification
+        reg [31:0] read_data;
+        wait (rst_n);
+        strb_apb_write(32'h0000_0004, 32'h1122_3344, 4'b1111);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 1111", read_data, 32'h1122_3344);
+        strb_apb_write(32'h0000_0004, 32'h0000_00aa, 4'b0001);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 0001", read_data, 32'h1122_33aa);
+        strb_apb_write(32'h0000_0004, 32'h0000_bb00, 4'b0010);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 0010", read_data, 32'h1122_bbaa);
+        strb_apb_write(32'h0000_0004, 32'h00cc_0000, 4'b0100);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 0100", read_data, 32'h11cc_bbaa);
+        strb_apb_write(32'h0000_0004, 32'hdd00_0000, 4'b1000);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 1000", read_data, 32'hddcc_bbaa);
+        strb_apb_write(32'h0000_0004, 32'h00ee_00ff, 4'b0101);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 0101", read_data, 32'hddee_bbff);
+        strb_apb_write(32'h0000_0004, 32'hffff_ffff, 4'b0000);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_uart("UART PSTRB 0000", read_data, 32'hddee_bbff);
+        strb_apb_write(32'h0000_0004, 32'd0, 4'b1111);
+        @(negedge clk);
+        strb_test_active <= 1'b0;
+        cpu_rst_n <= 1'b1;
+    end
 
     initial begin
         for (i = 0; i < MEMORY_WORDS; i = i + 1) begin

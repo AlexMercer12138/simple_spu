@@ -67,6 +67,126 @@ const assembler = new SimpleCPUAssembler();
 const result = assembler.assemble(assembly, { sourceFileName: 'vsce_c_test.asm' });
 assert.ok(result.machineCodes.length > 0);
 
+const narrowSource = `
+char g_char;
+unsigned char g_uchar;
+short g_short;
+unsigned short g_ushort;
+int g_int;
+char g_char_array[3];
+short g_short_array[3];
+int g_int_array[3];
+
+int signed_math(int a, int b) {
+    return a * b + a / b + a % b;
+}
+
+unsigned int unsigned_math(unsigned int a, unsigned int b) {
+    return a / b + a % b;
+}
+
+int promoted_math(unsigned short a, unsigned short b) {
+    return a / b;
+}
+
+int read_char(char *p) { return p[1]; }
+int read_uchar(unsigned char *p) { return p[1]; }
+int read_short(short *p) { return p[1]; }
+int read_ushort(unsigned short *p) { return p[1]; }
+int read_int(int *p) { return p[1]; }
+
+void write_values(char *pc, unsigned char *puc, short *ps, unsigned short *pus, int *pi) {
+    pc[2] = 0x1ff;
+    puc[2] = 0x1ff;
+    ps[2] = 0x1ffff;
+    pus[2] = 0x1ffff;
+    pi[2] = 0x12345678;
+}
+
+int cast_values(int value) {
+    char c = (char)value;
+    unsigned char uc = (unsigned char)value;
+    short s = (short)value;
+    unsigned short us = (unsigned short)value;
+    return c + uc + s + us;
+}
+
+int layout_test(void) {
+    char a = 1;
+    short b = 2;
+    char c = 3;
+    int d = 4;
+    return a + b + c + d;
+}
+
+int main(void) {
+    return 0;
+}
+`;
+
+const { assembly: narrowAssembly } = compileC(narrowSource, {
+    moduleName: 'narrow_type_test',
+    dataBase: 0x100,
+});
+
+assert.match(narrowAssembly, /\blb r\d+, \[r8\]/);
+assert.match(narrowAssembly, /\blbu r\d+, \[r8\]/);
+assert.match(narrowAssembly, /\blh r\d+, \[r8\]/);
+assert.match(narrowAssembly, /\blhu r\d+, \[r8\]/);
+assert.match(narrowAssembly, /\blw r\d+, \[r8\]/);
+assert.match(narrowAssembly, /\bsb \[r8\], r\d+/);
+assert.match(narrowAssembly, /\bsh \[r8\], r\d+/);
+assert.match(narrowAssembly, /\bsw \[r8\], r\d+/);
+assert.match(narrowAssembly, /\bmul r\d+, r7, r8/);
+assert.match(narrowAssembly, /\bdiv r\d+, r7, r8/);
+assert.match(narrowAssembly, /\bdivu r\d+, r7, r8/);
+assert.match(narrowAssembly, /\brem r\d+, r7, r8/);
+assert.match(narrowAssembly, /\bremu r\d+, r7, r8/);
+
+const promotedBody = narrowAssembly.match(/^promoted_math:\r?\n([\s\S]*?)^__promoted_math_return:/m)?.[1];
+assert.ok(promotedBody);
+assert.match(promotedBody, /\bdiv r\d+, r7, r8/);
+assert.doesNotMatch(promotedBody, /\bdivu\b/);
+
+const charBody = narrowAssembly.match(/^read_char:\r?\n([\s\S]*?)^__read_char_return:/m)?.[1];
+const shortBody = narrowAssembly.match(/^read_short:\r?\n([\s\S]*?)^__read_short_return:/m)?.[1];
+const intBody = narrowAssembly.match(/^read_int:\r?\n([\s\S]*?)^__read_int_return:/m)?.[1];
+assert.ok(charBody && shortBody && intBody);
+assert.doesNotMatch(charBody, /mov r8, r8 << [12]/);
+assert.match(shortBody, /mov r8, r8 << 1/);
+assert.match(intBody, /mov r8, r8 << 2/);
+
+const globalInitExpectations = [
+    ['0x100', 'sb'],
+    ['0x101', 'sb'],
+    ['0x102', 'sh'],
+    ['0x104', 'sh'],
+    ['0x108', 'sw'],
+    ['0x10C', 'sb'],
+    ['0x10D', 'sb'],
+    ['0x10E', 'sb'],
+    ['0x110', 'sh'],
+    ['0x112', 'sh'],
+    ['0x114', 'sh'],
+    ['0x118', 'sw'],
+    ['0x11C', 'sw'],
+    ['0x120', 'sw'],
+];
+for (const [address, store] of globalInitExpectations) {
+    assert.match(narrowAssembly, new RegExp(`mov r8, ${address}\\r?\\n${store} \\[r8\\], r7`));
+}
+
+const layoutBody = narrowAssembly.match(/^layout_test:\r?\n([\s\S]*?)^__layout_test_return:/m)?.[1];
+assert.ok(layoutBody);
+assert.match(layoutBody, /sb \[r12 \+ 8\], r7/);
+assert.match(layoutBody, /sh \[r12 \+ 10\], r7/);
+assert.match(layoutBody, /sb \[r12 \+ 12\], r7/);
+assert.match(layoutBody, /sw \[r12 \+ 16\], r7/);
+
+const narrowAssembler = new SimpleCPUAssembler();
+const narrowResult = narrowAssembler.assemble(narrowAssembly, { sourceFileName: 'narrow_type_test.asm' });
+assert.ok(narrowResult.machineCodes.length > 0);
+
 const irqSource = `
 volatile unsigned int irq_count = 0;
 

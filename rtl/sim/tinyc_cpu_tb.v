@@ -67,6 +67,7 @@ module tinyc_cpu_tb();
         .dbg_rden       (1'b0),
         .dbg_wren       (1'b0),
         .dbg_addr       (32'd0),
+        .dbg_strb       (4'b1111),
         .dbg_wdata      (32'd0),
         .dbg_rdata      (),
         .dbg_ack        (),

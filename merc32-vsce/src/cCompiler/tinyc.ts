@@ -16,7 +16,7 @@ export class CompilerError extends Error {
     }
 }
 
-type BaseType = 'int' | 'uint' | 'void';
+type BaseType = 'char' | 'uchar' | 'short' | 'ushort' | 'int' | 'uint' | 'void';
 
 interface CType {
     base: BaseType;
@@ -196,6 +196,8 @@ interface CastExpr {
 }
 
 const KEYWORDS = new Set([
+    'char',
+    'short',
     'int',
     'unsigned',
     'void',
@@ -211,7 +213,7 @@ const KEYWORDS = new Set([
 ]);
 
 const TWO_CHAR_SYMBOLS = new Set(['==', '!=', '<=', '>=', '&&', '||', '<<', '>>']);
-const ONE_CHAR_SYMBOLS = new Set(['+', '-', '*', '&', '|', '^', '~', '!', '=', '<', '>', ';', ',', '(', ')', '{', '}', '[', ']', ':']);
+const ONE_CHAR_SYMBOLS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '=', '<', '>', ';', ',', '(', ')', '{', '}', '[', ']', ':']);
 
 class Lexer {
     private index = 0;
@@ -598,7 +600,11 @@ class Parser {
     }
 
     private parseAdditive(): Expr {
-        return this.parseBinary(() => this.parseUnary(), ['+', '-']);
+        return this.parseBinary(() => this.parseMultiplicative(), ['+', '-']);
+    }
+
+    private parseMultiplicative(): Expr {
+        return this.parseBinary(() => this.parseUnary(), ['*', '/', '%']);
     }
 
     private parseBinary(next: () => Expr, ops: string[]): Expr {
@@ -669,8 +675,20 @@ class Parser {
 
         let base: BaseType;
         if (this.matchKeyword('unsigned')) {
-            this.expectKeyword('int');
-            base = 'uint';
+            if (this.matchKeyword('char')) {
+                base = 'uchar';
+            } else if (this.matchKeyword('short')) {
+                this.matchKeyword('int');
+                base = 'ushort';
+            } else {
+                this.matchKeyword('int');
+                base = 'uint';
+            }
+        } else if (this.matchKeyword('char')) {
+            base = 'char';
+        } else if (this.matchKeyword('short')) {
+            this.matchKeyword('int');
+            base = 'short';
         } else if (this.matchKeyword('int')) {
             base = 'int';
         } else if (this.matchKeyword('void')) {
@@ -695,7 +713,8 @@ class Parser {
     }
 
     private isTypeStart(): boolean {
-        return this.isKeyword('int') || this.isKeyword('unsigned') || this.isKeyword('void') || this.isKeyword('volatile');
+        return this.isKeyword('char') || this.isKeyword('short') || this.isKeyword('int')
+            || this.isKeyword('unsigned') || this.isKeyword('void') || this.isKeyword('volatile');
     }
 
     private expectIdentifier(): string {
@@ -852,6 +871,7 @@ class CodeGenerator {
             if (isVoidType(global.type)) {
                 throw new CompilerError(`global '${global.name}' cannot have void type`);
             }
+            this.nextGlobalAddress = alignTo(this.nextGlobalAddress, typeAlignmentBytes(global.type));
             this.globals.set(global.name, {
                 type: global.type,
                 globalAddress: this.nextGlobalAddress,
@@ -900,16 +920,18 @@ class CodeGenerator {
                     throw new CompilerError('array initializers are not supported yet');
                 }
                 this.loadImm('r7', 0);
-                for (let offset = 0; offset < slot.sizeBytes; offset += 4) {
+                const elementType = arrayElementType(global.type);
+                const elementSize = typeSizeBytes(elementType);
+                for (let offset = 0; offset < slot.sizeBytes; offset += elementSize) {
                     this.loadImm('r8', slot.globalAddress + offset);
-                    this.emit('mov [r8], r7');
+                    this.emitStoreToAddress('r8', 'r7', elementType);
                 }
                 continue;
             }
             const value = global.init ? this.evalConstant(global.init) : 0;
             this.loadImm('r7', value);
             this.loadImm('r8', slot.globalAddress);
-            this.emit('mov [r8], r7');
+            this.emitStoreToAddress('r8', 'r7', global.type);
         }
     }
 
@@ -926,13 +948,20 @@ class CodeGenerator {
                 break;
             }
             case 'cast':
-                return this.evalConstant(expr.expr);
+                return convertConstant(this.evalConstant(expr.expr), expr.type);
             case 'binary': {
                 const left = this.evalConstant(expr.left);
                 const right = this.evalConstant(expr.right);
                 switch (expr.op) {
                     case '+': return left + right;
                     case '-': return left - right;
+                    case '*': return Math.imul(left, right);
+                    case '/':
+                        if (right === 0) throw new CompilerError('division by zero in global initializer');
+                        return Math.trunc(left / right);
+                    case '%':
+                        if (right === 0) throw new CompilerError('division by zero in global initializer');
+                        return left % right;
                     case '&': return left & right;
                     case '|': return left | right;
                     case '^': return left ^ right;
@@ -991,11 +1020,11 @@ class CodeGenerator {
                 throw new CompilerError(`internal error: missing parameter '${param.name}'`);
             }
             if (index < 4) {
-                this.emit(`mov [r12 + ${slot.offset}], ${ABI_ARG_REGS[index]}`);
+                this.storeVar(param.name, ABI_ARG_REGS[index]);
             } else {
                 const sourceOffset = layout.frameSize + (index - 4) * 4;
                 this.emit(`mov r7, [r12 + ${sourceOffset}]`);
-                this.emit(`mov [r12 + ${slot.offset}], r7`);
+                this.storeVar(param.name, 'r7');
             }
         });
 
@@ -1038,13 +1067,15 @@ class CodeGenerator {
             if (slots.has(param.name)) {
                 throw new CompilerError(`duplicate parameter '${param.name}' in function '${fn.name}'`);
             }
-            slots.set(param.name, { type: param.type, offset, sizeBytes: 4 });
-            offset += 4;
+            offset = alignTo(offset, typeAlignmentBytes(param.type));
+            const sizeBytes = typeSizeBytes(param.type);
+            slots.set(param.name, { type: param.type, offset, sizeBytes });
+            offset += sizeBytes;
         }
 
         const collector = new FunctionCollector(fn.name, slots, offset);
         collector.collect(fn.body);
-        offset = collector.nextOffset;
+        offset = align4(collector.nextOffset);
         const tempBase = offset;
         offset += this.tempSlots * 4;
         offset += Math.max(collector.maxCallArgs, 1) * 4;
@@ -1078,6 +1109,7 @@ class CodeGenerator {
             case 'return':
                 if (stmt.expr) {
                     this.emitExpr(stmt.expr, ABI_RETURN_REG);
+                    this.convertValue(ABI_RETURN_REG, this.ctx().fn.returnType);
                 } else {
                     this.loadImm(ABI_RETURN_REG, 0);
                 }
@@ -1175,7 +1207,9 @@ class CodeGenerator {
                 this.loadVar(expr.name, target);
                 return this.lookupVar(expr.name).type;
             case 'assign': {
-                const type = this.emitExpr(expr.value, target);
+                this.emitExpr(expr.value, target);
+                const type = this.lvalueType(expr.target);
+                this.convertValue(target, type);
                 this.storeLValue(expr.target, target);
                 return type;
             }
@@ -1187,11 +1221,12 @@ class CodeGenerator {
                 return this.emitCall(expr, target);
             case 'cast':
                 this.emitExpr(expr.expr, target);
+                this.convertValue(target, expr.type);
                 return expr.type;
             case 'index': {
                 const elementType = this.indexElementType(expr);
                 this.emitIndexAddress(expr, 'r8');
-                this.emit(`mov ${target}, [r8]`);
+                this.emitLoadFromAddress(target, 'r8', elementType);
                 return elementType;
             }
         }
@@ -1207,19 +1242,20 @@ class CodeGenerator {
             if (pointerType.pointerDepth < 1) {
                 throw new CompilerError('cannot dereference a non-pointer expression');
             }
-            this.emit(`mov ${target}, [r8]`);
-            return derefType(pointerType);
+            const valueType = derefType(pointerType);
+            this.emitLoadFromAddress(target, 'r8', valueType);
+            return valueType;
         }
 
         const type = this.emitExpr(expr.expr, target);
         if (expr.op === '-') {
             this.emit(`mov ${target}, r0 - ${target}`);
-            return type;
+            return promoteIntegerType(type);
         }
         if (expr.op === '~') {
             this.loadImm('r8', -1);
             this.emit(`mov ${target}, ${target} ^ r8`);
-            return type;
+            return promoteIntegerType(type);
         }
         if (expr.op === '!') {
             this.emit(`cmp ${target}, ${target} == 0`);
@@ -1244,6 +1280,12 @@ class CodeGenerator {
         this.loadTemp(temp, 'r7');
         this.freeTemp();
         const resultType = this.binaryResultType(expr.op, leftType, rightType);
+        if (['*', '/', '%'].includes(expr.op) && (leftType.pointerDepth > 0 || rightType.pointerDepth > 0)) {
+            throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+        }
+        if (expr.op === '+' && leftType.pointerDepth > 0 && rightType.pointerDepth > 0) {
+            throw new CompilerError("operator '+' cannot add two pointers");
+        }
         this.scalePointerOperand(expr.op, leftType, rightType);
 
         switch (expr.op) {
@@ -1252,6 +1294,18 @@ class CodeGenerator {
                 break;
             case '-':
                 this.emit(`mov ${target}, r7 - r8`);
+                if (leftType.pointerDepth > 0 && rightType.pointerDepth > 0) {
+                    this.scalePointerDifference(target, leftType, rightType);
+                }
+                break;
+            case '*':
+                this.emit(`mul ${target}, r7, r8`);
+                break;
+            case '/':
+                this.emit(`${isUnsignedType(resultType) ? 'divu' : 'div'} ${target}, r7, r8`);
+                break;
+            case '%':
+                this.emit(`${isUnsignedType(resultType) ? 'remu' : 'rem'} ${target}, r7, r8`);
                 break;
             case '&':
                 this.emit(`mov ${target}, r7 & r8`);
@@ -1266,7 +1320,7 @@ class CodeGenerator {
                 this.emit(`mov ${target}, r7 << r8`);
                 break;
             case '>>':
-                this.emit(`mov ${target}, r7 ${isUnsignedType(leftType) ? '>>' : '>>>'} r8`);
+                this.emit(`mov ${target}, r7 ${isUnsignedType(promoteIntegerType(leftType)) ? '>>' : '>>>'} r8`);
                 break;
             default:
                 throw new CompilerError(`unsupported binary operator '${expr.op}'`);
@@ -1403,26 +1457,26 @@ class CodeGenerator {
         const slot = this.lookupVar(name);
         if (slot.globalAddress !== undefined) {
             this.loadImm('r8', slot.globalAddress);
-            this.emit(`mov ${target}, [r8]`);
+            this.emitLoadFromAddress(target, 'r8', slot.type);
             return;
         }
         if (slot.offset === undefined) {
             throw new CompilerError(`internal error: missing offset for '${name}'`);
         }
-        this.emit(`mov ${target}, [r12 + ${slot.offset}]`);
+        this.emitLoadFromAddress(target, `r12 + ${slot.offset}`, slot.type);
     }
 
     private storeVar(name: string, source: string): void {
         const slot = this.lookupVar(name);
         if (slot.globalAddress !== undefined) {
             this.loadImm('r8', slot.globalAddress);
-            this.emit(`mov [r8], ${source}`);
+            this.emitStoreToAddress('r8', source, slot.type);
             return;
         }
         if (slot.offset === undefined) {
             throw new CompilerError(`internal error: missing offset for '${name}'`);
         }
-        this.emit(`mov [r12 + ${slot.offset}], ${source}`);
+        this.emitStoreToAddress(`r12 + ${slot.offset}`, source, slot.type);
     }
 
     private storeLValue(targetExpr: Expr, source: string): void {
@@ -1437,9 +1491,10 @@ class CodeGenerator {
             if (pointerType.pointerDepth < 1) {
                 throw new CompilerError('cannot assign through a non-pointer expression');
             }
+            const valueType = derefType(pointerType);
             this.loadTemp(temp, source);
             this.freeTemp();
-            this.emit(`mov [r8], ${source}`);
+            this.emitStoreToAddress('r8', source, valueType);
             return;
         }
         if (targetExpr.kind === 'index') {
@@ -1448,10 +1503,42 @@ class CodeGenerator {
             this.emitIndexAddress(targetExpr, 'r8');
             this.loadTemp(temp, source);
             this.freeTemp();
-            this.emit(`mov [r8], ${source}`);
+            this.emitStoreToAddress('r8', source, this.indexElementType(targetExpr));
             return;
         }
         throw new CompilerError('unsupported assignment target');
+    }
+
+    private emitLoadFromAddress(target: string, address: string, type: CType): void {
+        this.emit(`${loadMnemonic(type)} ${target}, [${address}]`);
+    }
+
+    private emitStoreToAddress(address: string, source: string, type: CType): void {
+        this.emit(`${storeMnemonic(type)} [${address}], ${source}`);
+    }
+
+    private convertValue(register: string, type: CType): void {
+        if (type.pointerDepth > 0) {
+            return;
+        }
+        switch (type.base) {
+            case 'char':
+                this.emit(`mov ${register}, ${register} << 24`);
+                this.emit(`mov ${register}, ${register} >>> 24`);
+                return;
+            case 'uchar':
+                this.emit(`mov ${register}, ${register} & 0xFF`);
+                return;
+            case 'short':
+                this.emit(`mov ${register}, ${register} << 16`);
+                this.emit(`mov ${register}, ${register} >>> 16`);
+                return;
+            case 'ushort':
+                this.emit(`mov ${register}, ${register} & 0xFFFF`);
+                return;
+            default:
+                return;
+        }
     }
 
     private emitAddress(expr: Expr, target: string): void {
@@ -1517,7 +1604,7 @@ class CodeGenerator {
                 if (expr.op === '!') return intType();
                 if (expr.op === '&') return pointerTo(this.lvalueType(expr.expr));
                 if (expr.op === '*') return derefType(this.exprType(expr.expr));
-                return this.exprType(expr.expr);
+                return promoteIntegerType(this.exprType(expr.expr));
             case 'binary':
                 if (isComparison(expr.op) || expr.op === '&&' || expr.op === '||') return intType();
                 return this.binaryResultType(expr.op, this.exprType(expr.left), this.exprType(expr.right));
@@ -1533,11 +1620,15 @@ class CodeGenerator {
         if (['+', '-'].includes(op)) {
             if (leftType.pointerDepth > 0 && rightType.pointerDepth === 0) return leftType;
             if (op === '+' && rightType.pointerDepth > 0 && leftType.pointerDepth === 0) return rightType;
+            if (op === '-' && leftType.pointerDepth > 0 && rightType.pointerDepth > 0) return intType();
         }
         if (leftType.pointerDepth > 0 || rightType.pointerDepth > 0) {
             return uintType();
         }
-        return isUnsignedType(leftType) || isUnsignedType(rightType) ? uintType() : intType();
+        if (['<<', '>>'].includes(op)) {
+            return promoteIntegerType(leftType);
+        }
+        return usualArithmeticType(leftType, rightType);
     }
 
     private scalePointerOperand(op: string, leftType: CType, rightType: CType): void {
@@ -1545,18 +1636,49 @@ class CodeGenerator {
             return;
         }
         if (leftType.pointerDepth > 0 && rightType.pointerDepth === 0) {
-            this.emit('mov r8, r8 << 2');
+            this.scaleRegister('r8', typeSizeBytes(derefType(leftType)));
             return;
         }
         if (op === '+' && rightType.pointerDepth > 0 && leftType.pointerDepth === 0) {
-            this.emit('mov r7, r7 << 2');
+            this.scaleRegister('r7', typeSizeBytes(derefType(rightType)));
         }
+    }
+
+    private scalePointerDifference(target: string, leftType: CType, rightType: CType): void {
+        const leftSize = typeSizeBytes(derefType(leftType));
+        const rightSize = typeSizeBytes(derefType(rightType));
+        if (leftSize !== rightSize) {
+            throw new CompilerError('cannot subtract pointers to differently sized types');
+        }
+        if (leftSize === 2) {
+            this.emit(`mov ${target}, ${target} >>> 1`);
+        } else if (leftSize === 4) {
+            this.emit(`mov ${target}, ${target} >>> 2`);
+        }
+    }
+
+    private scaleRegister(register: string, sizeBytes: number): void {
+        if (sizeBytes === 1) {
+            return;
+        }
+        if (sizeBytes === 2) {
+            this.emit(`mov ${register}, ${register} << 1`);
+            return;
+        }
+        if (sizeBytes === 4) {
+            this.emit(`mov ${register}, ${register} << 2`);
+            return;
+        }
+        throw new CompilerError(`unsupported pointer element size ${sizeBytes}`);
     }
 
     private shouldUseUnsignedCompare(left: Expr, right: Expr): boolean {
         const leftType = this.exprType(left);
         const rightType = this.exprType(right);
-        return leftType.pointerDepth > 0 || rightType.pointerDepth > 0 || isUnsignedType(leftType) || isUnsignedType(rightType);
+        if (leftType.pointerDepth > 0 || rightType.pointerDepth > 0) {
+            return true;
+        }
+        return isUnsignedType(usualArithmeticType(leftType, rightType));
     }
 
     private emitIndexAddress(expr: IndexExpr, target: string): void {
@@ -1569,7 +1691,7 @@ class CodeGenerator {
         this.emitExpr(expr.index, 'r8');
         this.loadTemp(baseTemp, 'r7');
         this.freeTemp();
-        this.emit('mov r8, r8 << 2');
+        this.scaleRegister('r8', typeSizeBytes(derefType(baseType)));
         this.emit(`mov ${target}, r7 + r8`);
     }
 
@@ -1682,6 +1804,7 @@ class FunctionCollector {
                 if (stmt.type.arrayLength !== undefined && stmt.init) {
                     throw new CompilerError('array initializers are not supported yet');
                 }
+                this.nextOffset = alignTo(this.nextOffset, typeAlignmentBytes(stmt.type));
                 const sizeBytes = typeSizeBytes(stmt.type);
                 this.slots.set(stmt.name, { type: stmt.type, offset: this.nextOffset, sizeBytes });
                 this.nextOffset += sizeBytes;
@@ -1781,7 +1904,23 @@ function isVoidType(type: CType): boolean {
 }
 
 function isUnsignedType(type: CType): boolean {
-    return type.base === 'uint' || type.pointerDepth > 0;
+    return type.pointerDepth > 0 || type.base === 'uchar' || type.base === 'ushort' || type.base === 'uint';
+}
+
+function promoteIntegerType(type: CType): CType {
+    if (type.pointerDepth > 0 || type.base === 'void') {
+        return type;
+    }
+    if (type.base === 'char' || type.base === 'uchar' || type.base === 'short' || type.base === 'ushort') {
+        return intType();
+    }
+    return type;
+}
+
+function usualArithmeticType(leftType: CType, rightType: CType): CType {
+    const left = promoteIntegerType(leftType);
+    const right = promoteIntegerType(rightType);
+    return isUnsignedType(left) || isUnsignedType(right) ? uintType() : intType();
 }
 
 function pointerTo(type: CType): CType {
@@ -1803,7 +1942,77 @@ function arrayDecayType(type: CType): CType {
 }
 
 function typeSizeBytes(type: CType): number {
-    return (type.arrayLength ?? 1) * 4;
+    const elementCount = type.arrayLength ?? 1;
+    if (type.pointerDepth > 0) {
+        return elementCount * 4;
+    }
+    let elementSize: number;
+    switch (type.base) {
+        case 'char':
+        case 'uchar':
+            elementSize = 1;
+            break;
+        case 'short':
+        case 'ushort':
+            elementSize = 2;
+            break;
+        case 'int':
+        case 'uint':
+            elementSize = 4;
+            break;
+        case 'void':
+            elementSize = 0;
+            break;
+    }
+    return elementCount * elementSize;
+}
+
+function typeAlignmentBytes(type: CType): number {
+    return Math.max(1, Math.min(4, typeSizeBytes(arrayElementType(type))));
+}
+
+function arrayElementType(type: CType): CType {
+    const { arrayLength: _arrayLength, ...elementType } = type;
+    return elementType;
+}
+
+function loadMnemonic(type: CType): string {
+    if (type.pointerDepth > 0) return 'lw';
+    switch (type.base) {
+        case 'char': return 'lb';
+        case 'uchar': return 'lbu';
+        case 'short': return 'lh';
+        case 'ushort': return 'lhu';
+        case 'int':
+        case 'uint': return 'lw';
+        case 'void': throw new CompilerError('cannot load a void value');
+    }
+}
+
+function storeMnemonic(type: CType): string {
+    if (type.pointerDepth > 0) return 'sw';
+    switch (type.base) {
+        case 'char':
+        case 'uchar': return 'sb';
+        case 'short':
+        case 'ushort': return 'sh';
+        case 'int':
+        case 'uint': return 'sw';
+        case 'void': throw new CompilerError('cannot store a void value');
+    }
+}
+
+function convertConstant(value: number, type: CType): number {
+    if (type.pointerDepth > 0) return value >>> 0;
+    switch (type.base) {
+        case 'char': return (value << 24) >> 24;
+        case 'uchar': return value & 0xff;
+        case 'short': return (value << 16) >> 16;
+        case 'ushort': return value & 0xffff;
+        case 'int': return value | 0;
+        case 'uint': return value >>> 0;
+        case 'void': return value;
+    }
 }
 
 function isVarDecl(value: VarDeclStmt | Expr): value is VarDeclStmt {
@@ -1815,7 +2024,11 @@ function last<T>(items: T[]): T | undefined {
 }
 
 function align4(value: number): number {
-    return (value + 3) & ~3;
+    return alignTo(value, 4);
+}
+
+function alignTo(value: number, alignment: number): number {
+    return Math.ceil(value / alignment) * alignment;
 }
 
 function formatImm(value: number): string {

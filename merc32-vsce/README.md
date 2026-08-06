@@ -8,11 +8,11 @@ MERC32 CPU 的统一 VSCode 扩展，内置汇编器与 Tiny C 编译器，并�
 ## 功能特性
 
 - ▶️ **一键编译** - 打开 `.asm` / `.c` 文件后，编辑器右上角显示编译按钮，自动按文件类型选择流程
-- 🧩 **Tiny C 编译器** - 内置 C 子集编译器，支持函数、指针、数组、控制流与中断处理，可直接生成 ROM
+- 🧩 **Tiny C 编译器** - 支持 8/16/32 位整数、函数、指针、数组、乘除余、控制流与中断处理
 - 🔧 **内置汇编器** - 纯 TypeScript 实现，无需外部工具链即可完成 `.asm` 到机器码的转换
 - 🗂️ **工具链侧边栏** - 活动栏 `MERC32` 视图集中管理构建命令与最近生成的产物，点击即可打开
-- 🎨 **语法高亮** - mov / cmp / cmpu / jmp / bz / bnz 指令、寄存器、立即数、标签、注释
-- ✂️ **代码片段** - 输入 `mov`、`load`、`store`、`cmp`、`bz`、`macro`、`rept` 等快速生成代码
+- 🎨 **语法高亮** - ALU、乘除余、宽度化访存、比较、分支和跳转指令
+- ✂️ **代码片段** - 输入 `mov`、`mul`、`lw`、`sw`、`cmp`、`bz`、`macro`、`rept` 等快速生成代码
 - 📝 **注释支持** - `//` 行注释与 `/* */` 块注释，支持 `Ctrl+/` 快捷键
 - 🔤 **括号匹配** - 内存访问括号 `[]`、函数括号 `()`、块 `{}` 自动匹配
 - 🔄 **多种输出格式** - Verilog、COE、MIF、Intel HEX、Binary、`$readmemh` MEM
@@ -155,22 +155,35 @@ mov rd, rs2 ^ rs1         // rd = rs2 ^ rs1
 mov rd, rs2 << rs1        // rd = rs2 << rs1 (逻辑左移)
 mov rd, rs2 >> rs1        // rd = rs2 >> rs1 (逻辑右移)
 mov rd, rs2 >>> rs1       // rd = rs2 >>> rs1 (算术右移)
+
+// 乘法、除法与余数；rhs 可为寄存器或立即数
+mul  rd, rs2, rhs         // 乘积低 32 位
+div  rd, rs2, rhs         // 有符号商
+divu rd, rs2, rhs         // 无符号商
+rem  rd, rs2, rhs         // 有符号余数
+remu rd, rs2, rhs         // 无符号余数
 ```
 
 ### 内存访问指令
 
 ```asm
-// I-Type: [rs + imm]
-mov rd, [rs + imm]        // rd = Mem[rs + imm]
-mov [rs + imm], rd        // Mem[rs + imm] = rd
+lw  rd, [rs2 + rhs]       // 32 位读取
+lh  rd, [rs2 + rhs]       // 16 位读取并符号扩展
+lhu rd, [rs2 + rhs]       // 16 位读取并零扩展
+lb  rd, [rs2 + rhs]       // 8 位读取并符号扩展
+lbu rd, [rs2 + rhs]       // 8 位读取并零扩展
 
-// R-Type: [rs1 + rs2]
-mov rd, [rs1 + rs2]       // rd = Mem[rs1 + rs2]
-mov [rs1 + rs2], rd       // Mem[rs1 + rs2] = rd
+sw [rs2 + rhs], rd        // 写入 rd[31:0]
+sh [rs2 + rhs], rd        // 写入 rd[15:0]
+sb [rs2 + rhs], rd        // 写入 rd[7:0]
 
-// 偏移为 0 的简写形式
-mov rd, [rs]              // rd = Mem[rs]
-mov [rs], rd              // Mem[rs] = rd
+// rhs 可为寄存器或 16 位立即数；省略时等价于 0
+lw rd, [rs2]
+sw [rs2], rd
+
+// 旧 word 访问兼容别名
+mov rd, [rs2 + rhs]       // lw
+mov [rs2 + rhs], rd       // sw
 ```
 
 ### jmp 指令
@@ -276,16 +289,16 @@ mov r0, 1           // 行尾注释
 
 | 类别 | 支持内容 |
 |------|----------|
-| 类型 | `int`、`unsigned int`、`void`、`volatile` 修饰、指针（多级）、数组 |
+| 类型 | `char`、`unsigned char`、`short`、`unsigned short`、`int`、`unsigned int`、`void`、`volatile`、指针、数组 |
 | 存储 | 全局变量（可带初始化）、函数局部变量 |
 | 控制流 | `if` / `else`、`while`、`for`、`break`、`continue`、`return`、`goto`、标签 |
-| 二元运算 | `+ - & \| ^ << >> == != < <= > >= && \|\|` 及 `=` 赋值 |
+| 二元运算 | `+ - * / % & \| ^ << >> == != < <= > >= && \|\|` 及 `=` 赋值 |
 | 一元运算 | `! ~ & * + -`（`*` 为指针解引用，`&` 为取地址） |
 | 函数 | 函数定义与声明、函数调用、参数按 `r4`–`r7` 寄存器传递，返回值在 `r4` |
 | 类型转换 | 显式 `(type)expr` 强制转换，支持指针与整数互转 |
 | 数组与指针 | `arr[i]` 索引、`*ptr` 解引用、指针算术 |
 
-> 注意：编译器不支持乘法、除法、取模及复合赋值运算符。数组下标寻址内部用移位完成元素步长缩放，复杂表达式通过栈临时变量求值。
+窄整数对象按 1/2 字节自然对齐，读取时按类型符号扩展或零扩展，参与普通运算前提升为 32 位 `int`。数组下标和指针算术按所指类型的 1/2/4 字节元素大小缩放。当前仍不支持复合赋值运算符。
 
 ### MMIO 与中断
 

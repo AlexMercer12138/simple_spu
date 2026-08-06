@@ -37,6 +37,8 @@ const firmwareTests = [
         top: 'tinyc_cpu_tb',
         rtlFiles: [
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'sim', 'tinyc_cpu_tb.v'],
         ],
     },
@@ -46,6 +48,8 @@ const firmwareTests = [
         rtlFiles: [
             ['rtl', 'debug', 'jtag_debug.v'],
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'bridge', 'lb2apb.v'],
             ['rtl', 'cpu', 'MERC32_top.v'],
             ['rtl', 'apb_uart', 'apb_uart.v'],
@@ -58,6 +62,8 @@ const firmwareTests = [
         rtlFiles: [
             ['rtl', 'debug', 'jtag_debug.v'],
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'bridge', 'lb2apb.v'],
             ['rtl', 'cpu', 'MERC32_top.v'],
             ['rtl', 'apb_gpio', 'apb_gpio.v'],
@@ -70,6 +76,8 @@ const firmwareTests = [
         rtlFiles: [
             ['rtl', 'debug', 'jtag_debug.v'],
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'bridge', 'lb2apb.v'],
             ['rtl', 'cpu', 'MERC32_top.v'],
             ['rtl', 'apb_timer', 'apb_timer.v'],
@@ -82,6 +90,8 @@ const firmwareTests = [
         rtlFiles: [
             ['rtl', 'debug', 'jtag_debug.v'],
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'bridge', 'lb2apb.v'],
             ['rtl', 'cpu', 'MERC32_top.v'],
             ['rtl', 'apb_i2c', 'apb_i2c.v'],
@@ -93,6 +103,8 @@ const firmwareTests = [
         top: 'tinyc_irq_tb',
         rtlFiles: [
             ['rtl', 'cpu', 'core.v'],
+            ['rtl', 'misc', 'mul.v'],
+            ['rtl', 'misc', 'div.v'],
             ['rtl', 'sim', 'tinyc_irq_tb.v'],
         ],
     },

@@ -53,9 +53,8 @@ u_lb2apb (
 //================================================================================
 
 module lb2apb #(
-    parameter LB_DATA_WIDTH             = 32,
+    parameter DATA_WIDTH                = 32,
     parameter LB_ADDR_WIDTH             = 32,
-    parameter APB_DATA_WIDTH            = 32,
     parameter APB_ADDR_WIDTH            = 8
 )(
     input                               clk,
@@ -63,9 +62,10 @@ module lb2apb #(
 
     input                               lb_rden,
     input                               lb_wren,
-    input   [LB_DATA_WIDTH-1:0]         lb_wdata,
+    input   [(DATA_WIDTH/8)-1:0]        lb_strb,
+    input   [DATA_WIDTH-1:0]            lb_wdata,
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
-    output  [LB_DATA_WIDTH-1:0]         lb_rdata,
+    output  [DATA_WIDTH-1:0]            lb_rdata,
     output                              lb_valid,
 
     output                              m_apb_psel,
@@ -73,30 +73,31 @@ module lb2apb #(
     output  [APB_ADDR_WIDTH-1:0]        m_apb_paddr,
 
     output                              m_apb_pwrite,
-    output  [APB_DATA_WIDTH-1:0]        m_apb_pwdata,
+    output  [DATA_WIDTH-1:0]            m_apb_pwdata,
+    output  [(DATA_WIDTH/8)-1:0]        m_apb_pstrb,
 
-    input   [APB_DATA_WIDTH-1:0]        m_apb_prdata,
+    input   [DATA_WIDTH-1:0]            m_apb_prdata,
     input                               m_apb_pready
 );
 
-    localparam MIN_DATA_WIDTH = LB_DATA_WIDTH > APB_DATA_WIDTH ? APB_DATA_WIDTH : LB_DATA_WIDTH;
     localparam MIN_ADDR_WIDTH = LB_ADDR_WIDTH > APB_ADDR_WIDTH ? APB_ADDR_WIDTH : LB_ADDR_WIDTH;
-    localparam ADDR_LSB = (APB_DATA_WIDTH / 32) + 1;
 
     reg                                 apb_psel;
     reg                                 apb_penable;
     reg     [APB_ADDR_WIDTH-1:0]        apb_paddr;
     reg                                 apb_pwrite;
-    reg     [APB_DATA_WIDTH-1:0]        apb_wdata;
+    reg     [(DATA_WIDTH/8)-1:0]        apb_strb;
+    reg     [DATA_WIDTH-1:0]            apb_wdata;
 
     reg                                 rd_valid;
-    reg     [LB_DATA_WIDTH-1:0]         rd_data;
+    reg     [DATA_WIDTH-1:0]            rd_data;
 
     assign m_apb_psel = apb_psel;
     assign m_apb_penable = apb_penable;
     assign m_apb_paddr = apb_paddr;
     assign m_apb_pwrite = apb_pwrite;
     assign m_apb_pwdata = apb_wdata;
+    assign m_apb_pstrb = apb_strb;
 
     assign lb_rdata = rd_data;
     assign lb_valid = rd_valid;
@@ -107,23 +108,25 @@ module lb2apb #(
             apb_penable <= 1'b0;
             apb_pwrite <= 1'b0;
             apb_paddr <= {APB_ADDR_WIDTH{1'b0}};
-            apb_wdata <= {APB_DATA_WIDTH{1'b0}};
+            apb_wdata <= {DATA_WIDTH{1'b0}};
+            apb_strb <= {(DATA_WIDTH/8){1'b0}};
         end else begin
             apb_psel <= m_apb_psel & m_apb_penable & m_apb_pready ? 1'b0 : lb_rden | lb_wren ? 1'b1 : apb_psel;
             apb_penable <= m_apb_psel & m_apb_penable & m_apb_pready ? 1'b0 : apb_psel ? 1'b1 : apb_penable;
             apb_pwrite <= lb_wren ? 1'b1 : lb_rden ? 1'b0 : apb_pwrite;
             apb_paddr <= lb_addr[MIN_ADDR_WIDTH-1:0];
-            apb_wdata <= lb_wdata[MIN_DATA_WIDTH-1:0];
+            apb_wdata <= lb_wdata;
+            apb_strb <= lb_strb;
         end
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rd_valid <= 1'b0;
-            rd_data <= {LB_DATA_WIDTH{1'b0}};
+            rd_data <= {DATA_WIDTH{1'b0}};
         end else begin
             rd_valid <= m_apb_psel & m_apb_penable & m_apb_pready;
-            rd_data <= m_apb_psel & m_apb_penable & m_apb_pready & ~m_apb_pwrite ? m_apb_prdata[MIN_DATA_WIDTH-1:0] : rd_data;
+            rd_data <= m_apb_psel & m_apb_penable & m_apb_pready & ~m_apb_pwrite ? m_apb_prdata : rd_data;
         end
     end
 

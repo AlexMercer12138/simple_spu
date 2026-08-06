@@ -54,9 +54,8 @@ u_lb2avalon (
 //================================================================================
 
 module lb2avalon #(
-    parameter LB_DATA_WIDTH             = 32,
+    parameter DATA_WIDTH                = 32,
     parameter LB_ADDR_WIDTH             = 32,
-    parameter AV_DATA_WIDTH             = 32,
     parameter AV_ADDR_WIDTH             = 8
 )(
     input                               clk,
@@ -64,48 +63,48 @@ module lb2avalon #(
 
     input                               lb_rden,
     input                               lb_wren,
-    input   [LB_DATA_WIDTH-1:0]         lb_wdata,
+    input   [(DATA_WIDTH/8)-1:0]        lb_strb,
+    input   [DATA_WIDTH-1:0]            lb_wdata,
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
-    output  reg [LB_DATA_WIDTH-1:0]     lb_rdata,
+    output  reg [DATA_WIDTH-1:0]        lb_rdata,
     output  reg                         lb_valid,
     output  reg                         lb_wrack,
 
     output  reg [AV_ADDR_WIDTH-1:0]     m_av_address,
     output  reg                         m_av_read,
     output  reg                         m_av_write,
-    output  reg [AV_DATA_WIDTH-1:0]     m_av_writedata,
-    output  reg [(AV_DATA_WIDTH/8)-1:0] m_av_byteenable,
+    output  reg [DATA_WIDTH-1:0]        m_av_writedata,
+    output  reg [(DATA_WIDTH/8)-1:0]    m_av_byteenable,
     input                               m_av_waitrequest,
-    input   [AV_DATA_WIDTH-1:0]         m_av_readdata,
+    input   [DATA_WIDTH-1:0]            m_av_readdata,
     input                               m_av_readdatavalid
 );
 
-    localparam MIN_DATA_WIDTH = LB_DATA_WIDTH > AV_DATA_WIDTH ? AV_DATA_WIDTH : LB_DATA_WIDTH;
     localparam MIN_ADDR_WIDTH = LB_ADDR_WIDTH > AV_ADDR_WIDTH ? AV_ADDR_WIDTH : LB_ADDR_WIDTH;
-    localparam ADDR_LSB = (AV_DATA_WIDTH / 32) + 1;
+    localparam ADDR_LSB = (DATA_WIDTH / 32) + 1;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             m_av_read <= 1'b0;
             m_av_write <= 1'b0;
             m_av_address <= {AV_ADDR_WIDTH{1'b0}};
-            m_av_writedata <= {AV_DATA_WIDTH{1'b0}};
-            m_av_byteenable <= {(AV_DATA_WIDTH/8){1'b0}};
+            m_av_writedata <= {DATA_WIDTH{1'b0}};
+            m_av_byteenable <= {(DATA_WIDTH/8){1'b0}};
         end else begin
             m_av_read <= lb_rden ? 1'b1 : m_av_read & ~m_av_waitrequest ? 1'b0 : m_av_read;
             m_av_write <= lb_wren ? 1'b1 : m_av_write & ~m_av_waitrequest ? 1'b0 : m_av_write;
             m_av_address <= lb_addr[MIN_ADDR_WIDTH-1:0];
-            m_av_writedata <= lb_wdata[MIN_DATA_WIDTH-1:0];
-            m_av_byteenable <= {(AV_DATA_WIDTH/8){1'b1}} << (lb_addr[ADDR_LSB-1:0]);
+            m_av_writedata <= lb_wdata;
+            m_av_byteenable <= lb_strb;
         end
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            lb_rdata <= {LB_DATA_WIDTH{1'b0}};
+            lb_rdata <= {DATA_WIDTH{1'b0}};
             lb_valid <= 1'b0;
         end else begin
-            lb_rdata <= m_av_readdata[MIN_DATA_WIDTH-1:0];
+            lb_rdata <= m_av_readdata;
             lb_valid <= (m_av_write & ~m_av_waitrequest) | m_av_readdatavalid;
         end
     end

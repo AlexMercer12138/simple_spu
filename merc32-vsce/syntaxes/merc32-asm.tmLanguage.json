@@ -44,6 +44,10 @@
         {
           "name": "keyword.operator.comparison.merc32-asm",
           "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.merc32-asm",
+          "match": ">>>|<<|>>|[+\\-*/%&|^]"
         }
       ]
     },
@@ -63,7 +67,7 @@
         },
         {
           "name": "keyword.control.instruction.merc32-asm",
-          "match": "\\b(mov|cmp|cmpu|jmp|bz|bnz)\\b"
+          "match": "\\b(mov|mul|div|divu|rem|remu|lw|lh|lhu|lb|lbu|sw|sh|sb|cmp|cmpu|jmp|bz|bnz)\\b"
         }
       ]
     },

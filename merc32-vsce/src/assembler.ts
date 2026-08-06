@@ -116,12 +116,23 @@ export enum InstructionType {
     SLL = 0x6,
     SRL = 0x7,
     SRA = 0x8,
-    MWR = 0x9,
-    MRD = 0xA,
-    BZ = 0xB,
-    BNZ = 0xC,
-    JAL = 0xD,
-    CMP = 0xE,
+    MUL = 0x9,
+    DIV = 0xA,
+    DIVU = 0xB,
+    REM = 0xC,
+    REMU = 0xD,
+    LW = 0x10,
+    LH = 0x11,
+    LHU = 0x12,
+    LB = 0x13,
+    LBU = 0x14,
+    SW = 0x15,
+    SH = 0x16,
+    SB = 0x17,
+    BZ = 0x20,
+    BNZ = 0x21,
+    JAL = 0x22,
+    CMP = 0x23,
 }
 
 enum CompareCondition {
@@ -456,25 +467,12 @@ export class SimpleCPUAssembler {
             if (operands.length !== 2) {
                 throw new Error("mov 内存写格式错误，应为: mov [addr], rd");
             }
-            const addrStr = firstOp;
             const dataReg = operands[1]?.trim();
-            if (!dataReg) {
+            if (!dataReg || !this.isValidRegister(dataReg)) {
                 throw new Error("mov 内存写需要数据寄存器: mov [addr], rd");
             }
-            const addrTokens = this.tokenizeOperands(addrStr);
-            if (addrTokens[0] === '[') {
-                addrTokens.shift();
-            }
-            if (addrTokens[addrTokens.length - 1] === ']') {
-                addrTokens.pop();
-            }
-            if (addrTokens.length === 1) {
-                return { instType: InstructionType.MWR, operands: [`[${addrTokens[0]}]`, dataReg, 'r0'], lineNum, lineContent };
-            } else if (addrTokens.length === 3 && addrTokens[1] === '+') {
-                return { instType: InstructionType.MWR, operands: [`[${addrTokens[0]}]`, dataReg, addrTokens[2]], lineNum, lineContent };
-            } else {
-                throw new Error(`无效的内存地址格式: ${addrStr}`);
-            }
+            const [base, offset] = this.parseMemoryAddress(firstOp, 'mov');
+            return { instType: InstructionType.SW, operands: [dataReg, base, offset], lineNum, lineContent };
         }
 
         if (operands.length !== 2) {
@@ -494,17 +492,8 @@ export class SimpleCPUAssembler {
         }
 
         if (tokens.length >= 3 && tokens[0] === '[') {
-            if (tokens[tokens.length - 1] === ']') {
-                tokens.pop();
-            }
-            tokens.shift();
-            if (tokens.length === 1) {
-                return { instType: InstructionType.MRD, operands: [destReg, tokens[0], '0'], lineNum, lineContent };
-            } else if (tokens.length === 3 && tokens[1] === '+') {
-                return { instType: InstructionType.MRD, operands: [destReg, tokens[0], tokens[2]], lineNum, lineContent };
-            } else {
-                throw new Error(`无效的内存地址格式: ${srcStr}`);
-            }
+            const [base, offset] = this.parseMemoryAddress(srcStr, 'mov');
+            return { instType: InstructionType.LW, operands: [destReg, base, offset], lineNum, lineContent };
         }
 
         if (tokens.length === 3) {
@@ -529,6 +518,87 @@ export class SimpleCPUAssembler {
         }
 
         throw new Error(`无法识别的 mov 格式: ${srcStr}`);
+    }
+
+    parseAluInstruction(
+        mnemonic: string,
+        instType: InstructionType,
+        operands: string[],
+        lineNum: number,
+        lineContent: string,
+    ): Instruction {
+        if (operands.length !== 3) {
+            throw new Error(`${mnemonic} format must be: ${mnemonic} rd, rs2, rs1|imm`);
+        }
+
+        const [rd, rs2, rhs] = operands.map((operand) => operand.trim());
+        if (!this.isValidRegister(rd)) {
+            throw new Error(`${mnemonic} destination must be a register: ${rd}`);
+        }
+        if (!this.isValidRegister(rs2)) {
+            throw new Error(`${mnemonic} left operand must be a register: ${rs2}`);
+        }
+        if (!this.isValidRegister(rhs) && !this.isImmediate(rhs)) {
+            throw new Error(`${mnemonic} right operand must be a register or immediate: ${rhs}`);
+        }
+        if (this.isImmediate(rhs)) {
+            this.parseImmediate(rhs, 16);
+        }
+
+        return { instType, operands: [rd, rs2, rhs], lineNum, lineContent };
+    }
+
+    parseMemoryAddress(address: string, mnemonic: string): [string, string] {
+        const tokens = this.tokenizeOperands(address.trim());
+        if (tokens[0] !== '[' || tokens[tokens.length - 1] !== ']') {
+            throw new Error(`${mnemonic} memory address must be enclosed in brackets: ${address}`);
+        }
+
+        tokens.shift();
+        tokens.pop();
+        let base: string;
+        let offset: string;
+        if (tokens.length === 1) {
+            [base] = tokens;
+            offset = '0';
+        } else if (tokens.length === 3 && tokens[1] === '+') {
+            [base, , offset] = tokens;
+        } else {
+            throw new Error(`${mnemonic} memory address format must be: [rs2 + rs1|imm]`);
+        }
+
+        if (!this.isValidRegister(base)) {
+            throw new Error(`${mnemonic} memory base must be a register: ${base}`);
+        }
+        if (!this.isValidRegister(offset) && !this.isImmediate(offset)) {
+            throw new Error(`${mnemonic} memory offset must be a register or immediate: ${offset}`);
+        }
+        if (this.isImmediate(offset)) {
+            this.parseImmediate(offset, 16);
+        }
+        return [base, offset];
+    }
+
+    parseMemoryInstruction(
+        mnemonic: string,
+        instType: InstructionType,
+        load: boolean,
+        operands: string[],
+        lineNum: number,
+        lineContent: string,
+    ): Instruction {
+        if (operands.length !== 2) {
+            const format = load ? `${mnemonic} rd, [rs2 + rs1|imm]` : `${mnemonic} [rs2 + rs1|imm], rd`;
+            throw new Error(`${mnemonic} format must be: ${format}`);
+        }
+
+        const dataRegister = operands[load ? 0 : 1].trim();
+        if (!this.isValidRegister(dataRegister)) {
+            const role = load ? 'destination' : 'source';
+            throw new Error(`${mnemonic} ${role} must be a register: ${dataRegister}`);
+        }
+        const [base, offset] = this.parseMemoryAddress(operands[load ? 1 : 0], mnemonic);
+        return { instType, operands: [dataRegister, base, offset], lineNum, lineContent };
     }
 
     parseJmp(operands: string[], lineNum: number, lineContent: string): Instruction {
@@ -680,6 +750,32 @@ export class SimpleCPUAssembler {
         let inst: Instruction;
         if (mnemonic === 'mov') {
             inst = this.parseMov(operands, lineNum, line);
+        } else if (mnemonic === 'mul') {
+            inst = this.parseAluInstruction(mnemonic, InstructionType.MUL, operands, lineNum, line);
+        } else if (mnemonic === 'div') {
+            inst = this.parseAluInstruction(mnemonic, InstructionType.DIV, operands, lineNum, line);
+        } else if (mnemonic === 'divu') {
+            inst = this.parseAluInstruction(mnemonic, InstructionType.DIVU, operands, lineNum, line);
+        } else if (mnemonic === 'rem') {
+            inst = this.parseAluInstruction(mnemonic, InstructionType.REM, operands, lineNum, line);
+        } else if (mnemonic === 'remu') {
+            inst = this.parseAluInstruction(mnemonic, InstructionType.REMU, operands, lineNum, line);
+        } else if (mnemonic === 'lw') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.LW, true, operands, lineNum, line);
+        } else if (mnemonic === 'lh') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.LH, true, operands, lineNum, line);
+        } else if (mnemonic === 'lhu') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.LHU, true, operands, lineNum, line);
+        } else if (mnemonic === 'lb') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.LB, true, operands, lineNum, line);
+        } else if (mnemonic === 'lbu') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.LBU, true, operands, lineNum, line);
+        } else if (mnemonic === 'sw') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.SW, false, operands, lineNum, line);
+        } else if (mnemonic === 'sh') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.SH, false, operands, lineNum, line);
+        } else if (mnemonic === 'sb') {
+            inst = this.parseMemoryInstruction(mnemonic, InstructionType.SB, false, operands, lineNum, line);
         } else if (mnemonic === 'jmp') {
             inst = this.parseJmp(operands, lineNum, line);
         } else if (mnemonic === 'cmp') {
@@ -691,7 +787,7 @@ export class SimpleCPUAssembler {
         } else if (mnemonic === 'bnz') {
             inst = this.parseBranch(operands, lineNum, line, InstructionType.BNZ);
         } else {
-            throw new Error(`未知指令: ${mnemonic} (只支持 mov, jmp, cmp, cmpu, bz, bnz)`);
+            throw new Error(`未知指令: ${mnemonic}`);
         }
 
         return { label, instruction: inst, lineContent: line };
@@ -747,8 +843,12 @@ export class SimpleCPUAssembler {
     }
 
     encodeInstruction(inst: Instruction, currentAddr: number): number {
-        const OPCODE_I = 0x1;
-        const OPCODE_R = 0x2;
+        const OP_IALU = 0x0;
+        const OP_RALU = 0x1;
+        const OP_IPCU = 0x2;
+        const OP_RPCU = 0x3;
+        const OP_IMCU = 0x4;
+        const OP_RMCU = 0x5;
 
         const type = inst.instType;
         const ops = inst.operands;
@@ -756,51 +856,37 @@ export class SimpleCPUAssembler {
         if (type === InstructionType.SET) {
             const rd = this.parseRegister(ops[0]);
             const imm = this.parseImmediate(ops[1], 16);
-            return (imm << 16) | (rd << 8) | (OPCODE_I << 4) | type;
+            return (imm << 16) | (rd << 8) | (OP_IALU << 4) | type;
         }
 
         if ([InstructionType.ADD, InstructionType.SUB, InstructionType.AND,
              InstructionType.OR, InstructionType.XOR, InstructionType.SLL,
-             InstructionType.SRL, InstructionType.SRA].includes(type)) {
+             InstructionType.SRL, InstructionType.SRA, InstructionType.MUL,
+             InstructionType.DIV, InstructionType.DIVU, InstructionType.REM,
+             InstructionType.REMU].includes(type)) {
             const rd = this.parseRegister(ops[0]);
             const rs2 = this.parseRegister(ops[1]);
             const third = ops[2];
             if (this.isImmediate(third)) {
                 const imm = this.parseImmediate(third, 16);
-                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_I << 4) | type;
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OP_IALU << 4) | type;
             } else {
                 const rs1 = this.parseRegister(third);
-                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_R << 4) | type;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OP_RALU << 4) | type;
             }
         }
 
-        if (type === InstructionType.MWR) {
-            let baseStr = ops[0].trim();
-            if (baseStr.startsWith('[') && baseStr.endsWith(']')) {
-                baseStr = baseStr.substring(1, baseStr.length - 1);
-            }
-            const rsBase = this.parseRegister(baseStr);
-            const rd = this.parseRegister(ops[1]);
-            const offsetStr = ops[2] || '0';
-            if (this.isImmediate(offsetStr)) {
-                const imm = this.parseImmediate(offsetStr, 16);
-                return (imm << 16) | (rsBase << 12) | (rd << 8) | (OPCODE_I << 4) | type;
-            } else {
-                const rsOffset = this.parseRegister(offsetStr);
-                return (rsOffset << 16) | (rsBase << 12) | (rd << 8) | (OPCODE_R << 4) | type;
-            }
-        }
-
-        if (type === InstructionType.MRD) {
+        if (type >= InstructionType.LW && type <= InstructionType.SB) {
             const rd = this.parseRegister(ops[0]);
             const rsBase = this.parseRegister(ops[1]);
             const offsetStr = ops[2] || '0';
+            const memoryFunction = type - InstructionType.LW;
             if (this.isImmediate(offsetStr)) {
                 const imm = this.parseImmediate(offsetStr, 16);
-                return (imm << 16) | (rsBase << 12) | (rd << 8) | (OPCODE_I << 4) | type;
+                return (imm << 16) | (rsBase << 12) | (rd << 8) | (OP_IMCU << 4) | memoryFunction;
             } else {
                 const rsOffset = this.parseRegister(offsetStr);
-                return (rsOffset << 16) | (rsBase << 12) | (rd << 8) | (OPCODE_R << 4) | type;
+                return (rsOffset << 16) | (rsBase << 12) | (rd << 8) | (OP_RMCU << 4) | memoryFunction;
             }
         }
 
@@ -810,10 +896,10 @@ export class SimpleCPUAssembler {
             const offset = ops[2];
             if (this.isImmediate(offset)) {
                 const imm = this.parseImmediate(offset, 16);
-                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_I << 4) | type;
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OP_IPCU << 4) | 0xC;
             } else if (this.isValidRegister(offset)) {
                 const rs1 = this.parseRegister(offset);
-                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_R << 4) | type;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OP_RPCU << 4) | 0xC;
             } else {
                 throw new Error(`无效的跳转偏移: ${offset} (应为立即数或寄存器)`);
             }
@@ -829,10 +915,10 @@ export class SimpleCPUAssembler {
             }
             if (this.isImmediate(rhs)) {
                 const imm = this.parseImmediate(rhs, 16);
-                return (imm << 16) | (rs2 << 12) | (rd << 8) | (0x3 << 4) | condition;
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OP_IPCU << 4) | condition;
             } else {
                 const rs1 = this.parseRegister(rhs);
-                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (0x4 << 4) | condition;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OP_RPCU << 4) | condition;
             }
         }
 
@@ -840,12 +926,13 @@ export class SimpleCPUAssembler {
             const rd = this.parseRegister(ops[0]);
             const rs2 = this.parseRegister(ops[1]);
             const offset = ops[2];
+            const branchFunction = type === InstructionType.BZ ? 0xA : 0xB;
             if (this.isImmediate(offset)) {
                 const imm = this.parseUnsignedImmediate(offset, 16);
-                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_I << 4) | type;
+                return (imm << 16) | (rs2 << 12) | (rd << 8) | (OP_IPCU << 4) | branchFunction;
             } else if (this.isValidRegister(offset)) {
                 const rs1 = this.parseRegister(offset);
-                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OPCODE_R << 4) | type;
+                return (rs1 << 16) | (rs2 << 12) | (rd << 8) | (OP_RPCU << 4) | branchFunction;
             } else {
                 throw new Error(`Invalid branch target: ${offset} (expected immediate or register)`);
             }

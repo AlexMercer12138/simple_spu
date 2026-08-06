@@ -63,9 +63,8 @@ u_lb2axi_lite (
 //================================================================================
 
 module lb2axi_lite #(
-    parameter LB_DATA_WIDTH             = 32,
+    parameter DATA_WIDTH                = 32,
     parameter LB_ADDR_WIDTH             = 32,
-    parameter AXI_DATA_WIDTH            = 32,
     parameter AXI_ADDR_WIDTH            = 8
 )(
     input                               clk,
@@ -73,9 +72,10 @@ module lb2axi_lite #(
 
     input                               lb_rden,
     input                               lb_wren,
-    input   [LB_DATA_WIDTH-1:0]         lb_wdata,
+    input   [(DATA_WIDTH/8)-1:0]        lb_strb,
+    input   [DATA_WIDTH-1:0]            lb_wdata,
     input   [LB_ADDR_WIDTH-1:0]         lb_addr,
-    output  [LB_DATA_WIDTH-1:0]         lb_rdata,
+    output  [DATA_WIDTH-1:0]            lb_rdata,
     output                              lb_valid,
 
     output                              m_axi_awvalid,
@@ -84,8 +84,8 @@ module lb2axi_lite #(
 
     output                              m_axi_wvalid,
     input                               m_axi_wready,
-    output  [AXI_DATA_WIDTH-1:0]        m_axi_wdata,
-    output  [(AXI_DATA_WIDTH/8)-1:0]    m_axi_wstrb,
+    output  [DATA_WIDTH-1:0]            m_axi_wdata,
+    output  [(DATA_WIDTH/8)-1:0]        m_axi_wstrb,
 
     input                               m_axi_bvalid,
     output                              m_axi_bready,
@@ -97,26 +97,24 @@ module lb2axi_lite #(
 
     input                               m_axi_rvalid,
     output                              m_axi_rready,
-    input   [AXI_DATA_WIDTH-1:0]        m_axi_rdata,
+    input   [DATA_WIDTH-1:0]            m_axi_rdata,
     input   [1:0]                       m_axi_rresp
 );
 
-    localparam MIN_DATA_WIDTH = LB_DATA_WIDTH > AXI_DATA_WIDTH ? AXI_DATA_WIDTH : LB_DATA_WIDTH;
     localparam MIN_ADDR_WIDTH = LB_ADDR_WIDTH > AXI_ADDR_WIDTH ? AXI_ADDR_WIDTH : LB_ADDR_WIDTH;
-    localparam ADDR_LSB = (AXI_DATA_WIDTH / 32) + 1;
 
     reg                                 axi_awvalid;
     reg     [AXI_ADDR_WIDTH-1:0]        axi_awaddr;
     reg                                 axi_wvalid;
-    reg     [AXI_DATA_WIDTH-1:0]        axi_wdata;
-    reg     [(AXI_DATA_WIDTH/8)-1:0]    axi_wstrb;
+    reg     [DATA_WIDTH-1:0]            axi_wdata;
+    reg     [(DATA_WIDTH/8)-1:0]        axi_wstrb;
     reg                                 axi_arvalid;
     reg     [AXI_ADDR_WIDTH-1:0]        axi_araddr;
     reg                                 axi_bready;
     reg                                 axi_rready;
 
     reg                                 rd_valid;
-    reg     [LB_DATA_WIDTH-1:0]         rd_data;
+    reg     [DATA_WIDTH-1:0]            rd_data;
 
     assign m_axi_awvalid = axi_awvalid;
     assign m_axi_awaddr = axi_awaddr;
@@ -137,15 +135,15 @@ module lb2axi_lite #(
             axi_bready <= 1'b0;
             axi_wvalid <= 1'b0;
             axi_awaddr <= {AXI_ADDR_WIDTH{1'b0}};
-            axi_wdata <= {AXI_DATA_WIDTH{1'b0}};
-            axi_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
+            axi_wdata <= {DATA_WIDTH{1'b0}};
+            axi_wstrb <= {(DATA_WIDTH/8){1'b0}};
         end else begin
             axi_awvalid <= m_axi_awvalid & m_axi_awready ? 1'b0 : lb_wren ? 1'b1 : axi_awvalid;
             axi_bready <= m_axi_bvalid & m_axi_bready ? 1'b0 : lb_wren ? 1'b1 : axi_bready;
             axi_wvalid <= m_axi_wvalid & m_axi_wready ? 1'b0 : lb_wren ? 1'b1 : axi_wvalid;
             axi_awaddr <= lb_addr[MIN_ADDR_WIDTH-1:0];
-            axi_wdata <= lb_wdata[MIN_DATA_WIDTH-1:0];
-            axi_wstrb <= {(AXI_DATA_WIDTH/8){1'b1}} << (lb_addr[ADDR_LSB-1:0]);
+            axi_wdata <= lb_wdata;
+            axi_wstrb <= lb_strb;
         end
     end
 
@@ -164,10 +162,10 @@ module lb2axi_lite #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rd_valid <= 1'b0;
-            rd_data <= {LB_DATA_WIDTH{1'b0}};
+            rd_data <= {DATA_WIDTH{1'b0}};
         end else begin
             rd_valid <= (m_axi_rvalid & m_axi_rready) | (m_axi_bvalid & m_axi_bready);
-            rd_data <= m_axi_rvalid & m_axi_rready ? m_axi_rdata[MIN_DATA_WIDTH-1:0] : rd_data;
+            rd_data <= m_axi_rvalid & m_axi_rready ? m_axi_rdata : rd_data;
         end
     end
 

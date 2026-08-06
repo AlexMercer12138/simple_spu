@@ -17,6 +17,7 @@ module tinyc_gpio_tb();
 
     reg         clk = 1'b0;
     reg         rst_n = 1'b0;
+    reg         cpu_rst_n = 1'b0;
     reg  [31:0] gpio_i = 32'd0;
 
     wire        ilb_en;
@@ -35,6 +36,7 @@ module tinyc_gpio_tb();
     wire        apb_penable;
     wire [31:0] apb_paddr;
     wire        apb_pwrite;
+    wire [3:0]  apb_pstrb;
     wire [31:0] apb_pwdata;
     wire [31:0] apb_prdata;
     wire        apb_pready;
@@ -43,6 +45,20 @@ module tinyc_gpio_tb();
     wire [31:0] gpio_o;
     wire [31:0] gpio_t;
     wire        gpio_interrupt;
+
+    reg         strb_test_active = 1'b1;
+    reg         strb_psel = 1'b0;
+    reg         strb_penable = 1'b0;
+    reg         strb_pwrite = 1'b0;
+    reg  [31:0] strb_paddr = 32'd0;
+    reg  [31:0] strb_pwdata = 32'd0;
+    reg  [3:0]  strb_pstrb = 4'b0000;
+    wire        gpio_psel = strb_test_active ? strb_psel : apb_psel;
+    wire        gpio_penable = strb_test_active ? strb_penable : apb_penable;
+    wire        gpio_pwrite = strb_test_active ? strb_pwrite : apb_pwrite;
+    wire [31:0] gpio_paddr = strb_test_active ? strb_paddr : apb_paddr;
+    wire [31:0] gpio_pwdata = strb_test_active ? strb_pwdata : apb_pwdata;
+    wire [3:0]  gpio_pstrb = strb_test_active ? strb_pstrb : apb_pstrb;
 
     reg  [31:0] program_rom [0:MEMORY_WORDS-1];
     reg  [31:0] dlb_ram [0:MEMORY_WORDS-1];
@@ -72,7 +88,7 @@ module tinyc_gpio_tb();
         .DLB_ADDR_WIDTH (16))
     MERC32_top_inst (
         .clk            (clk),
-        .rst_n          (rst_n),
+        .rst_n          (cpu_rst_n),
         .interrupt      (gpio_interrupt),
         .tck            (1'b0),
         .tms            (1'b1),
@@ -95,6 +111,7 @@ module tinyc_gpio_tb();
         .m_apb_penable  (apb_penable),
         .m_apb_paddr    (apb_paddr),
         .m_apb_pwrite   (apb_pwrite),
+        .m_apb_pstrb    (apb_pstrb),
         .m_apb_pwdata   (apb_pwdata),
         .m_apb_prdata   (apb_prdata),
         .m_apb_pready   (apb_pready));
@@ -102,11 +119,12 @@ module tinyc_gpio_tb();
     apb_gpio apb_gpio_inst (
         .s_apb_pclk     (clk),
         .s_apb_presetn  (rst_n),
-        .s_apb_psel     (apb_psel),
-        .s_apb_penable  (apb_penable),
-        .s_apb_pwrite   (apb_pwrite),
-        .s_apb_paddr    (apb_paddr),
-        .s_apb_pwdata   (apb_pwdata),
+        .s_apb_psel     (gpio_psel),
+        .s_apb_penable  (gpio_penable),
+        .s_apb_pwrite   (gpio_pwrite),
+        .s_apb_paddr    (gpio_paddr),
+        .s_apb_pwdata   (gpio_pwdata),
+        .s_apb_pstrb    (gpio_pstrb),
         .s_apb_pready   (apb_pready),
         .s_apb_pslverr  (apb_pslverr),
         .s_apb_prdata   (apb_prdata),
@@ -128,9 +146,84 @@ module tinyc_gpio_tb();
         end
     endtask
 
+    task strb_apb_write;
+        input [31:0] address;
+        input [31:0] data;
+        input [3:0] strobe;
+        begin
+            @(negedge clk);
+            strb_psel <= 1'b1;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b1;
+            strb_paddr <= address;
+            strb_pwdata <= data;
+            strb_pstrb <= strobe;
+            @(negedge clk);
+            strb_penable <= 1'b1;
+            @(negedge clk);
+            strb_psel <= 1'b0;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b0;
+            strb_paddr <= 32'd0;
+            strb_pwdata <= 32'd0;
+            strb_pstrb <= 4'b0000;
+        end
+    endtask
+
+    task strb_apb_read;
+        input [31:0] address;
+        output [31:0] data;
+        begin
+            @(negedge clk);
+            strb_psel <= 1'b1;
+            strb_penable <= 1'b0;
+            strb_pwrite <= 1'b0;
+            strb_paddr <= address;
+            @(negedge clk);
+            strb_penable <= 1'b1;
+            @(posedge clk);
+            #1;
+            data = apb_prdata;
+            @(negedge clk);
+            strb_psel <= 1'b0;
+            strb_penable <= 1'b0;
+            strb_paddr <= 32'd0;
+        end
+    endtask
+
     always #(CLK_PERIOD/2) clk = ~clk;
 
     initial #(CLK_PERIOD*RESET_CYCLES) rst_n = 1'b1;
+
+    initial begin : gpio_strb_verification
+        reg [31:0] read_data;
+        wait (rst_n);
+        strb_apb_write(32'h0000_0004, 32'h1122_3344, 4'b1111);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 1111", read_data, 32'h1122_3344);
+        strb_apb_write(32'h0000_0004, 32'h0000_00aa, 4'b0001);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 0001", read_data, 32'h1122_33aa);
+        strb_apb_write(32'h0000_0004, 32'h0000_bb00, 4'b0010);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 0010", read_data, 32'h1122_bbaa);
+        strb_apb_write(32'h0000_0004, 32'h00cc_0000, 4'b0100);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 0100", read_data, 32'h11cc_bbaa);
+        strb_apb_write(32'h0000_0004, 32'hdd00_0000, 4'b1000);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 1000", read_data, 32'hddcc_bbaa);
+        strb_apb_write(32'h0000_0004, 32'h00ee_00ff, 4'b0101);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 0101", read_data, 32'hddee_bbff);
+        strb_apb_write(32'h0000_0004, 32'hffff_ffff, 4'b0000);
+        strb_apb_read(32'h0000_0004, read_data);
+        check_gpio("GPIO PSTRB 0000", read_data, 32'hddee_bbff);
+        strb_apb_write(32'h0000_0004, 32'd0, 4'b1111);
+        @(negedge clk);
+        strb_test_active <= 1'b0;
+        cpu_rst_n <= 1'b1;
+    end
 
     always @(posedge gpio_interrupt)
         irq_rise_count = irq_rise_count + 1;

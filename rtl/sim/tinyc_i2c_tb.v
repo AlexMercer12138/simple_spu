@@ -28,6 +28,7 @@ module tinyc_i2c_tb();
 
     reg         clk = 1'b0;
     reg         rst_n = 1'b0;
+    reg         cpu_rst_n = 1'b0;
 
     wire        ilb_en;
     wire        ilb_we;
@@ -45,6 +46,7 @@ module tinyc_i2c_tb();
     wire        cpu_penable;
     wire [31:0] cpu_paddr;
     wire        cpu_pwrite;
+    wire [3:0]  cpu_pstrb;
     wire [31:0] cpu_pwdata;
     wire [31:0] cpu_prdata;
     wire        cpu_pready;
@@ -55,6 +57,7 @@ module tinyc_i2c_tb();
     reg         peer_pwrite = 1'b0;
     reg  [31:0] peer_paddr = 32'd0;
     reg  [31:0] peer_pwdata = 32'd0;
+    reg  [3:0]  peer_pstrb = 4'b0000;
     wire [31:0] peer_prdata;
     wire        peer_pready;
     wire        peer_pslverr;
@@ -102,7 +105,7 @@ module tinyc_i2c_tb();
         .DLB_ADDR_WIDTH (16))
     MERC32_top_inst (
         .clk            (clk),
-        .rst_n          (rst_n),
+        .rst_n          (cpu_rst_n),
         .interrupt      (master_interrupt),
         .tck            (1'b0),
         .tms            (1'b1),
@@ -125,6 +128,7 @@ module tinyc_i2c_tb();
         .m_apb_penable  (cpu_penable),
         .m_apb_paddr    (cpu_paddr),
         .m_apb_pwrite   (cpu_pwrite),
+        .m_apb_pstrb    (cpu_pstrb),
         .m_apb_pwdata   (cpu_pwdata),
         .m_apb_prdata   (cpu_prdata),
         .m_apb_pready   (cpu_pready));
@@ -140,6 +144,7 @@ module tinyc_i2c_tb();
         .s_apb_pwrite   (cpu_pwrite),
         .s_apb_paddr    (cpu_paddr),
         .s_apb_pwdata   (cpu_pwdata),
+        .s_apb_pstrb    (cpu_pstrb),
         .s_apb_pready   (cpu_pready),
         .s_apb_pslverr  (cpu_pslverr),
         .s_apb_prdata   (cpu_prdata),
@@ -162,6 +167,7 @@ module tinyc_i2c_tb();
         .s_apb_pwrite   (peer_pwrite),
         .s_apb_paddr    (peer_paddr),
         .s_apb_pwdata   (peer_pwdata),
+        .s_apb_pstrb    (peer_pstrb),
         .s_apb_pready   (peer_pready),
         .s_apb_pslverr  (peer_pslverr),
         .s_apb_prdata   (peer_prdata),
@@ -177,12 +183,22 @@ module tinyc_i2c_tb();
         input [31:0] address;
         input [31:0] data;
         begin
+            peer_apb_write_strb(address, data, 4'b1111);
+        end
+    endtask
+
+    task peer_apb_write_strb;
+        input [31:0] address;
+        input [31:0] data;
+        input [3:0] strobe;
+        begin
             @(negedge clk);
             peer_psel <= 1'b1;
             peer_penable <= 1'b0;
             peer_pwrite <= 1'b1;
             peer_paddr <= address;
             peer_pwdata <= data;
+            peer_pstrb <= strobe;
             @(posedge clk);
             #1;
             @(negedge clk);
@@ -195,6 +211,7 @@ module tinyc_i2c_tb();
             peer_pwrite <= 1'b0;
             peer_paddr <= 32'd0;
             peer_pwdata <= 32'd0;
+            peer_pstrb <= 4'b0000;
         end
     endtask
 
@@ -273,6 +290,34 @@ module tinyc_i2c_tb();
 
     initial begin : peer_setup
         wait (rst_n);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'h1122_3344,
+                            4'b1111);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 1111", peer_read_data, 32'h1122_3344);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'h0000_00aa,
+                            4'b0001);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 0001", peer_read_data, 32'h1122_33aa);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'h0000_bb00,
+                            4'b0010);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 0010", peer_read_data, 32'h1122_bbaa);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'h00cc_0000,
+                            4'b0100);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 0100", peer_read_data, 32'h11cc_bbaa);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'hdd00_0000,
+                            4'b1000);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 1000", peer_read_data, 32'hddcc_bbaa);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'h00ee_00ff,
+                            4'b0101);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 0101", peer_read_data, 32'hddee_bbff);
+        peer_apb_write_strb(ADDR_STRETCH_TIMEOUT, 32'hffff_ffff,
+                            4'b0000);
+        peer_apb_read(ADDR_STRETCH_TIMEOUT, peer_read_data);
+        check_value("I2C PSTRB 0000", peer_read_data, 32'hddee_bbff);
         peer_apb_write(ADDR_CTRL, 32'h8000_0000);
         peer_apb_write(ADDR_CTRL, 32'h0000_0000);
         peer_apb_write(ADDR_SLAVE_CFG, 32'h0000_0052);
@@ -284,6 +329,7 @@ module tinyc_i2c_tb();
         peer_apb_write(ADDR_TX_DATA, 32'h0000_00ad);
         peer_apb_write(ADDR_CTRL, 32'h0000_0001);
         dlb_ram[PEER_READY_ADDR] = 32'h0000_0001;
+        cpu_rst_n = 1'b1;
     end
 
     initial begin : bus_verification

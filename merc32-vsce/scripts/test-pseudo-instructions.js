@@ -35,7 +35,7 @@ let result = assemble(`
 mov r1, alias
 mov r3, reg
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x001e0110', '0x00002311'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x001e0100', '0x00002301'])
 assert.match(result.preprocessedCode, /mov r1, 30/)
 assert.match(result.preprocessedCode, /mov r3, r2/)
 
@@ -46,10 +46,10 @@ mov r3, ","
 mov r4, "\\n"
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0x00410110',
-    '0x41420210',
-    '0x002c0310',
-    '0x000a0410',
+    '0x00410100',
+    '0x41420200',
+    '0x002c0300',
+    '0x000a0400',
 ])
 
 result = assemble(`
@@ -62,7 +62,7 @@ mov r1, 2
 mov r1, 3
 .endif
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00020110'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00020100'])
 
 result = assemble(`
 .macro load(rd, v)
@@ -77,7 +77,7 @@ wrapper(r4, 6)
 mov r4, 0
 .endif
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00060410'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00060400'])
 assert.match(result.preprocessedCode, /mov r4, 6/)
 
 result = assemble(`
@@ -87,7 +87,7 @@ mov rd, v
 load(r1, 1)
 load(r2, 2)
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00010110', '0x00020210'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00010100', '0x00020200'])
 
 result = assemble(`
 .equ count 1 + 2
@@ -98,7 +98,7 @@ mov r5, x
 emit(9)
 .endr
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00090510', '0x00090510', '0x00090510'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00090500', '0x00090500', '0x00090500'])
 
 result = assemble(`
 .equ flag
@@ -111,7 +111,7 @@ mov r6, v
 .endm
 pair(4)
 `)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00040610', '0x00040610'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00040600', '0x00040600'])
 
 result = assemble(`
 .entry main
@@ -121,8 +121,66 @@ main:
 mov r1, 4
 `)
 assert.strictEqual(result.entryLabel, 'main')
-assert.deepStrictEqual(hex(result.machineCodes), ['0x0008001d', '0x00090110', '0x00040110'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x0008002c', '0x00090100', '0x00040100'])
 assert.match(result.preprocessedCode, /^jmp main\b/)
+
+result = assemble(`
+mul  r1,  r2, 3
+mul  r1,  r2, r3
+div  r4,  r5, -1
+div  r4,  r5, r6
+divu r7,  r8, 0xffff
+divu r7,  r8, r9
+rem  r10, r11, -2
+rem  r12, r13, r14
+remu r10, r11, 0xffff
+remu r12, r13, r14
+`)
+assert.deepStrictEqual(hex(result.machineCodes), [
+    '0x00032109',
+    '0x00032119',
+    '0xffff540a',
+    '0x0006541a',
+    '0xffff870b',
+    '0x0009871b',
+    '0xfffeba0c',
+    '0x000edc1c',
+    '0xffffba0d',
+    '0x000edc1d',
+])
+
+result = assemble(`
+lw  r1, [r2 + 4]
+lw  r1, [r2 + r3]
+lh  r4, [r5 + 6]
+lhu r4, [r5 + r6]
+lb  r7, [r8 + 9]
+lbu r7, [r8 + r9]
+sw  [r2 + 4], r1
+sw  [r2 + r3], r1
+sh  [r5 + 6], r4
+sh  [r5 + r6], r4
+sb  [r8 + 9], r7
+sb  [r8 + r9], r7
+mov r1, [r2 + 4]
+mov [r2 + r3], r1
+`)
+assert.deepStrictEqual(hex(result.machineCodes), [
+    '0x00042140',
+    '0x00032150',
+    '0x00065441',
+    '0x00065452',
+    '0x00098743',
+    '0x00098754',
+    '0x00042145',
+    '0x00032155',
+    '0x00065446',
+    '0x00065456',
+    '0x00098747',
+    '0x00098757',
+    '0x00042140',
+    '0x00032155',
+])
 
 result = assemble(`
 target:
@@ -136,14 +194,14 @@ jmp r7
 jmp r14 + 2
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0x000c051d',
-    '0x0004062d',
-    '0x0007281d',
-    '0xfffd291d',
-    '0x00031a2d',
-    '0x000f001d',
-    '0x0007002d',
-    '0x0002e01d',
+    '0x000c052c',
+    '0x0004063c',
+    '0x0007282c',
+    '0xfffd292c',
+    '0x00031a3c',
+    '0x000f002c',
+    '0x0007003c',
+    '0x0002e02c',
 ])
 
 result = assemble(`
@@ -159,16 +217,16 @@ cmpu r1, r2 >  r3
 cmpu r1, r2 <= r3
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0x00032140',
-    '0x00032141',
-    '0x00032142',
-    '0x00032143',
-    '0x00032144',
-    '0x00032145',
-    '0x00032146',
-    '0x00032147',
-    '0x00032148',
-    '0x00032149',
+    '0x00032130',
+    '0x00032131',
+    '0x00032132',
+    '0x00032133',
+    '0x00032134',
+    '0x00032135',
+    '0x00032136',
+    '0x00032137',
+    '0x00032138',
+    '0x00032139',
 ])
 
 result = assemble(`
@@ -181,13 +239,13 @@ bz   r1, r2 + r3
 bnz  r4, r5 + r6
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0xffff5434',
-    '0xffff5437',
-    '0x00032140',
-    '0x8000211b',
-    '0xffff431c',
-    '0x0003212b',
-    '0x0006542c',
+    '0xffff5424',
+    '0xffff5427',
+    '0x00032130',
+    '0x8000212a',
+    '0xffff432b',
+    '0x0003213a',
+    '0x0006543b',
 ])
 
 result = assemble(`
@@ -197,9 +255,9 @@ done:
 mov r1, 1
 `)
 assert.deepStrictEqual(hex(result.machineCodes), [
-    '0x0008011b',
-    '0x0008021c',
-    '0x00010110',
+    '0x0008012a',
+    '0x0008022b',
+    '0x00010100',
 ])
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-pre-'))
@@ -212,14 +270,14 @@ assert.match(fs.readFileSync(serviceResult.outputFile, 'utf8'), /module demo_pro
 fs.writeFileSync(main, '.prog byte_addr_prog\n.entry main\ndead:\nmov r1, 9\nmain:\nmov r1, 4\n', 'utf8')
 const byteAddrResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'verilog', 'file')
 const byteAddrVerilog = fs.readFileSync(byteAddrResult.outputFile, 'utf8')
-assert.match(byteAddrVerilog, /0 : prog_data = 32'h0008001D;/)
-assert.match(byteAddrVerilog, /1 : prog_data = 32'h00090110;/)
-assert.match(byteAddrVerilog, /2 : prog_data = 32'h00040110;/)
-assert.doesNotMatch(byteAddrVerilog, /8 : prog_data = 32'h0008001D;/)
+assert.match(byteAddrVerilog, /0 : prog_data = 32'h0008002C;/)
+assert.match(byteAddrVerilog, /1 : prog_data = 32'h00090100;/)
+assert.match(byteAddrVerilog, /2 : prog_data = 32'h00040100;/)
+assert.doesNotMatch(byteAddrVerilog, /8 : prog_data = 32'h0008002C;/)
 
 const memResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'mem', 'file')
 assert.strictEqual(path.basename(memResult.outputFile), 'byte_addr_prog.mem')
-assert.strictEqual(fs.readFileSync(memResult.outputFile, 'utf8'), ['0008001D', '00090110', '00040110'].join('\n'))
+assert.strictEqual(fs.readFileSync(memResult.outputFile, 'utf8'), ['0008002C', '00090100', '00040100'].join('\n'))
 
 const inc1 = path.join(tmp, 'inc1.asm')
 const inc2 = path.join(tmp, 'inc2.asm')
@@ -244,7 +302,7 @@ fs.writeFileSync(
 )
 
 result = assemble(fs.readFileSync(main, 'utf8'), main)
-assert.deepStrictEqual(hex(result.machineCodes), ['0x00080110', '0x000c0410', '0x00020210', '0x00030310'])
+assert.deepStrictEqual(hex(result.machineCodes), ['0x00080100', '0x000c0400', '0x00020200', '0x00030300'])
 assert.ok(!result.debugSymbols.includes('inactive'))
 assert.ok(result.debugSymbols.indexOf('main') < result.debugSymbols.indexOf('inc1'))
 assert.ok(result.debugSymbols.indexOf('inc1') < result.debugSymbols.indexOf('inc2'))
@@ -265,6 +323,10 @@ mustThrow('cmp lhs must be a register', () => assemble('cmp r1, 2 == r3\n'), /cm
 mustThrow('cmp rhs must be a register or immediate', () => assemble('cmp r1, r2 == value\n'), /cmp|右|寄存器|立即数/i)
 mustThrow('cmp operator must be supported', () => assemble('cmp r1, r2 & r3\n'), /cmp|比较|运算符/i)
 mustThrow('cmp decimal immediate must fit signed 16 bits', () => assemble('cmp r1, r2 < 32768\n'), /cmp|立即数|越界/i)
+mustThrow('multiply destination must be a register', () => assemble('mul 1, r2, r3\n'), /mul|destination|寄存器/i)
+mustThrow('divide lhs must be a register', () => assemble('div r1, 2, r3\n'), /div|left|寄存器/i)
+mustThrow('load address must use brackets', () => assemble('lb r1, r2 + 1\n'), /lb|memory|内存|地址/i)
+mustThrow('store source must be a register', () => assemble('sb [r2], 1\n'), /sb|source|寄存器/i)
 mustThrow('branch destination must be a register', () => assemble('bz 1, r0 + 4\n'), /bz|判断|寄存器/i)
 mustThrow('branch base must be present', () => assemble('bz r1, done\ndone:\nmov r1, 1\n'), /bz|目标|格式/i)
 mustThrow('branch immediate cannot be negative', () => assemble('bz r1, r0 + -4\n'), /bz|立即数|0.*65535/i)

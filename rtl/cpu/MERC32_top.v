@@ -65,12 +65,14 @@ module MERC32_top #(
     output                              dlb_en,
     output                              dlb_we,
     output      [DLB_ADDR_WIDTH-1:0]    dlb_addr,
+    output      [3:0]                   dlb_strb,
     output      [31:0]                  dlb_wdata,
     input       [31:0]                  dlb_rdata,
 
     output                              ilb_en,
     output                              ilb_we,
     output      [ILB_ADDR_WIDTH-1:0]    ilb_addr,
+    output      [3:0]                   ilb_strb,
     output      [31:0]                  ilb_wdata,
     input       [31:0]                  ilb_rdata
 
@@ -99,6 +101,7 @@ module MERC32_top #(
     output                              m_apb_penable,
     output  [31:0]                      m_apb_paddr,
     output                              m_apb_pwrite,
+    output  [3:0]                       m_apb_pstrb,
     output  [31:0]                      m_apb_pwdata,
     input   [31:0]                      m_apb_prdata,
     input                               m_apb_pready
@@ -135,6 +138,7 @@ module MERC32_top #(
     output                              lb_rden,
     output                              lb_wren,
     output  [31:0]                      lb_addr,
+    output  [3:0]                       lb_strb,
     output  [31:0]                      lb_wdata,
     input   [31:0]                      lb_rdata,
     input                               lb_valid
@@ -158,6 +162,7 @@ module MERC32_top #(
     wire                                cpu_plb_rden;
     wire                                cpu_plb_wren;
     wire    [31:0]                      cpu_plb_addr;
+    wire    [3:0]                       cpu_plb_strb;
     wire    [31:0]                      cpu_plb_wdata;
     wire    [31:0]                      cpu_plb_rdata;
     wire                                cpu_plb_ack;
@@ -214,6 +219,7 @@ module MERC32_top #(
         .dbg_rden                       (dbg_rden               ),
         .dbg_wren                       (dbg_wren               ),
         .dbg_addr                       (dbg_addr               ),
+        .dbg_strb                       (4'b1111                ),
         .dbg_wdata                      (dbg_wdata              ),
         .dbg_rdata                      (dbg_rdata              ),
         .dbg_ack                        (dbg_ack                ),
@@ -221,6 +227,7 @@ module MERC32_top #(
         .plb_rden                       (cpu_plb_rden           ),
         .plb_wren                       (cpu_plb_wren           ),
         .plb_addr                       (cpu_plb_addr           ),
+        .plb_strb                       (cpu_plb_strb           ),
         .plb_wdata                      (cpu_plb_wdata          ),
         .plb_rdata                      (cpu_plb_rdata          ),
         .plb_ack                        (cpu_plb_ack            ),
@@ -228,12 +235,14 @@ module MERC32_top #(
         .dlb_en                         (dlb_en                 ),
         .dlb_we                         (dlb_we                 ),
         .dlb_addr                       (dlb_addr               ),
+        .dlb_strb                       (dlb_strb               ),
         .dlb_wdata                      (dlb_wdata              ),
         .dlb_rdata                      (dlb_rdata              ),
 
         .ilb_en                         (ilb_en                 ),
         .ilb_we                         (ilb_we                 ),
         .ilb_addr                       (ilb_addr               ),
+        .ilb_strb                       (ilb_strb               ),
         .ilb_wdata                      (ilb_wdata              ),
         .ilb_rdata                      (ilb_rdata              ));
 
@@ -242,9 +251,8 @@ module MERC32_top #(
     //----------------------------------------------------------------------------
 `ifdef IF_AXI_LITE
     lb2axi_lite #(
-        .LB_DATA_WIDTH                  (32                     ),
+        .DATA_WIDTH                     (32                     ),
         .LB_ADDR_WIDTH                  (32                     ),
-        .AXI_DATA_WIDTH                 (32                     ),
         .AXI_ADDR_WIDTH                 (32                     ))
     u_lb2axi_lite (
         .clk                            (clk                    ),
@@ -252,6 +260,7 @@ module MERC32_top #(
 
         .lb_rden                        (cpu_plb_rden           ),
         .lb_wren                        (cpu_plb_wren           ),
+        .lb_strb                        (cpu_plb_strb           ),
         .lb_wdata                       (cpu_plb_wdata          ),
         .lb_addr                        (cpu_plb_addr           ),
         .lb_rdata                       (cpu_plb_rdata          ),
@@ -276,9 +285,8 @@ module MERC32_top #(
         .m_axi_rresp                    (m_axi_rresp            ));
 `elsif IF_APB
     lb2apb #(
-        .LB_DATA_WIDTH                  (32                     ),
+        .DATA_WIDTH                     (32                     ),
         .LB_ADDR_WIDTH                  (32                     ),
-        .APB_DATA_WIDTH                 (32                     ),
         .APB_ADDR_WIDTH                 (32                     ))
     u_lb2apb (
         .clk                            (clk                    ),
@@ -286,6 +294,7 @@ module MERC32_top #(
 
         .lb_rden                        (cpu_plb_rden           ),
         .lb_wren                        (cpu_plb_wren           ),
+        .lb_strb                        (cpu_plb_strb           ),
         .lb_wdata                       (cpu_plb_wdata          ),
         .lb_addr                        (cpu_plb_addr           ),
         .lb_rdata                       (cpu_plb_rdata          ),
@@ -295,14 +304,14 @@ module MERC32_top #(
         .m_apb_penable                  (m_apb_penable          ),
         .m_apb_paddr                    (m_apb_paddr            ),
         .m_apb_pwrite                   (m_apb_pwrite           ),
+        .m_apb_pstrb                    (m_apb_pstrb            ),
         .m_apb_pwdata                   (m_apb_pwdata           ),
         .m_apb_prdata                   (m_apb_prdata           ),
         .m_apb_pready                   (m_apb_pready           ));
 `elsif IF_WBC
     lb2wbc #(
-        .LB_DATA_WIDTH                  (32                     ),
+        .DATA_WIDTH                     (32                     ),
         .LB_ADDR_WIDTH                  (32                     ),
-        .WB_DATA_WIDTH                  (32                     ),
         .WB_ADDR_WIDTH                  (32                     ))
     u_lb2wbc (
         .clk                            (clk                    ),
@@ -310,6 +319,7 @@ module MERC32_top #(
 
         .lb_rden                        (cpu_plb_rden           ),
         .lb_wren                        (cpu_plb_wren           ),
+        .lb_strb                        (cpu_plb_strb           ),
         .lb_wdata                       (cpu_plb_wdata          ),
         .lb_addr                        (cpu_plb_addr           ),
         .lb_rdata                       (cpu_plb_rdata          ),
@@ -325,9 +335,8 @@ module MERC32_top #(
         .m_wb_dat_i                     (m_wb_dat_i             ));
 `elsif IF_AVALON
     lb2avalon #(
-        .LB_DATA_WIDTH                  (32                     ),
+        .DATA_WIDTH                     (32                     ),
         .LB_ADDR_WIDTH                  (32                     ),
-        .AV_DATA_WIDTH                  (32                     ),
         .AV_ADDR_WIDTH                  (32                     ))
     u_lb2avalon (
         .clk                            (clk                    ),
@@ -335,6 +344,7 @@ module MERC32_top #(
 
         .lb_rden                        (cpu_plb_rden           ),
         .lb_wren                        (cpu_plb_wren           ),
+        .lb_strb                        (cpu_plb_strb           ),
         .lb_wdata                       (cpu_plb_wdata          ),
         .lb_addr                        (cpu_plb_addr           ),
         .lb_rdata                       (cpu_plb_rdata          ),
@@ -350,9 +360,8 @@ module MERC32_top #(
         .m_av_readdatavalid             (m_av_readdatavalid     ));
 `elsif IF_DRP
     lb2drp #(
-        .LB_DATA_WIDTH                  (32                     ),
+        .DATA_WIDTH                     (32                     ),
         .LB_ADDR_WIDTH                  (32                     ),
-        .DRP_DATA_WIDTH                 (32                     ),
         .DRP_ADDR_WIDTH                 (32                     ))
     u_lb2drp (
         .clk                            (clk                    ),
@@ -375,6 +384,7 @@ module MERC32_top #(
     assign lb_rden       = cpu_plb_rden;
     assign lb_wren       = cpu_plb_wren;
     assign lb_addr       = cpu_plb_addr;
+    assign lb_strb       = cpu_plb_strb;
     assign lb_wdata      = cpu_plb_wdata;
     assign cpu_plb_rdata = lb_rdata;
     assign cpu_plb_ack   = lb_valid;
