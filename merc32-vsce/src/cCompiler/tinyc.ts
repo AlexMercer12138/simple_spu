@@ -1359,7 +1359,7 @@ class CodeGenerator {
                 this.emitGlobalArrayInitializer(slot, global.type, global.init);
                 continue;
             }
-            const value = global.init ? this.evalConstant(this.exprInitializer(global.init)) : 0;
+            const value = global.init ? this.evalGlobalConstant(this.exprInitializer(global.init)) : 0;
             this.loadImm('r7', value);
             this.loadImm('r8', slot.globalAddress);
             this.emitStoreToAddress('r8', 'r7', global.type);
@@ -1423,7 +1423,7 @@ class CodeGenerator {
 
         if (normalized.kind === 'expr-elements') {
             for (const expr of normalized.values) {
-                this.loadImm('r7', convertConstant(this.evalConstant(expr), elementType));
+                this.loadImm('r7', convertConstant(this.evalGlobalConstant(expr), elementType));
                 this.loadImm('r8', slot.globalAddress + index * elementSize);
                 this.emitStoreToAddress('r8', 'r7', elementType);
                 index++;
@@ -1480,6 +1480,85 @@ class CodeGenerator {
                 );
             }
         }
+    }
+
+    private evalGlobalConstant(expr: Expr): number {
+        this.validateConstantExpression(expr);
+        return this.evalConstant(expr);
+    }
+
+    private validateConstantExpression(expr: Expr): void {
+        switch (expr.kind) {
+            case 'number':
+            case 'string':
+                return;
+            case 'cast':
+                this.validateConstantExpression(expr.expr);
+                return;
+            case 'unary': {
+                if (!['-', '~', '!'].includes(expr.op)) {
+                    throw new CompilerError('global initializer must be a constant expression');
+                }
+                const operandType = this.exprType(expr.expr);
+                if (!isIntegerType(operandType)) {
+                    throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+                }
+                this.validateConstantExpression(expr.expr);
+                return;
+            }
+            case 'binary':
+                this.validateConstantBinaryOperator(expr);
+                this.validateConstantExpression(expr.left);
+                this.validateConstantExpression(expr.right);
+                return;
+            case 'conditional':
+                this.validateConstantExpression(expr.test);
+                this.validateConstantExpression(expr.consequent);
+                this.validateConstantExpression(expr.alternate);
+                this.conditionalResultType(expr);
+                return;
+            case 'varref':
+            case 'assign':
+            case 'compound-assign':
+            case 'update':
+            case 'call':
+            case 'index':
+                throw new CompilerError('global initializer must be a constant expression');
+        }
+    }
+
+    private validateConstantBinaryOperator(expr: BinaryExpr): void {
+        const leftType = this.exprType(expr.left);
+        const rightType = this.exprType(expr.right);
+        const leftIsPointer = leftType.pointerDepth > 0;
+        const rightIsPointer = rightType.pointerDepth > 0;
+        if (!leftIsPointer && !rightIsPointer) {
+            return;
+        }
+
+        if (expr.op === '+') {
+            if (leftIsPointer !== rightIsPointer
+                && isIntegerType(leftIsPointer ? rightType : leftType)) {
+                return;
+            }
+            throw new CompilerError("operator '+' cannot add two pointers");
+        }
+        if (expr.op === '-') {
+            if (leftIsPointer && (rightIsPointer || isIntegerType(rightType))) {
+                return;
+            }
+            throw new CompilerError("operator '-' requires a pointer left operand and pointer or integer right operand");
+        }
+        if (isComparison(expr.op)) {
+            if (leftIsPointer && rightIsPointer) {
+                return;
+            }
+            const integerExpr = leftIsPointer ? expr.right : expr.left;
+            if (this.isIntegerConstantExpression(integerExpr)) {
+                return;
+            }
+        }
+        throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
     }
 
     private evalConstant(expr: Expr): number {
@@ -1846,7 +1925,7 @@ class CodeGenerator {
                 }
                 return;
             case 'expr':
-                this.emitExpr(stmt.expr, 'r7');
+                this.emitExpr(stmt.expr, 'r7', false);
                 return;
             case 'return':
                 if (stmt.expr) {
@@ -1984,7 +2063,7 @@ class CodeGenerator {
         this.emit(`bnz r7, r0 + ${loopLabel}`);
     }
 
-    private emitExpr(expr: Expr, target: string): CType {
+    private emitExpr(expr: Expr, target: string, valueRequired = true): CType {
         switch (expr.kind) {
             case 'number':
                 this.loadImm(target, expr.value);
@@ -2011,13 +2090,13 @@ class CodeGenerator {
             case 'update':
                 return this.emitUpdate(expr, target);
             case 'conditional':
-                return this.emitConditional(expr, target);
+                return this.emitConditional(expr, target, valueRequired);
             case 'unary':
                 return this.emitUnary(expr, target);
             case 'binary':
                 return this.emitBinary(expr, target);
             case 'call':
-                return this.emitCall(expr, target);
+                return this.emitCall(expr, target, valueRequired);
             case 'cast':
                 this.emitExpr(expr.expr, target);
                 this.convertValue(target, expr.type);
@@ -2031,20 +2110,32 @@ class CodeGenerator {
         }
     }
 
-    private emitConditional(expr: ConditionalExpr, target: string): CType {
+    private emitConditional(expr: ConditionalExpr, target: string, valueRequired: boolean): CType {
         const resultType = this.conditionalResultType(expr);
+        const resultIsVoid = isVoidType(resultType);
+        if (resultIsVoid && valueRequired) {
+            throw new CompilerError(
+                'void conditional expression cannot be used where a value is required',
+                expr.line,
+                expr.column,
+            );
+        }
         const falseLabel = this.newLabel('conditional_false');
         const trueLabel = this.newLabel('conditional_true');
         const endLabel = this.newLabel('conditional_end');
 
         this.emitBranchIfFalse(expr.test, falseLabel);
         this.emit(`${trueLabel}:`);
-        this.emitExpr(expr.consequent, target);
-        this.convertValue(target, resultType);
+        this.emitExpr(expr.consequent, target, !resultIsVoid);
+        if (!resultIsVoid) {
+            this.convertValue(target, resultType);
+        }
         this.emit(`jmp ${endLabel}`);
         this.emit(`${falseLabel}:`);
-        this.emitExpr(expr.alternate, target);
-        this.convertValue(target, resultType);
+        this.emitExpr(expr.alternate, target, !resultIsVoid);
+        if (!resultIsVoid) {
+            this.convertValue(target, resultType);
+        }
         this.emit(`${endLabel}:`);
         return resultType;
     }
@@ -2283,7 +2374,7 @@ class CodeGenerator {
         return intType();
     }
 
-    private emitCall(expr: CallExpr, target: string): CType {
+    private emitCall(expr: CallExpr, target: string, valueRequired: boolean): CType {
         if (expr.name === '__irq_enable' || expr.name === '__irq_disable') {
             if (expr.args.length !== 0) {
                 throw new CompilerError(`${expr.name} expects 0 arguments`);
@@ -2309,7 +2400,7 @@ class CodeGenerator {
             this.loadTemp(temp, 'r7');
             this.freeTemp();
             this.emit('mov [r7], r8');
-            if (target !== 'r8') {
+            if (valueRequired && target !== 'r8') {
                 this.emit(`mov ${target}, r8`);
             }
             return uintType();
@@ -2352,7 +2443,7 @@ class CodeGenerator {
         if (extraBytes > 0) {
             this.adjustSp(extraBytes);
         }
-        if (target !== ABI_RETURN_REG) {
+        if (valueRequired && target !== ABI_RETURN_REG) {
             this.emit(`mov ${target}, ${ABI_RETURN_REG}`);
         }
         for (let i = 0; i < argTemps.length; i++) {
@@ -2621,17 +2712,120 @@ class CodeGenerator {
     }
 
     private isIntegerConstantZero(expr: Expr): boolean {
-        if (!isIntegerType(this.exprType(expr))) {
+        if (!this.isIntegerConstantExpression(expr)) {
             return false;
         }
-        try {
-            return this.evalConstant(expr) === 0;
-        } catch (error) {
-            if (error instanceof CompilerError) {
+        return this.evalIntegerConstantExpression(expr) === 0;
+    }
+
+    private isIntegerConstantExpression(expr: Expr): boolean {
+        switch (expr.kind) {
+            case 'number':
+                return true;
+            case 'cast':
+                return isIntegerType(expr.type) && this.isIntegerConstantExpression(expr.expr);
+            case 'unary':
+                return ['-', '~', '!'].includes(expr.op)
+                    && this.isIntegerConstantExpression(expr.expr)
+                    && isIntegerType(this.exprType(expr.expr));
+            case 'binary':
+                return [
+                    '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>',
+                    '==', '!=', '<', '<=', '>', '>=', '&&', '||',
+                ].includes(expr.op)
+                    && this.isIntegerConstantExpression(expr.left)
+                    && this.isIntegerConstantExpression(expr.right)
+                    && isIntegerType(this.exprType(expr.left))
+                    && isIntegerType(this.exprType(expr.right));
+            case 'conditional':
+                return this.isIntegerConstantExpression(expr.test)
+                    && this.isIntegerConstantExpression(expr.consequent)
+                    && this.isIntegerConstantExpression(expr.alternate)
+                    && isIntegerType(this.conditionalResultType(expr));
+            case 'string':
+            case 'varref':
+            case 'assign':
+            case 'compound-assign':
+            case 'update':
+            case 'call':
+            case 'index':
                 return false;
-            }
-            throw error;
         }
+    }
+
+    private evalIntegerConstantExpression(expr: Expr): number {
+        switch (expr.kind) {
+            case 'number':
+                return convertConstant(expr.value, intType());
+            case 'cast':
+                return convertConstant(this.evalIntegerConstantExpression(expr.expr), expr.type);
+            case 'unary': {
+                const value = this.evalIntegerConstantExpression(expr.expr);
+                if (expr.op === '-') return convertConstant(-value, this.exprType(expr));
+                if (expr.op === '~') return convertConstant(~value, this.exprType(expr));
+                if (expr.op === '!') return value ? 0 : 1;
+                break;
+            }
+            case 'conditional': {
+                const selected = this.evalIntegerConstantExpression(expr.test)
+                    ? expr.consequent
+                    : expr.alternate;
+                return convertConstant(
+                    this.evalIntegerConstantExpression(selected),
+                    this.conditionalResultType(expr),
+                );
+            }
+            case 'binary': {
+                const left = this.evalIntegerConstantExpression(expr.left);
+                if (expr.op === '&&') {
+                    return left && this.evalIntegerConstantExpression(expr.right) ? 1 : 0;
+                }
+                if (expr.op === '||') {
+                    return left || this.evalIntegerConstantExpression(expr.right) ? 1 : 0;
+                }
+
+                const right = this.evalIntegerConstantExpression(expr.right);
+                let value: number;
+                switch (expr.op) {
+                    case '+': value = left + right; break;
+                    case '-': value = left - right; break;
+                    case '*': value = Math.imul(left, right); break;
+                    case '/':
+                        if (right === 0) {
+                            throw new CompilerError('division by zero in integer constant expression');
+                        }
+                        value = Math.trunc(left / right);
+                        break;
+                    case '%':
+                        if (right === 0) {
+                            throw new CompilerError('division by zero in integer constant expression');
+                        }
+                        value = left % right;
+                        break;
+                    case '&': value = left & right; break;
+                    case '|': value = left | right; break;
+                    case '^': value = left ^ right; break;
+                    case '<<': value = left << right; break;
+                    case '>>':
+                        value = isUnsignedType(promoteIntegerType(this.exprType(expr.left)))
+                            ? left >>> right
+                            : left >> right;
+                        break;
+                    case '==': return left === right ? 1 : 0;
+                    case '!=': return left !== right ? 1 : 0;
+                    case '<': return left < right ? 1 : 0;
+                    case '<=': return left <= right ? 1 : 0;
+                    case '>': return left > right ? 1 : 0;
+                    case '>=': return left >= right ? 1 : 0;
+                    default:
+                        throw new CompilerError('internal error: invalid integer constant expression');
+                }
+                return convertConstant(value, this.exprType(expr));
+            }
+            default:
+                break;
+        }
+        throw new CompilerError('internal error: invalid integer constant expression');
     }
 
     private binaryResultType(op: string, leftType: CType, rightType: CType): CType {
