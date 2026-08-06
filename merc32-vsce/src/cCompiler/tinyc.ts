@@ -981,7 +981,7 @@ class CodeGenerator {
         }
 
         const dataLimit = dataBase + 2 ** (dlbAddrWidth + 2);
-        if (!Number.isSafeInteger(dataLimit) || dataLimit > 0xffff_ffff) {
+        if (!Number.isSafeInteger(dataLimit) || dataLimit > 0x1_0000_0000) {
             throw new CompilerError('DLB address range exceeds 32-bit address space');
         }
 
@@ -1003,7 +1003,7 @@ class CodeGenerator {
             this.emit('');
         }
         this.emit('__start:');
-        this.loadImm('r13', this.dataLimit);
+        this.loadImm('r13', this.dataLimit === 0x1_0000_0000 ? 0 : this.dataLimit);
         this.emitGlobalInitializers();
         if (this.interruptHandler) {
             this.loadImm('r2', IRQ_VECTOR_ADDRESS);
@@ -1127,6 +1127,10 @@ class CodeGenerator {
                 const right = this.evalConstant(expr.right);
                 const leftType = this.exprType(expr.left);
                 const rightType = this.exprType(expr.right);
+                if (['*', '/', '%'].includes(expr.op) &&
+                    (leftType.pointerDepth > 0 || rightType.pointerDepth > 0)) {
+                    throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+                }
                 switch (expr.op) {
                     case '+': return this.evalConstantAddition(left, right, leftType, rightType);
                     case '-': return this.evalConstantSubtraction(left, right, leftType, rightType);

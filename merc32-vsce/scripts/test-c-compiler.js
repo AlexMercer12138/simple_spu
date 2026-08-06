@@ -426,6 +426,16 @@ expectCompilerError(
     'int bad = (int *)"same" - (short *)"same"; int main(void) { return 0; }',
     /cannot subtract pointers to differently sized types/,
 );
+for (const [expression, pattern] of [
+    ['"value" * 2', /operator '\*' does not accept pointer operands/],
+    ['2 / "value"', /operator '\/' does not accept pointer operands/],
+    ['"value" % 2', /operator '%' does not accept pointer operands/],
+]) {
+    expectCompilerError(
+        `int bad = ${expression}; int main(void) { return 0; }`,
+        pattern,
+    );
+}
 
 expectCompilerError(
     'int main(void) { return "unterminated; }',
@@ -459,10 +469,6 @@ const compilerOptionErrorCases = [
     [{ dlbAddrWidth: -1 }, /dlbAddrWidth must be a non-negative safe integer/],
     [{ dlbAddrWidth: Number.NaN }, /dlbAddrWidth must be a non-negative safe integer/],
     [{ dlbAddrWidth: 1.5 }, /dlbAddrWidth must be a non-negative safe integer/],
-    [
-        { dataBase: 0xffff_fffc, dlbAddrWidth: 0 },
-        /DLB address range exceeds 32-bit address space/,
-    ],
 ];
 for (const [options, pattern] of compilerOptionErrorCases) {
     assert.throws(
@@ -475,11 +481,48 @@ for (const [options, pattern] of compilerOptionErrorCases) {
     );
 }
 
-compileC('int main(void) { return 0; }', {
-    moduleName: 'maximum_dlb_limit_test',
-    dataBase: 0xffff_fffb,
-    dlbAddrWidth: 0,
+const { assembly: finalAddressAssembly } = compileC(
+    'int main(void) { return "ABC"[0]; }',
+    {
+        moduleName: 'final_dlb_addresses_test',
+        dataBase: 0xffff_fffc,
+        dlbAddrWidth: 0,
+    },
+);
+assert.match(finalAddressAssembly, /^__start:\r?\nmov r13, 0\r?\nmov r7, 0x41$/m);
+const finalAddressBytes = new Map();
+for (const match of finalAddressAssembly.matchAll(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nmov r8, r8 << 16\r?\nmov r8, r8 \+ (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
+)) {
+    const address = parseImmediate(match[2]) * 0x1_0000 + parseImmediate(match[3]);
+    finalAddressBytes.set(address, parseImmediate(match[1]));
+}
+assert.strictEqual(finalAddressBytes.size, 4);
+assert.deepStrictEqual(
+    [0xffff_fffc, 0xffff_fffd, 0xffff_fffe, 0xffff_ffff]
+        .map((address) => finalAddressBytes.get(address)),
+    [0x41, 0x42, 0x43, 0x00],
+);
+
+assert.throws(
+    () => compileC('int main(void) { return "ABCD"[0]; }', {
+        moduleName: 'past_final_dlb_address_test',
+        dataBase: 0xffff_fffc,
+        dlbAddrWidth: 0,
+    }),
+    (error) => {
+        assert.ok(error instanceof CompilerError);
+        assert.match(error.message, /static data exceeds DLB address space/);
+        return true;
+    },
+);
+
+const { assembly: fullAddressSpaceAssembly } = compileC('int main(void) { return 0; }', {
+    moduleName: 'full_address_space_test',
+    dataBase: 0,
+    dlbAddrWidth: 30,
 });
+assert.match(fullAddressSpaceAssembly, /^__start:\r?\nmov r13, 0\r?\njmp main, r14$/m);
 
 const irqSource = `
 volatile unsigned int irq_count = 0;
