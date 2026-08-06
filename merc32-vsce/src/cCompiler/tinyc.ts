@@ -158,6 +158,8 @@ type Expr =
     | StringExpr
     | VarExpr
     | AssignExpr
+    | CompoundAssignExpr
+    | UpdateExpr
     | BinaryExpr
     | UnaryExpr
     | CallExpr
@@ -185,6 +187,24 @@ interface AssignExpr {
     kind: 'assign';
     target: Expr;
     value: Expr;
+}
+
+interface CompoundAssignExpr {
+    kind: 'compound-assign';
+    target: Expr;
+    op: string;
+    value: Expr;
+    line: number;
+    column: number;
+}
+
+interface UpdateExpr {
+    kind: 'update';
+    target: Expr;
+    delta: 1 | -1;
+    prefix: boolean;
+    line: number;
+    column: number;
 }
 
 interface BinaryExpr {
@@ -235,8 +255,24 @@ const KEYWORDS = new Set([
     'goto',
 ]);
 
-const TWO_CHAR_SYMBOLS = new Set(['==', '!=', '<=', '>=', '&&', '||', '<<', '>>']);
+const THREE_CHAR_SYMBOLS = new Set(['<<=', '>>=']);
+const TWO_CHAR_SYMBOLS = new Set([
+    '==', '!=', '<=', '>=', '&&', '||', '<<', '>>',
+    '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+]);
 const ONE_CHAR_SYMBOLS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '=', '<', '>', ';', ',', '(', ')', '{', '}', '[', ']', ':']);
+const COMPOUND_ASSIGNMENT_OPERATORS = new Map([
+    ['+=', '+'],
+    ['-=', '-'],
+    ['*=', '*'],
+    ['/=', '/'],
+    ['%=', '%'],
+    ['&=', '&'],
+    ['|=', '|'],
+    ['^=', '^'],
+    ['<<=', '<<'],
+    ['>>=', '>>'],
+]);
 
 class Lexer {
     private index = 0;
@@ -281,6 +317,14 @@ class Lexer {
 
         if (c === '"') {
             return this.readStringLiteral(line, column);
+        }
+
+        const three = c + this.peek(1) + this.peek(2);
+        if (THREE_CHAR_SYMBOLS.has(three)) {
+            this.advance();
+            this.advance();
+            this.advance();
+            return { kind: 'symbol', text: three, line, column };
         }
 
         const two = c + this.peek(1);
@@ -805,6 +849,25 @@ class Parser {
             }
             return { kind: 'assign', target: left, value: this.parseAssignment() };
         }
+        const operator = COMPOUND_ASSIGNMENT_OPERATORS.get(this.current().text);
+        if (operator) {
+            const token = this.advance();
+            if (!this.isAssignable(left)) {
+                throw new CompilerError(
+                    'left side of compound assignment must be a modifiable lvalue',
+                    token.line,
+                    token.column,
+                );
+            }
+            return {
+                kind: 'compound-assign',
+                target: left,
+                op: operator,
+                value: this.parseAssignment(),
+                line: token.line,
+                column: token.column,
+            };
+        }
         return left;
     }
 
@@ -862,6 +925,25 @@ class Parser {
     }
 
     private parseUnary(): Expr {
+        if (this.current().text === '++' || this.current().text === '--') {
+            const token = this.advance();
+            const target = this.parseUnary();
+            if (!this.isAssignable(target)) {
+                throw new CompilerError(
+                    `operand of '${token.text}' must be a modifiable lvalue`,
+                    token.line,
+                    token.column,
+                );
+            }
+            return {
+                kind: 'update',
+                target,
+                delta: token.text === '++' ? 1 : -1,
+                prefix: true,
+                line: token.line,
+                column: token.column,
+            };
+        }
         if (['+', '-', '!', '~', '*', '&'].includes(this.current().text)) {
             const op = this.advance().text;
             const expr = this.parseUnary();
@@ -876,6 +958,24 @@ class Parser {
             const index = this.parseExpression();
             this.expect(']');
             expr = { kind: 'index', target: expr, index };
+        }
+        if (this.current().text === '++' || this.current().text === '--') {
+            const token = this.advance();
+            if (!this.isAssignable(expr)) {
+                throw new CompilerError(
+                    `operand of '${token.text}' must be a modifiable lvalue`,
+                    token.line,
+                    token.column,
+                );
+            }
+            expr = {
+                kind: 'update',
+                target: expr,
+                delta: token.text === '++' ? 1 : -1,
+                prefix: false,
+                line: token.line,
+                column: token.column,
+            };
         }
         return expr;
     }
@@ -1402,6 +1502,9 @@ class CodeGenerator {
                 }
                 break;
             }
+            case 'compound-assign':
+            case 'update':
+                break;
         }
         throw new CompilerError('global initializer must be a constant expression');
     }
@@ -1529,6 +1632,13 @@ class CodeGenerator {
             case 'assign':
                 this.collectStaticStringsInExpr(expr.target);
                 this.collectStaticStringsInExpr(expr.value);
+                return;
+            case 'compound-assign':
+                this.collectStaticStringsInExpr(expr.target);
+                this.collectStaticStringsInExpr(expr.value);
+                return;
+            case 'update':
+                this.collectStaticStringsInExpr(expr.target);
                 return;
             case 'binary':
                 this.collectStaticStringsInExpr(expr.left);
@@ -1845,7 +1955,7 @@ class CodeGenerator {
                 return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
                 if (isArrayType(this.lookupVar(expr.name).type)) {
-                    this.emitAddress(expr, target);
+                    this.emitLValueAddress(expr, target);
                     return arrayDecayType(this.lookupVar(expr.name).type);
                 }
                 this.loadVar(expr.name, target);
@@ -1857,6 +1967,10 @@ class CodeGenerator {
                 this.storeLValue(expr.target, target);
                 return type;
             }
+            case 'compound-assign':
+                return this.emitCompoundAssignment(expr, target);
+            case 'update':
+                return this.emitUpdate(expr, target);
             case 'unary':
                 return this.emitUnary(expr, target);
             case 'binary':
@@ -1876,10 +1990,107 @@ class CodeGenerator {
         }
     }
 
+    private emitCompoundAssignment(expr: CompoundAssignExpr, target: string): CType {
+        const addressTemp = this.allocTemp();
+        const valueType = this.emitLValueAddress(expr.target, 'r8');
+        this.validateCompoundTarget(expr, valueType);
+        this.storeTemp(addressTemp, 'r8');
+
+        const oldValueTemp = this.allocTemp();
+        this.emitLoadFromAddress('r7', 'r8', valueType);
+        this.storeTemp(oldValueTemp, 'r7');
+        const rightType = this.emitExpr(expr.value, 'r8');
+        this.loadTemp(oldValueTemp, 'r7');
+        this.freeTemp();
+
+        this.validateCompoundOperands(expr, valueType, rightType);
+        this.emitBinaryOperation(expr.op, valueType, rightType, 'r7');
+        this.convertValue('r7', valueType);
+        this.loadTemp(addressTemp, 'r8');
+        this.freeTemp();
+        this.emitStoreToAddress('r8', 'r7', valueType);
+        if (target !== 'r7') {
+            this.emit(`mov ${target}, r7`);
+        }
+        return valueType;
+    }
+
+    private emitUpdate(expr: UpdateExpr, target: string): CType {
+        const addressTemp = this.allocTemp();
+        const valueType = this.emitLValueAddress(expr.target, 'r8');
+        this.validateUpdateTarget(expr, valueType);
+        this.storeTemp(addressTemp, 'r8');
+        this.emitLoadFromAddress('r7', 'r8', valueType);
+
+        let oldValueTemp: number | undefined;
+        if (!expr.prefix) {
+            oldValueTemp = this.allocTemp();
+            this.storeTemp(oldValueTemp, 'r7');
+        }
+
+        this.loadImm('r8', 1);
+        this.emitBinaryOperation(expr.delta === 1 ? '+' : '-', valueType, intType(), 'r7');
+        this.convertValue('r7', valueType);
+        this.loadTemp(addressTemp, 'r8');
+        this.emitStoreToAddress('r8', 'r7', valueType);
+
+        if (oldValueTemp !== undefined) {
+            this.loadTemp(oldValueTemp, target);
+            this.freeTemp();
+        } else if (target !== 'r7') {
+            this.emit(`mov ${target}, r7`);
+        }
+        this.freeTemp();
+        return valueType;
+    }
+
+    private validateCompoundTarget(expr: CompoundAssignExpr, type: CType): void {
+        this.validateModifiableUpdateType(type, expr.line, expr.column);
+        if (type.pointerDepth > 0 && expr.op !== '+' && expr.op !== '-') {
+            throw new CompilerError(
+                `operator '${expr.op}=' is not valid for a pointer target`,
+                expr.line,
+                expr.column,
+            );
+        }
+    }
+
+    private validateCompoundOperands(expr: CompoundAssignExpr, targetType: CType, rightType: CType): void {
+        if (targetType.pointerDepth > 0) {
+            if (!isIntegerType(rightType)) {
+                throw new CompilerError(
+                    'pointer compound assignment requires an integer right operand',
+                    expr.line,
+                    expr.column,
+                );
+            }
+            return;
+        }
+        if (!isIntegerType(rightType)) {
+            throw new CompilerError(
+                `operator '${expr.op}=' requires integer operands`,
+                expr.line,
+                expr.column,
+            );
+        }
+    }
+
+    private validateUpdateTarget(expr: UpdateExpr, type: CType): void {
+        this.validateModifiableUpdateType(type, expr.line, expr.column);
+    }
+
+    private validateModifiableUpdateType(type: CType, line: number, column: number): void {
+        if (isArrayType(type)) {
+            throw new CompilerError('array object cannot be updated', line, column);
+        }
+        if (type.pointerDepth === 0 && !isIntegerType(type)) {
+            throw new CompilerError('update target must have integer or pointer type', line, column);
+        }
+    }
+
     private emitUnary(expr: UnaryExpr, target: string): CType {
         if (expr.op === '&') {
-            this.emitAddress(expr.expr, target);
-            return pointerTo(this.lvalueType(expr.expr));
+            return pointerTo(this.emitLValueAddress(expr.expr, target));
         }
         if (expr.op === '*') {
             const pointerType = this.emitExpr(expr.expr, 'r8');
@@ -1923,16 +2134,20 @@ class CodeGenerator {
         const rightType = this.emitExpr(expr.right, 'r8');
         this.loadTemp(temp, 'r7');
         this.freeTemp();
-        const resultType = this.binaryResultType(expr.op, leftType, rightType);
-        if (['*', '/', '%'].includes(expr.op) && (leftType.pointerDepth > 0 || rightType.pointerDepth > 0)) {
-            throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+        return this.emitBinaryOperation(expr.op, leftType, rightType, target);
+    }
+
+    private emitBinaryOperation(op: string, leftType: CType, rightType: CType, target: string): CType {
+        const resultType = this.binaryResultType(op, leftType, rightType);
+        if (['*', '/', '%'].includes(op) && (leftType.pointerDepth > 0 || rightType.pointerDepth > 0)) {
+            throw new CompilerError(`operator '${op}' does not accept pointer operands`);
         }
-        if (expr.op === '+' && leftType.pointerDepth > 0 && rightType.pointerDepth > 0) {
+        if (op === '+' && leftType.pointerDepth > 0 && rightType.pointerDepth > 0) {
             throw new CompilerError("operator '+' cannot add two pointers");
         }
-        this.scalePointerOperand(expr.op, leftType, rightType);
+        this.scalePointerOperand(op, leftType, rightType);
 
-        switch (expr.op) {
+        switch (op) {
             case '+':
                 this.emit(`mov ${target}, r7 + r8`);
                 break;
@@ -1967,7 +2182,7 @@ class CodeGenerator {
                 this.emit(`mov ${target}, r7 ${isUnsignedType(promoteIntegerType(leftType)) ? '>>' : '>>>'} r8`);
                 break;
             default:
-                throw new CompilerError(`unsupported binary operator '${expr.op}'`);
+                throw new CompilerError(`unsupported binary operator '${op}'`);
         }
 
         return resultType;
@@ -2185,26 +2400,30 @@ class CodeGenerator {
         }
     }
 
-    private emitAddress(expr: Expr, target: string): void {
+    private emitLValueAddress(expr: Expr, target: string): CType {
         if (expr.kind === 'varref') {
             const slot = this.lookupVar(expr.name);
             if (slot.globalAddress !== undefined) {
                 this.loadImm(target, slot.globalAddress);
-                return;
+                return slot.type;
             }
             if (slot.offset === undefined) {
                 throw new CompilerError(`internal error: missing offset for '${expr.name}'`);
             }
             this.emit(`mov ${target}, r12 + ${slot.offset}`);
-            return;
+            return slot.type;
         }
         if (expr.kind === 'index') {
+            const elementType = this.indexElementType(expr);
             this.emitIndexAddress(expr, target);
-            return;
+            return elementType;
         }
         if (expr.kind === 'unary' && expr.op === '*') {
-            this.emitExpr(expr.expr, target);
-            return;
+            const pointerType = this.emitExpr(expr.expr, target);
+            if (pointerType.pointerDepth < 1) {
+                throw new CompilerError('cannot assign through a non-pointer expression');
+            }
+            return derefType(pointerType);
         }
         throw new CompilerError('address-of requires a variable or dereference');
     }
@@ -2243,6 +2462,9 @@ class CodeGenerator {
             case 'varref':
                 return arrayDecayType(this.lookupVar(expr.name).type);
             case 'assign':
+                return this.lvalueType(expr.target);
+            case 'compound-assign':
+            case 'update':
                 return this.lvalueType(expr.target);
             case 'index':
                 return this.indexElementType(expr);
@@ -2514,6 +2736,13 @@ class FunctionCollector {
             case 'assign':
                 this.collectExpr(expr.target);
                 this.collectExpr(expr.value);
+                return;
+            case 'compound-assign':
+                this.collectExpr(expr.target);
+                this.collectExpr(expr.value);
+                return;
+            case 'update':
+                this.collectExpr(expr.target);
                 return;
             case 'binary':
                 this.collectExpr(expr.left);

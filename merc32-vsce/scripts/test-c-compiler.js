@@ -679,6 +679,193 @@ for (const [expression, pattern] of [
     );
 }
 
+const updateOperatorSource = `
+int *identity(int *pointer) {
+    return pointer;
+}
+
+int single_index_update(int *data) {
+    int i = 0;
+    int old = data[i++]++;
+    return old + i + data[0];
+}
+
+int called_address_postfix(int *data) {
+    return (*identity(data))++;
+}
+
+int called_address_prefix(int *data) {
+    return ++*identity(data);
+}
+
+int postfix_value(int value) {
+    return value++;
+}
+
+int prefix_value(int value) {
+    return ++value;
+}
+
+int update_values(int value) {
+    int post_increment = value++;
+    int pre_increment = ++value;
+    int post_decrement = value--;
+    int pre_decrement = --value;
+    return post_increment + pre_increment + post_decrement + pre_decrement;
+}
+
+int pointer_updates(char *bytes, short *halves, int *words) {
+    bytes++;
+    bytes -= 1;
+    halves += 2;
+    --halves;
+    words++;
+    words -= 1;
+    return *bytes + *halves + *words;
+}
+
+int main(void) {
+    int data[4] = {1, 2, 3, 4};
+    int i = 0;
+    int old = data[i++]++;
+    int now = ++data[i];
+    int *pointer = data;
+    int dereference_old = (*pointer)++;
+    int dereference_new = ++*pointer;
+    pointer += 2;
+    pointer -= 1;
+    pointer++;
+    --pointer;
+
+    data[0] += 2;
+    data[0] -= 1;
+    data[0] *= 3;
+    data[0] /= 2;
+    data[0] %= 5;
+    data[0] &= 7;
+    data[0] |= 8;
+    data[0] ^= 3;
+    data[0] <<= 1;
+    data[0] >>= 1;
+
+    char narrow_char = 127;
+    unsigned char narrow_uchar = 255;
+    short narrow_short = 32767;
+    unsigned short narrow_ushort = 65535;
+    unsigned int unsigned_value = 0xFFFFFFFF;
+    narrow_char += 2;
+    narrow_char--;
+    ++narrow_uchar;
+    narrow_uchar /= 3;
+    narrow_short *= 3;
+    --narrow_short;
+    narrow_ushort <<= 1;
+    narrow_ushort |= 1;
+    unsigned_value /= 3;
+    unsigned_value %= 17;
+    unsigned_value >>= 1;
+
+    return old + now + i + dereference_old + dereference_new + *pointer
+        + narrow_char + narrow_uchar + narrow_short + narrow_ushort + unsigned_value
+        + (data[0] <= data[1] && data[1] >= 0)
+        + (data[0] == data[0] || data[0] != 0)
+        + ((data[0] << 1) >> 1);
+}
+`;
+
+const { assembly: updateOperatorAssembly } = compileC(updateOperatorSource, {
+    moduleName: 'update_operator_test',
+});
+for (const instruction of [
+    /\bmul r\d+, r7, r8/,
+    /\bdiv r\d+, r7, r8/,
+    /\bdivu r\d+, r7, r8/,
+    /\brem r\d+, r7, r8/,
+    /\bremu r\d+, r7, r8/,
+    /mov r\d+, r7 & r8/,
+    /mov r\d+, r7 \| r8/,
+    /mov r\d+, r7 \^ r8/,
+    /mov r\d+, r7 << r8/,
+    /mov r\d+, r7 >>> r8/,
+    /mov r\d+, r7 >> r8/,
+]) {
+    assert.match(updateOperatorAssembly, instruction);
+}
+
+const pointerUpdateBody = updateOperatorAssembly.match(
+    /^pointer_updates:\r?\n([\s\S]*?)^__pointer_updates_return:/m,
+)?.[1];
+assert.ok(pointerUpdateBody, 'missing pointer_updates assembly body');
+assert.match(pointerUpdateBody, /mov r8, r8 << 1/);
+assert.match(pointerUpdateBody, /mov r8, r8 << 2/);
+
+const updateMainBody = updateOperatorAssembly.match(
+    /^main:\r?\n([\s\S]*?)^__main_return:/m,
+)?.[1];
+assert.ok(updateMainBody, 'missing update-operator main assembly body');
+assert.match(updateMainBody, /mov r7, r7 << 24\r?\nmov r7, r7 >>> 24/);
+assert.match(updateMainBody, /mov r7, r7 & 0xFF/);
+assert.match(updateMainBody, /mov r7, r7 << 16\r?\nmov r7, r7 >>> 16/);
+assert.match(updateMainBody, /mov r7, r7 & 0xFFFF/);
+
+const singleIndexBody = updateOperatorAssembly.match(
+    /^single_index_update:\r?\n([\s\S]*?)^__single_index_update_return:/m,
+)?.[1];
+assert.ok(singleIndexBody, 'missing single_index_update assembly body');
+assert.strictEqual(
+    (singleIndexBody.match(/^sw \[r12 \+ 12\], r\d+$/gm) || []).length,
+    1,
+    'index variable must be initialized once',
+);
+assert.strictEqual(
+    (singleIndexBody.match(/^mov r8, r12 \+ 12$/gm) || []).length,
+    1,
+    'index update lvalue address must be evaluated once',
+);
+
+for (const functionName of ['called_address_postfix', 'called_address_prefix']) {
+    const functionBody = updateOperatorAssembly.match(
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+    )?.[1];
+    assert.ok(functionBody, `missing ${functionName} assembly body`);
+    assert.strictEqual(
+        (functionBody.match(/^jmp identity, r14$/gm) || []).length,
+        1,
+        `${functionName} must evaluate its pointer-producing call once`,
+    );
+}
+
+const postfixValueBody = updateOperatorAssembly.match(
+    /^postfix_value:\r?\n([\s\S]*?)^__postfix_value_return:/m,
+)?.[1];
+const prefixValueBody = updateOperatorAssembly.match(
+    /^prefix_value:\r?\n([\s\S]*?)^__prefix_value_return:/m,
+)?.[1];
+assert.ok(postfixValueBody && prefixValueBody, 'missing prefix/postfix result assembly bodies');
+assert.match(postfixValueBody, /sw \[r8\], r7\r?\nmov r4, \[r12 \+ \d+\]/);
+assert.match(prefixValueBody, /sw \[r8\], r7\r?\nmov r4, r7/);
+
+const updateAssemblerResult = new SimpleCPUAssembler().assemble(updateOperatorAssembly, {
+    sourceFileName: 'update_operator_test.asm',
+});
+assert.ok(updateAssemblerResult.machineCodes.length > 0);
+
+for (const [testSource, pattern] of [
+    ['int main(void) { return 1++; }', /operand of '\+\+' must be a modifiable lvalue/],
+    ['int main(void) { int data[2]; data++; return 0; }', /array object cannot be updated/],
+    ['int main(void) { int value = 1; (value + 1) += 2; return value; }', /left side of compound assignment must be a modifiable lvalue/],
+    ...['*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='].map((operator) => [
+        `int main(void) { int data[2]; int *pointer = data; pointer ${operator} 2; return 0; }`,
+        /is not valid for a pointer target/,
+    ]),
+    ['int main(void) { int data[2]; int *left = data; int *right = data; left += right; return 0; }', /pointer compound assignment requires an integer right operand/],
+    ['int main(void) { int data[2]; int *left = data; short *right = (short *)data; left -= right; return 0; }', /pointer compound assignment requires an integer right operand/],
+    ['int seed; int bad = (seed += 1); int main(void) { return 0; }', /global initializer must be a constant expression/],
+    ['int seed; int bad = seed++; int main(void) { return 0; }', /global initializer must be a constant expression/],
+]) {
+    expectCompilerError(testSource, pattern);
+}
+
 expectCompilerError(
     'int main(void) { return "unterminated; }',
     /unterminated string literal/,
