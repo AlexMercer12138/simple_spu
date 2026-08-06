@@ -351,11 +351,81 @@ assert.deepStrictEqual(
     [0x41, 0x42, 0xe4, 0xb8, 0xad, 0x0a, 0x00],
 );
 
+const largeStringByteLength = 150000;
+const { assembly: largeStringAssembly } = compileC(`
+char *large_text = "${'A'.repeat(largeStringByteLength)}";
+int main(void) { return large_text[0]; }
+`, {
+    moduleName: 'large_string_literal_test',
+    dataBase: 0x200,
+});
+assert.match(
+    largeStringAssembly,
+    /^mov r7, 0x204\r?\nmov r8, 0x200\r?\nsw \[r8\], r7$/m,
+);
+assert.match(
+    largeStringAssembly,
+    /^mov r7, 0x41\r?\nmov r8, 0x204\r?\nsb \[r8\], r7$/m,
+);
+const largeStringTerminatorAddress = 0x204 + largeStringByteLength;
+const largeStringTerminatorHigh = largeStringTerminatorAddress >>> 16;
+const largeStringTerminatorLow = largeStringTerminatorAddress & 0xffff;
+assert.match(
+    largeStringAssembly,
+    new RegExp(
+        `^mov r7, 0\\r?\\nmov r8, ${largeStringTerminatorHigh}\\r?\\n` +
+            `mov r8, r8 << 16\\r?\\nmov r8, r8 \\+ 0x${largeStringTerminatorLow.toString(16).toUpperCase()}\\r?\\n` +
+            'sb \\[r8\\], r7$',
+        'm',
+    ),
+);
+
 const stringLiteralAssembler = new SimpleCPUAssembler();
 const stringLiteralResult = stringLiteralAssembler.assemble(stringLiteralAssembly, {
     sourceFileName: 'string_literal_test.asm',
 });
 assert.ok(stringLiteralResult.machineCodes.length > 0);
+
+const pointerConstantSource = `
+short *short_base = (short *)"abcd";
+short *short_plus = (short *)"abcd" + 1;
+short *short_commuted = 2 + (short *)"abcd";
+short *short_minus = (short *)"abcd" - 1;
+int *int_base = (int *)"wxyz";
+int *int_plus = (int *)"wxyz" + 1;
+int *int_minus = (int *)"wxyz" - 1;
+int int_distance = ((int *)"wxyz" + 3) - ((int *)"wxyz" + 1);
+int main(void) { return 0; }
+`;
+const { assembly: pointerConstantAssembly } = compileC(pointerConstantSource, {
+    moduleName: 'pointer_string_constant_test',
+    dataBase: 0x200,
+});
+const pointerConstantInitializers = new Map();
+for (const match of pointerConstantAssembly.matchAll(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsw \[r8\], r7$/gm,
+)) {
+    pointerConstantInitializers.set(parseImmediate(match[2]), parseImmediate(match[1]));
+}
+const shortStringBase = pointerConstantInitializers.get(0x200);
+const intStringBase = pointerConstantInitializers.get(0x210);
+assert.strictEqual(typeof shortStringBase, 'number');
+assert.strictEqual(typeof intStringBase, 'number');
+assert.strictEqual(pointerConstantInitializers.get(0x204), shortStringBase + 2);
+assert.strictEqual(pointerConstantInitializers.get(0x208), shortStringBase + 4);
+assert.strictEqual(pointerConstantInitializers.get(0x20c), shortStringBase - 2);
+assert.strictEqual(pointerConstantInitializers.get(0x214), intStringBase + 4);
+assert.strictEqual(pointerConstantInitializers.get(0x218), intStringBase - 4);
+assert.strictEqual(pointerConstantInitializers.get(0x21c), 2);
+
+expectCompilerError(
+    'char *bad = "left" + "right"; int main(void) { return 0; }',
+    /operator '\+' cannot add two pointers/,
+);
+expectCompilerError(
+    'int bad = (int *)"same" - (short *)"same"; int main(void) { return 0; }',
+    /cannot subtract pointers to differently sized types/,
+);
 
 expectCompilerError(
     'int main(void) { return "unterminated; }',
@@ -380,6 +450,36 @@ assert.throws(
         return true;
     },
 );
+
+const compilerOptionErrorCases = [
+    [{ dataBase: -1 }, /dataBase must be between 0 and 0xFFFFFFFF/],
+    [{ dataBase: Number.NaN }, /dataBase must be a finite safe integer/],
+    [{ dataBase: 1.5 }, /dataBase must be a finite safe integer/],
+    [{ dataBase: 0x1_0000_0000 }, /dataBase must be between 0 and 0xFFFFFFFF/],
+    [{ dlbAddrWidth: -1 }, /dlbAddrWidth must be a non-negative safe integer/],
+    [{ dlbAddrWidth: Number.NaN }, /dlbAddrWidth must be a non-negative safe integer/],
+    [{ dlbAddrWidth: 1.5 }, /dlbAddrWidth must be a non-negative safe integer/],
+    [
+        { dataBase: 0xffff_fffc, dlbAddrWidth: 0 },
+        /DLB address range exceeds 32-bit address space/,
+    ],
+];
+for (const [options, pattern] of compilerOptionErrorCases) {
+    assert.throws(
+        () => compileC('int main(void) { return 0; }', options),
+        (error) => {
+            assert.ok(error instanceof CompilerError);
+            assert.match(error.message, pattern);
+            return true;
+        },
+    );
+}
+
+compileC('int main(void) { return 0; }', {
+    moduleName: 'maximum_dlb_limit_test',
+    dataBase: 0xffff_fffb,
+    dlbAddrWidth: 0,
+});
 
 const irqSource = `
 volatile unsigned int irq_count = 0;

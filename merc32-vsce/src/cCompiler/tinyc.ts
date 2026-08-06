@@ -775,7 +775,9 @@ class Parser {
             const firstToken = this.current();
             const bytes: number[] = [];
             while (this.current().kind === 'string') {
-                bytes.push(...(this.advance().bytes || []));
+                for (const byte of this.advance().bytes || []) {
+                    bytes.push(byte);
+                }
             }
             return {
                 kind: 'string',
@@ -957,7 +959,6 @@ class CodeGenerator {
     private readonly staticStrings = new Map<string, StaticString>();
     private readonly functionMap = new Map<string, FunctionDecl>();
     private readonly dataBase: number;
-    private readonly dlbAddrWidth: number;
     private readonly dataLimit: number;
     private readonly moduleName: string;
     private readonly tempSlots: number;
@@ -966,9 +967,26 @@ class CodeGenerator {
     private interruptHandler?: FunctionDecl;
 
     constructor(private readonly program: Program, options: CompileOptions) {
-        this.dataBase = options.dataBase ?? 0x0080_0000;
-        this.dlbAddrWidth = options.dlbAddrWidth ?? 16;
-        this.dataLimit = this.dataBase + 2 ** (this.dlbAddrWidth + 2);
+        const dataBase = options.dataBase ?? 0x0080_0000;
+        if (!Number.isSafeInteger(dataBase)) {
+            throw new CompilerError('dataBase must be a finite safe integer');
+        }
+        if (dataBase < 0 || dataBase > 0xffff_ffff) {
+            throw new CompilerError('dataBase must be between 0 and 0xFFFFFFFF');
+        }
+
+        const dlbAddrWidth = options.dlbAddrWidth ?? 16;
+        if (!Number.isSafeInteger(dlbAddrWidth) || dlbAddrWidth < 0) {
+            throw new CompilerError('dlbAddrWidth must be a non-negative safe integer');
+        }
+
+        const dataLimit = dataBase + 2 ** (dlbAddrWidth + 2);
+        if (!Number.isSafeInteger(dataLimit) || dataLimit > 0xffff_ffff) {
+            throw new CompilerError('DLB address range exceeds 32-bit address space');
+        }
+
+        this.dataBase = dataBase;
+        this.dataLimit = dataLimit;
         this.moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
         this.tempSlots = options.tempSlots ?? 32;
         this.nextGlobalAddress = this.dataBase;
@@ -1107,9 +1125,11 @@ class CodeGenerator {
             case 'binary': {
                 const left = this.evalConstant(expr.left);
                 const right = this.evalConstant(expr.right);
+                const leftType = this.exprType(expr.left);
+                const rightType = this.exprType(expr.right);
                 switch (expr.op) {
-                    case '+': return left + right;
-                    case '-': return left - right;
+                    case '+': return this.evalConstantAddition(left, right, leftType, rightType);
+                    case '-': return this.evalConstantSubtraction(left, right, leftType, rightType);
                     case '*': return Math.imul(left, right);
                     case '/':
                         if (right === 0) throw new CompilerError('division by zero in global initializer');
@@ -1133,6 +1153,41 @@ class CodeGenerator {
             }
         }
         throw new CompilerError('global initializer must be a constant expression');
+    }
+
+    private evalConstantAddition(left: number, right: number, leftType: CType, rightType: CType): number {
+        const leftIsPointer = leftType.pointerDepth > 0;
+        const rightIsPointer = rightType.pointerDepth > 0;
+        if (leftIsPointer && rightIsPointer) {
+            throw new CompilerError("operator '+' cannot add two pointers");
+        }
+        if (leftIsPointer) {
+            return left + right * typeSizeBytes(derefType(leftType));
+        }
+        if (rightIsPointer) {
+            return left * typeSizeBytes(derefType(rightType)) + right;
+        }
+        return left + right;
+    }
+
+    private evalConstantSubtraction(left: number, right: number, leftType: CType, rightType: CType): number {
+        const leftIsPointer = leftType.pointerDepth > 0;
+        const rightIsPointer = rightType.pointerDepth > 0;
+        if (leftIsPointer && rightIsPointer) {
+            const leftSize = typeSizeBytes(derefType(leftType));
+            const rightSize = typeSizeBytes(derefType(rightType));
+            if (leftSize !== rightSize) {
+                throw new CompilerError('cannot subtract pointers to differently sized types');
+            }
+            const difference = left - right;
+            if (leftSize === 2) return difference >>> 1;
+            if (leftSize === 4) return difference >>> 2;
+            return difference;
+        }
+        if (leftIsPointer) {
+            return left - right * typeSizeBytes(derefType(leftType));
+        }
+        return left - right;
     }
 
     private collectStaticStrings(): void {
