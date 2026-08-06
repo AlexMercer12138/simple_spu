@@ -1249,6 +1249,201 @@ expectCompilerError(
     { line: 1, column: 12 },
 );
 
+const assignmentValueSource = `
+int assigned_global;
+volatile int assigned_volatile;
+int address_call_count;
+
+int *assignment_address(int *pointer) {
+    address_call_count += 1;
+    return pointer;
+}
+
+int assignment_to_r8(void) {
+    return 1 + (assigned_global = 5);
+}
+
+int assignment_to_r7(void) {
+    return (assigned_global = 6) + 1;
+}
+
+int assignment_to_r4(void) {
+    return assigned_global = 7;
+}
+
+int local_assignment_to_r8(void) {
+    int local = 0;
+    return 1 + (local = 8);
+}
+
+int dereference_assignment_to_r8(int *pointer) {
+    return 1 + (*pointer = 9);
+}
+
+int index_assignment_to_r8(int *data) {
+    int index = 0;
+    int result = 1 + (data[index++] = 10);
+    return result + index * 100;
+}
+
+int conditional_assignment(int condition) {
+    assigned_global = 1;
+    return 1 + (condition ? (assigned_global = 11) : (assigned_global = 12));
+}
+
+int compound_assignment_rhs(void) {
+    assigned_global = 2;
+    assigned_volatile = 0;
+    assigned_global += (assigned_volatile = 13);
+    return assigned_global + assigned_volatile;
+}
+
+int nested_assignment(void) {
+    int local = 0;
+    assigned_global = 0;
+    return 1 + (assigned_global = local = 14) + assigned_global + local;
+}
+
+int narrow_assignment_values(void) {
+    char byte = 0;
+    unsigned char unsigned_byte = 0;
+    short half = 0;
+    unsigned short unsigned_half = 0;
+    int byte_result = 1 + (byte = 0xFF);
+    int unsigned_byte_result = 1 + (unsigned_byte = 0x1FF);
+    int half_result = 1 + (half = 0xFFFF);
+    int unsigned_half_result = 1 + (unsigned_half = 0x1FFFF);
+    return byte_result + unsigned_byte_result + half_result + unsigned_half_result
+        + byte + unsigned_byte + half + unsigned_half;
+}
+
+int called_address_assignment(int *pointer) {
+    return 1 + (*assignment_address(pointer) = 15);
+}
+
+int indexed_called_address_assignment(int *data) {
+    int index = 0;
+    int result = 1 + (assignment_address(data)[index++] = 16);
+    return result + index;
+}
+
+int main(void) {
+    int data[2] = {0, 0};
+    return assignment_to_r8() + assignment_to_r7() + assignment_to_r4()
+        + local_assignment_to_r8() + dereference_assignment_to_r8(data)
+        + index_assignment_to_r8(data) + conditional_assignment(1)
+        + conditional_assignment(0) + compound_assignment_rhs()
+        + nested_assignment() + narrow_assignment_values()
+        + called_address_assignment(data) + indexed_called_address_assignment(data);
+}
+`;
+
+const { assembly: assignmentValueAssembly } = compileC(assignmentValueSource, {
+    moduleName: 'assignment_value_test',
+    dataBase: 0x600,
+});
+const assignmentBody = (functionName) => assignmentValueAssembly.match(
+    new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+)?.[1];
+
+const assignmentToR8Body = assignmentBody('assignment_to_r8');
+assert.ok(assignmentToR8Body, 'missing assignment_to_r8 assembly body');
+assert.match(
+    assignmentToR8Body,
+    /^mov r7, 5\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+);
+assert.doesNotMatch(assignmentToR8Body, /^sw \[r8\], r8$/m);
+
+const assignmentToR7Body = assignmentBody('assignment_to_r7');
+assert.ok(assignmentToR7Body, 'missing assignment_to_r7 assembly body');
+assert.match(assignmentToR7Body, /^mov r7, 6\r?\nmov r8, 0x600\r?\nsw \[r8\], r7$/m);
+
+const assignmentToR4Body = assignmentBody('assignment_to_r4');
+assert.ok(assignmentToR4Body, 'missing assignment_to_r4 assembly body');
+assert.match(
+    assignmentToR4Body,
+    /^mov r7, 7\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r4, r7$/m,
+);
+
+const localAssignmentBody = assignmentBody('local_assignment_to_r8');
+assert.ok(localAssignmentBody, 'missing local_assignment_to_r8 assembly body');
+assert.match(localAssignmentBody, /^sw \[r12 \+ 8\], r7\r?\nmov r8, r7$/m);
+
+const dereferenceAssignmentBody = assignmentBody('dereference_assignment_to_r8');
+assert.ok(dereferenceAssignmentBody, 'missing dereference_assignment_to_r8 assembly body');
+assert.match(dereferenceAssignmentBody, /^sw \[r8\], r7\r?\nmov r8, r7$/m);
+assert.doesNotMatch(dereferenceAssignmentBody, /^sw \[r8\], r8$/m);
+
+const indexAssignmentBody = assignmentBody('index_assignment_to_r8');
+assert.ok(indexAssignmentBody, 'missing index_assignment_to_r8 assembly body');
+assert.strictEqual(
+    (indexAssignmentBody.match(/^mov r8, r12 \+ 12$/gm) || []).length,
+    1,
+    'assignment index update must evaluate its lvalue address once',
+);
+assert.match(indexAssignmentBody, /^sw \[r8\], r7\r?\nmov r8, r7$/m);
+
+const conditionalAssignmentBody = assignmentBody('conditional_assignment');
+assert.ok(conditionalAssignmentBody, 'missing conditional_assignment assembly body');
+assert.strictEqual(
+    (conditionalAssignmentBody.match(/^sw \[r8\], r7$/gm) || []).length,
+    3,
+    'initial, selected, and unselected conditional assignment paths must each store a stable value',
+);
+assert.doesNotMatch(conditionalAssignmentBody, /^sw \[r8\], r8$/m);
+
+const compoundAssignmentRhsBody = assignmentBody('compound_assignment_rhs');
+assert.ok(compoundAssignmentRhsBody, 'missing compound_assignment_rhs assembly body');
+assert.match(
+    compoundAssignmentRhsBody,
+    /^mov r7, 0xD\r?\nmov r8, 0x604\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+);
+assert.doesNotMatch(compoundAssignmentRhsBody, /^sw \[r8\], r8$/m);
+
+const nestedAssignmentBody = assignmentBody('nested_assignment');
+assert.ok(nestedAssignmentBody, 'missing nested_assignment assembly body');
+assert.match(
+    nestedAssignmentBody,
+    /^mov r7, 0xE\r?\nsw \[r12 \+ 8\], r7\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+);
+assert.doesNotMatch(nestedAssignmentBody, /^sw \[r8\], r8$/m);
+
+const narrowAssignmentBody = assignmentBody('narrow_assignment_values');
+assert.ok(narrowAssignmentBody, 'missing narrow_assignment_values assembly body');
+for (const conversion of [
+    /mov r7, r7 << 24\r?\nmov r7, r7 >>> 24/,
+    /mov r7, r7 & 0xFF/,
+    /mov r7, r7 << 16\r?\nmov r7, r7 >>> 16/,
+    /mov r7, r7 & 0xFFFF/,
+]) {
+    assert.match(narrowAssignmentBody, conversion);
+}
+assert.doesNotMatch(narrowAssignmentBody, /^(?:sb|sh) \[[^\]]+\], r8$/m);
+
+for (const functionName of ['called_address_assignment', 'indexed_called_address_assignment']) {
+    const body = assignmentBody(functionName);
+    assert.ok(body, `missing ${functionName} assembly body`);
+    assert.strictEqual(
+        (body.match(/^jmp assignment_address, r14$/gm) || []).length,
+        1,
+        `${functionName} must evaluate its pointer-producing call once`,
+    );
+    assert.match(body, /^sw \[r8\], r7\r?\nmov r8, r7$/m);
+    assert.doesNotMatch(body, /^sw \[r8\], r8$/m);
+}
+
+const indexedCalledAddressBody = assignmentBody('indexed_called_address_assignment');
+assert.strictEqual(
+    (indexedCalledAddressBody.match(/^mov r8, r12 \+ 12$/gm) || []).length,
+    1,
+    'called index assignment must update its index once',
+);
+
+const assignmentValueAssemblerResult = new SimpleCPUAssembler().assemble(assignmentValueAssembly, {
+    sourceFileName: 'assignment_value_test.asm',
+});
+assert.ok(assignmentValueAssemblerResult.machineCodes.length > 0);
+
 const controlFlowSource = `
 int do_once(void) {
     int count = 0;

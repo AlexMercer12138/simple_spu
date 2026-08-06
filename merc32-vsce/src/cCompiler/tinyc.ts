@@ -2520,10 +2520,13 @@ class CodeGenerator {
                 this.loadVar(expr.name, target);
                 return this.lookupVar(expr.name).type;
             case 'assign': {
-                this.emitExpr(expr.value, target);
+                this.emitExpr(expr.value, 'r7');
                 const type = this.lvalueType(expr.target);
-                this.convertValue(target, type);
-                this.storeLValue(expr.target, target);
+                this.convertValue('r7', type);
+                this.storeLValue(expr.target, 'r7');
+                if (target !== 'r7') {
+                    this.emit(`mov ${target}, r7`);
+                }
                 return type;
             }
             case 'compound-assign':
