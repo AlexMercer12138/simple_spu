@@ -187,6 +187,55 @@ const narrowAssembler = new SimpleCPUAssembler();
 const narrowResult = narrowAssembler.assemble(narrowAssembly, { sourceFileName: 'narrow_type_test.asm' });
 assert.ok(narrowResult.machineCodes.length > 0);
 
+const characterLiteralSource = String.raw`
+int main(void) {
+    int ascii = 'A';
+    int newline = '\n';
+    int quote = '\'';
+    int backslash = '\\';
+    int octal = '\101';
+    int octal_with_leading_zero = '\012';
+    int hex = '\xFF';
+    int carriage_return = '\r';
+    int tab = '\t';
+    int nul = '\0';
+    int double_quote = '\"';
+    int alert = '\a';
+    int backspace = '\b';
+    int form_feed = '\f';
+    int vertical_tab = '\v';
+    return ascii + newline + quote + backslash + octal + octal_with_leading_zero + hex
+        + carriage_return + tab + nul + double_quote + alert
+        + backspace + form_feed + vertical_tab;
+}
+`;
+
+const { assembly: characterLiteralAssembly } = compileC(characterLiteralSource, {
+    moduleName: 'character_literal_test',
+});
+assert.match(characterLiteralAssembly, /mov r7, 0x41/);
+assert.match(characterLiteralAssembly, /mov r7, 0xA/);
+assert.match(characterLiteralAssembly, /mov r7, 0xFF/);
+
+const characterLiteralAssembler = new SimpleCPUAssembler();
+const characterLiteralResult = characterLiteralAssembler.assemble(characterLiteralAssembly, {
+    sourceFileName: 'character_literal_test.asm',
+});
+assert.ok(characterLiteralResult.machineCodes.length > 0);
+
+expectCompilerError("int main(void) { return ''; }", /empty character literal/);
+expectCompilerError("int main(void) { return 'ab'; }", /character literal must contain exactly one byte/);
+expectCompilerError("int main(void) { return '\u4E2D'; }", /character literal must contain exactly one byte/);
+expectCompilerError(String.raw`int main(void) { return '\400'; }`, /escape value \\400 exceeds one byte/);
+expectCompilerError(String.raw`int main(void) { return '\x100'; }`, /escape value 0x100 exceeds one byte/);
+expectCompilerError(String.raw`int main(void) { return '\q'; }`, /unknown escape '\\q'/);
+expectCompilerError("int main(void) { return 'A", /unterminated character literal/);
+expectCompilerError(`
+int main(void) {
+    return 'A
+}
+`, /unterminated character literal/);
+
 const irqSource = `
 volatile unsigned int irq_count = 0;
 

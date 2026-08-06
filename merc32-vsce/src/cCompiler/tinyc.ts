@@ -252,6 +252,10 @@ class Lexer {
             return this.readNumber(line, column);
         }
 
+        if (c === "'") {
+            return this.readCharacterLiteral(line, column);
+        }
+
         const two = c + this.peek(1);
         if (TWO_CHAR_SYMBOLS.has(two)) {
             this.advance();
@@ -294,6 +298,101 @@ class Lexer {
             throw new CompilerError(`invalid numeric literal '${text}'`, line, column);
         }
         return { kind: 'number', text, value, line, column };
+    }
+
+    private readCharacterLiteral(line: number, column: number): Token {
+        const start = this.index;
+        this.advance();
+        const bytes = this.readLiteralBytes("'", line, column);
+        const text = this.source.slice(start, this.index);
+        if (bytes.length === 0) {
+            throw new CompilerError('empty character literal', line, column);
+        }
+        if (bytes.length !== 1) {
+            throw new CompilerError('character literal must contain exactly one byte', line, column);
+        }
+        return { kind: 'number', text, value: bytes[0], line, column };
+    }
+
+    private readLiteralBytes(terminator: "'" | '"', line: number, column: number): number[] {
+        const bytes: number[] = [];
+        const literalKind = terminator === "'" ? 'character' : 'string';
+        while (true) {
+            const c = this.peek();
+            if (c === '' || c === '\n' || c === '\r') {
+                throw new CompilerError(`unterminated ${literalKind} literal`, line, column);
+            }
+            if (c === terminator) {
+                this.advance();
+                return bytes;
+            }
+            if (c === '\\') {
+                if (this.peek(1) === '' || this.peek(1) === '\n' || this.peek(1) === '\r') {
+                    throw new CompilerError(`unterminated ${literalKind} literal`, line, column);
+                }
+                bytes.push(this.readEscapeByte(line, column));
+                continue;
+            }
+            bytes.push(...this.readRawLiteralBytes(terminator));
+        }
+    }
+
+    private readEscapeByte(line: number, column: number): number {
+        this.advance();
+        const escape = this.advance();
+        const simpleEscapes: Record<string, number> = {
+            n: 0x0a,
+            r: 0x0d,
+            t: 0x09,
+            '\\': 0x5c,
+            "'": 0x27,
+            '"': 0x22,
+            a: 0x07,
+            b: 0x08,
+            f: 0x0c,
+            v: 0x0b,
+        };
+        if (/[0-7]/.test(escape)) {
+            let digits = escape;
+            while (digits.length < 3 && /[0-7]/.test(this.peek())) {
+                digits += this.advance();
+            }
+            const value = Number.parseInt(digits, 8);
+            if (value > 0xff) {
+                throw new CompilerError(`escape value \\${digits} exceeds one byte`, line, column);
+            }
+            return value;
+        }
+
+        if (escape in simpleEscapes) {
+            return simpleEscapes[escape];
+        }
+
+        if (escape === 'x') {
+            const digits = this.readWhile(/[0-9A-Fa-f]/);
+            if (digits.length === 0) {
+                throw new CompilerError('hexadecimal escape requires at least one digit', line, column);
+            }
+            const value = Number.parseInt(digits, 16);
+            if (value > 0xff) {
+                throw new CompilerError(`escape value 0x${digits.toUpperCase()} exceeds one byte`, line, column);
+            }
+            return value;
+        }
+
+        throw new CompilerError(`unknown escape '\\${escape}'`, line, column);
+    }
+
+    private readRawLiteralBytes(terminator: "'" | '"'): number[] {
+        const start = this.index;
+        while (true) {
+            const c = this.peek();
+            if (c === '' || c === '\n' || c === '\r' || c === '\\' || c === terminator) {
+                break;
+            }
+            this.advance();
+        }
+        return Array.from(Buffer.from(this.source.slice(start, this.index), 'utf8'));
     }
 
     private skipTrivia(): void {
