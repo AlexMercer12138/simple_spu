@@ -160,6 +160,7 @@ type Expr =
     | AssignExpr
     | CompoundAssignExpr
     | UpdateExpr
+    | ConditionalExpr
     | BinaryExpr
     | UnaryExpr
     | CallExpr
@@ -203,6 +204,15 @@ interface UpdateExpr {
     target: Expr;
     delta: 1 | -1;
     prefix: boolean;
+    line: number;
+    column: number;
+}
+
+interface ConditionalExpr {
+    kind: 'conditional';
+    test: Expr;
+    consequent: Expr;
+    alternate: Expr;
     line: number;
     column: number;
 }
@@ -260,7 +270,7 @@ const TWO_CHAR_SYMBOLS = new Set([
     '==', '!=', '<=', '>=', '&&', '||', '<<', '>>',
     '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
 ]);
-const ONE_CHAR_SYMBOLS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '=', '<', '>', ';', ',', '(', ')', '{', '}', '[', ']', ':']);
+const ONE_CHAR_SYMBOLS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '=', '<', '>', '?', ';', ',', '(', ')', '{', '}', '[', ']', ':']);
 const COMPOUND_ASSIGNMENT_OPERATORS = new Map([
     ['+=', '+'],
     ['-=', '-'],
@@ -842,7 +852,7 @@ class Parser {
     }
 
     private parseAssignment(): Expr {
-        const left = this.parseLogicalOr();
+        const left = this.parseConditional();
         if (this.match('=')) {
             if (!this.isAssignable(left)) {
                 throw this.error('left side of assignment must be a variable or dereference');
@@ -869,6 +879,25 @@ class Parser {
             };
         }
         return left;
+    }
+
+    private parseConditional(): Expr {
+        const test = this.parseLogicalOr();
+        if (!this.is('?')) {
+            return test;
+        }
+
+        const token = this.advance();
+        const consequent = this.parseExpression();
+        this.expect(':');
+        return {
+            kind: 'conditional',
+            test,
+            consequent,
+            alternate: this.parseConditional(),
+            line: token.line,
+            column: token.column,
+        };
     }
 
     private isAssignable(expr: Expr): boolean {
@@ -1469,6 +1498,11 @@ class CodeGenerator {
             }
             case 'cast':
                 return convertConstant(this.evalConstant(expr.expr), expr.type);
+            case 'conditional': {
+                const resultType = this.conditionalResultType(expr);
+                const selected = this.evalConstant(expr.test) ? expr.consequent : expr.alternate;
+                return convertConstant(this.evalConstant(selected), resultType);
+            }
             case 'binary': {
                 const left = this.evalConstant(expr.left);
                 const right = this.evalConstant(expr.right);
@@ -1639,6 +1673,11 @@ class CodeGenerator {
                 return;
             case 'update':
                 this.collectStaticStringsInExpr(expr.target);
+                return;
+            case 'conditional':
+                this.collectStaticStringsInExpr(expr.test);
+                this.collectStaticStringsInExpr(expr.consequent);
+                this.collectStaticStringsInExpr(expr.alternate);
                 return;
             case 'binary':
                 this.collectStaticStringsInExpr(expr.left);
@@ -1971,6 +2010,8 @@ class CodeGenerator {
                 return this.emitCompoundAssignment(expr, target);
             case 'update':
                 return this.emitUpdate(expr, target);
+            case 'conditional':
+                return this.emitConditional(expr, target);
             case 'unary':
                 return this.emitUnary(expr, target);
             case 'binary':
@@ -1988,6 +2029,24 @@ class CodeGenerator {
                 return elementType;
             }
         }
+    }
+
+    private emitConditional(expr: ConditionalExpr, target: string): CType {
+        const resultType = this.conditionalResultType(expr);
+        const falseLabel = this.newLabel('conditional_false');
+        const trueLabel = this.newLabel('conditional_true');
+        const endLabel = this.newLabel('conditional_end');
+
+        this.emitBranchIfFalse(expr.test, falseLabel);
+        this.emit(`${trueLabel}:`);
+        this.emitExpr(expr.consequent, target);
+        this.convertValue(target, resultType);
+        this.emit(`jmp ${endLabel}`);
+        this.emit(`${falseLabel}:`);
+        this.emitExpr(expr.alternate, target);
+        this.convertValue(target, resultType);
+        this.emit(`${endLabel}:`);
+        return resultType;
     }
 
     private emitCompoundAssignment(expr: CompoundAssignExpr, target: string): CType {
@@ -2466,6 +2525,8 @@ class CodeGenerator {
             case 'compound-assign':
             case 'update':
                 return this.lvalueType(expr.target);
+            case 'conditional':
+                return this.conditionalResultType(expr);
             case 'index':
                 return this.indexElementType(expr);
             case 'unary':
@@ -2482,6 +2543,94 @@ class CodeGenerator {
                 return this.functionMap.get(expr.name)?.returnType || intType();
             case 'cast':
                 return expr.type;
+        }
+    }
+
+    private conditionalResultType(expr: ConditionalExpr): CType {
+        const testType = this.exprType(expr.test);
+        if (isVoidType(testType)) {
+            throw new CompilerError(
+                'conditional expression condition must have scalar type',
+                expr.line,
+                expr.column,
+            );
+        }
+
+        const consequentType = this.exprType(expr.consequent);
+        const alternateType = this.exprType(expr.alternate);
+        const consequentIsVoid = isVoidType(consequentType);
+        const alternateIsVoid = isVoidType(alternateType);
+        if (consequentIsVoid || alternateIsVoid) {
+            if (consequentIsVoid && alternateIsVoid) {
+                return voidType();
+            }
+            throw new CompilerError(
+                'conditional expression branches must both have void type or both produce values',
+                expr.line,
+                expr.column,
+            );
+        }
+
+        if (isIntegerType(consequentType) && isIntegerType(alternateType)) {
+            return usualArithmeticType(consequentType, alternateType);
+        }
+
+        if (consequentType.pointerDepth > 0 && alternateType.pointerDepth > 0) {
+            if (consequentType.base !== alternateType.base
+                || consequentType.pointerDepth !== alternateType.pointerDepth) {
+                throw new CompilerError(
+                    'conditional expression has incompatible pointer branch types',
+                    expr.line,
+                    expr.column,
+                );
+            }
+            return {
+                base: consequentType.base,
+                pointerDepth: consequentType.pointerDepth,
+                volatile: consequentType.volatile || alternateType.volatile,
+            };
+        }
+
+        if (consequentType.pointerDepth > 0 && isIntegerType(alternateType)) {
+            if (this.isIntegerConstantZero(expr.alternate)) {
+                return consequentType;
+            }
+            throw new CompilerError(
+                'conditional expression cannot combine a pointer with a nonzero integer',
+                expr.line,
+                expr.column,
+            );
+        }
+
+        if (alternateType.pointerDepth > 0 && isIntegerType(consequentType)) {
+            if (this.isIntegerConstantZero(expr.consequent)) {
+                return alternateType;
+            }
+            throw new CompilerError(
+                'conditional expression cannot combine a pointer with a nonzero integer',
+                expr.line,
+                expr.column,
+            );
+        }
+
+        throw new CompilerError(
+            'conditional expression branches have incompatible types',
+            expr.line,
+            expr.column,
+        );
+    }
+
+    private isIntegerConstantZero(expr: Expr): boolean {
+        if (!isIntegerType(this.exprType(expr))) {
+            return false;
+        }
+        try {
+            return this.evalConstant(expr) === 0;
+        } catch (error) {
+            if (error instanceof CompilerError) {
+                return false;
+            }
+            throw error;
         }
     }
 
@@ -2743,6 +2892,11 @@ class FunctionCollector {
                 return;
             case 'update':
                 this.collectExpr(expr.target);
+                return;
+            case 'conditional':
+                this.collectExpr(expr.test);
+                this.collectExpr(expr.consequent);
+                this.collectExpr(expr.alternate);
                 return;
             case 'binary':
                 this.collectExpr(expr.left);

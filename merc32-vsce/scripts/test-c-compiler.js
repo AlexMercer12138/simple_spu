@@ -850,6 +850,182 @@ const updateAssemblerResult = new SimpleCPUAssembler().assemble(updateOperatorAs
 });
 assert.ok(updateAssemblerResult.machineCodes.length > 0);
 
+const conditionalExpressionSource = `
+int global_choice = 1 ? 41 : 99;
+char *global_text = 0 ? "LEFT" : "RIGHT";
+
+void __irq_handler(void) {
+}
+
+int pass(int value) {
+    return value;
+}
+
+int take_five(int a, int b, int c, int d, int e) {
+    return a + b + c + d + e;
+}
+
+int choose(int condition, int *counter) {
+    return condition ? ++*counter : --*counter;
+}
+
+int right_associative(void) {
+    return 0 ? 1 : 1 ? 2 : 3;
+}
+
+int expression_containers(int condition) {
+    int values[3] = {condition ? 4 : 5, 0 ? 6 : 7, 1 ? 8 : 9};
+    int assigned = 0;
+    assigned = condition ? values[0] : values[1];
+    return pass(condition ? assigned : values[2]);
+}
+
+int calls_in_branches(int condition) {
+    return condition
+        ? take_five(1, 2, 3, 4, 5)
+        : take_five(6, 7, 8, 9, 10);
+}
+
+unsigned int unsigned_common(
+    int condition,
+    int signed_value,
+    unsigned int unsigned_value
+) {
+    return (condition ? signed_value : unsigned_value) / 2;
+}
+
+int pointer_or_null(int condition, int *pointer) {
+    return *(condition ? pointer : (1 - 1));
+}
+
+char *choose_text(int condition) {
+    return condition ? "TRUE" : "FALSE";
+}
+
+void choose_void(int condition) {
+    condition ? __irq_enable() : __irq_disable();
+}
+
+int main(void) {
+    int counter = 10;
+    int a = choose(1, &counter);
+    int b = choose(0, &counter);
+    choose_void(1);
+    return a + b + right_associative() + expression_containers(1)
+        + calls_in_branches(0) + pointer_or_null(1, &counter)
+        + choose_text(0)[0] + global_choice + global_text[0] + counter;
+}
+`;
+
+const { assembly: conditionalExpressionAssembly } = compileC(conditionalExpressionSource, {
+    moduleName: 'conditional_expression_test',
+    dataBase: 0x400,
+});
+
+const chooseConditionalBody = conditionalExpressionAssembly.match(
+    /^choose:\r?\n([\s\S]*?)^__choose_return:/m,
+)?.[1];
+assert.ok(chooseConditionalBody, 'missing choose conditional assembly body');
+const chooseTrueLabel = chooseConditionalBody.match(
+    /^(__choose_conditional_true_\d+):$/m,
+)?.[1];
+const chooseFalseLabel = chooseConditionalBody.match(
+    /^(__choose_conditional_false_\d+):$/m,
+)?.[1];
+const chooseEndLabel = chooseConditionalBody.match(
+    /^(__choose_conditional_end_\d+):$/m,
+)?.[1];
+assert.ok(chooseTrueLabel && chooseFalseLabel && chooseEndLabel, 'conditional must have true/false/end labels');
+assert.strictEqual(new Set([chooseTrueLabel, chooseFalseLabel, chooseEndLabel]).size, 3);
+
+const chooseBranchIndex = chooseConditionalBody.indexOf(`bz r7, r0 + ${chooseFalseLabel}`);
+const chooseTrueIndex = chooseConditionalBody.indexOf(`${chooseTrueLabel}:`);
+const chooseFalseIndex = chooseConditionalBody.indexOf(`${chooseFalseLabel}:`);
+const chooseEndIndex = chooseConditionalBody.indexOf(`${chooseEndLabel}:`);
+const chooseSideEffectIndexes = [...chooseConditionalBody.matchAll(/^sw \[r8\], r7$/gm)]
+    .map((match) => match.index);
+assert.strictEqual(chooseSideEffectIndexes.length, 2, 'both conditional branches must contain one update');
+assert.ok(chooseBranchIndex >= 0 && chooseBranchIndex < chooseTrueIndex);
+assert.ok(chooseTrueIndex < chooseSideEffectIndexes[0]);
+assert.ok(chooseSideEffectIndexes[0] < chooseFalseIndex);
+assert.ok(chooseFalseIndex < chooseSideEffectIndexes[1]);
+assert.ok(chooseSideEffectIndexes[1] < chooseEndIndex);
+assert.ok(
+    chooseConditionalBody.indexOf(`jmp ${chooseEndLabel}`, chooseSideEffectIndexes[0]) < chooseFalseIndex,
+    'true branch must jump over the false branch',
+);
+
+const rightAssociativeBody = conditionalExpressionAssembly.match(
+    /^right_associative:\r?\n([\s\S]*?)^__right_associative_return:/m,
+)?.[1];
+assert.ok(rightAssociativeBody, 'missing right-associative conditional assembly body');
+const rightAssociativeBranches = [...rightAssociativeBody.matchAll(
+    /^bz r7, r0 \+ (__right_associative_conditional_false_(\d+))$/gm,
+)];
+assert.strictEqual(rightAssociativeBranches.length, 2);
+assert.ok(
+    Number(rightAssociativeBranches[0][2]) < Number(rightAssociativeBranches[1][2]),
+    'false operand must contain the nested conditional for right associativity',
+);
+assert.ok(
+    rightAssociativeBody.indexOf(`${rightAssociativeBranches[0][1]}:`)
+        < rightAssociativeBranches[1].index,
+    'nested conditional must be emitted inside the outer false branch',
+);
+
+const unsignedCommonBody = conditionalExpressionAssembly.match(
+    /^unsigned_common:\r?\n([\s\S]*?)^__unsigned_common_return:/m,
+)?.[1];
+assert.ok(unsignedCommonBody, 'missing unsigned conditional common-type assembly body');
+assert.match(unsignedCommonBody, /\bdivu r\d+, r7, r8/);
+assert.doesNotMatch(unsignedCommonBody, /\bdiv r\d+, r7, r8/);
+
+const conditionalStaticBytes = new Map();
+for (const match of conditionalExpressionAssembly.matchAll(
+    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
+)) {
+    conditionalStaticBytes.set(parseImmediate(match[2]), parseImmediate(match[1]));
+}
+const hasStaticBytes = (bytes) => [...conditionalStaticBytes.keys()].some(
+    (address) => bytes.every((byte, offset) => conditionalStaticBytes.get(address + offset) === byte),
+);
+assert.ok(hasStaticBytes([0x4c, 0x45, 0x46, 0x54, 0]), 'true global string branch must be pooled');
+assert.ok(hasStaticBytes([0x52, 0x49, 0x47, 0x48, 0x54, 0]), 'false global string branch must be pooled');
+assert.ok(hasStaticBytes([0x54, 0x52, 0x55, 0x45, 0]), 'true local string branch must be pooled');
+assert.ok(hasStaticBytes([0x46, 0x41, 0x4c, 0x53, 0x45, 0]), 'false local string branch must be pooled');
+
+assert.match(conditionalExpressionAssembly, /^mov r7, 0x29\r?\nmov r8, 0x400\r?\nsw \[r8\], r7$/m);
+const conditionalAssemblerResult = new SimpleCPUAssembler().assemble(conditionalExpressionAssembly, {
+    sourceFileName: 'conditional_expression_test.asm',
+});
+assert.ok(conditionalAssemblerResult.machineCodes.length > 0);
+
+for (const [testSource, pattern] of [
+    ['int main(void) { return 1 ? 2; }', /expected ':'/],
+    [
+        'int main(void) { int ints[1]; short shorts[1]; return 1 ? ints : shorts; }',
+        /conditional expression has incompatible pointer branch types/,
+    ],
+    [
+        'int main(void) { int values[1]; int *pointer = values; return 1 ? pointer : 2; }',
+        /conditional expression cannot combine a pointer with a nonzero integer/,
+    ],
+    [
+        'int main(void) { int values[1]; int *pointer = values; return 2 ? 3 : pointer; }',
+        /conditional expression cannot combine a pointer with a nonzero integer/,
+    ],
+    [
+        'void __irq_handler(void) {} int main(void) { return 1 ? __irq_enable() : 2; }',
+        /conditional expression branches must both have void type or both produce values/,
+    ],
+    [
+        'void __irq_handler(void) {} int main(void) { return __irq_enable() ? 1 : 2; }',
+        /conditional expression condition must have scalar type/,
+    ],
+]) {
+    expectCompilerError(testSource, pattern);
+}
+
 for (const [testSource, pattern] of [
     ['int main(void) { return 1++; }', /operand of '\+\+' must be a modifiable lvalue/],
     ['int main(void) { int data[2]; data++; return 0; }', /array object cannot be updated/],
