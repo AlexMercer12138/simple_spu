@@ -331,8 +331,14 @@ int seed(void) { return 10; }
 int main(void) {
     char local_text[4] = "ok";
     int local_values[] = {seed(), 20, 30};
+    unsigned char local_bytes[3] = {0xA5};
+    short local_signed[3] = {-4, 5};
+    unsigned short local_unsigned_short[3] = {6};
+    unsigned int local_unsigned_int[3] = {7, 8};
     return greeting[1] + utf8[0] + signed_table[1] + short_table[4]
-        + word_table[2] + unsigned_table[3] + local_text[2] + local_values[0];
+        + word_table[2] + unsigned_table[3] + local_text[2] + local_values[0]
+        + local_bytes[0] + local_signed[0] + local_unsigned_short[0]
+        + local_unsigned_int[0];
 }
 `;
 
@@ -397,6 +403,26 @@ assert.strictEqual(
 assert.match(
     initializerMainBody,
     /^jmp seed, r14\r?\nmov r7, r4\r?\nsw \[r12 \+ 12\], r7\r?\nmov r7, 0x14\r?\nsw \[r12 \+ 16\], r7\r?\nmov r7, 0x1E\r?\nsw \[r12 \+ 20\], r7$/m,
+);
+assert.match(
+    initializerMainBody,
+    /^mov r7, 0xA5\r?\nmov r7, r7 & 0xFF\r?\nsb \[r12 \+ 24\], r7\r?\nmov r7, 0\r?\nsb \[r12 \+ 25\], r7\r?\nmov r7, 0\r?\nsb \[r12 \+ 26\], r7$/m,
+);
+assert.match(
+    initializerMainBody,
+    /^mov r7, 4\r?\nmov r7, r0 - r7\r?\nmov r7, r7 << 16\r?\nmov r7, r7 >>> 16\r?\nsh \[r12 \+ 28\], r7$/m,
+);
+assert.match(
+    initializerMainBody,
+    /^mov r7, 5\r?\nmov r7, r7 << 16\r?\nmov r7, r7 >>> 16\r?\nsh \[r12 \+ 30\], r7\r?\nmov r7, 0\r?\nsh \[r12 \+ 32\], r7$/m,
+);
+assert.match(
+    initializerMainBody,
+    /^mov r7, 6\r?\nmov r7, r7 & 0xFFFF\r?\nsh \[r12 \+ 34\], r7\r?\nmov r7, 0\r?\nsh \[r12 \+ 36\], r7\r?\nmov r7, 0\r?\nsh \[r12 \+ 38\], r7$/m,
+);
+assert.match(
+    initializerMainBody,
+    /^mov r7, 7\r?\nsw \[r12 \+ 40\], r7\r?\nmov r7, 8\r?\nsw \[r12 \+ 44\], r7\r?\nmov r7, 0\r?\nsw \[r12 \+ 48\], r7$/m,
 );
 
 const initializerAssembler = new SimpleCPUAssembler();
