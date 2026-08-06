@@ -1605,7 +1605,7 @@ class CodeGenerator {
 
         if (normalized.kind === 'expr-elements') {
             for (const expr of normalized.values) {
-                this.loadImm('r7', convertConstant(this.evalGlobalConstant(expr), elementType));
+                this.loadImm('r7', convertConstant(this.evalGlobalArrayElement(expr, init), elementType));
                 this.loadImm('r8', slot.globalAddress + index * elementSize);
                 this.emitStoreToAddress('r8', 'r7', elementType);
                 index++;
@@ -1623,6 +1623,27 @@ class CodeGenerator {
             this.loadImm('r7', 0);
             this.loadImm('r8', slot.globalAddress + index * elementSize);
             this.emitStoreToAddress('r8', 'r7', elementType);
+        }
+    }
+
+    private evalGlobalArrayElement(expr: Expr, init?: Initializer): number {
+        if (init?.kind !== 'list-init') {
+            throw new CompilerError('internal error: expected array initializer list');
+        }
+        try {
+            if (!this.isIntegerConstantExpression(expr)) {
+                throw new CompilerError(
+                    'array initializer element must be an integer constant expression',
+                    init.line,
+                    init.column,
+                );
+            }
+            return this.evalIntegerConstantExpression(expr).value;
+        } catch (error) {
+            if (error instanceof CompilerError && error.line === undefined) {
+                throw new CompilerError(error.message, init.line, init.column);
+            }
+            throw error;
         }
     }
 
@@ -1916,7 +1937,7 @@ class CodeGenerator {
     private collectStaticStrings(): void {
         for (const global of this.program.globals) {
             if (global.init) {
-                this.collectStaticStringsInInitializer(global.init, global.type);
+                this.collectStaticStringsInInitializer(global.init, global.type, true);
             }
         }
         for (const fn of this.program.functions) {
@@ -1981,7 +2002,11 @@ class CodeGenerator {
         }
     }
 
-    private collectStaticStringsInInitializer(init: Initializer, type: CType): void {
+    private collectStaticStringsInInitializer(
+        init: Initializer,
+        type: CType,
+        requiresIntegerConstantElements = false,
+    ): void {
         switch (init.kind) {
             case 'expr-init':
                 if (isArrayType(type) && init.expr.kind === 'string') {
@@ -1991,6 +2016,11 @@ class CodeGenerator {
                 return;
             case 'list-init':
                 init.values.forEach((value) => {
+                    if (requiresIntegerConstantElements
+                        && isArrayType(type)
+                        && !this.isIntegerConstantExpression(value)) {
+                        return;
+                    }
                     if (!isArrayType(type) || value.kind !== 'string') {
                         this.collectStaticStringsInExpr(value);
                     }

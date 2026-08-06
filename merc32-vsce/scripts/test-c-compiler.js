@@ -452,6 +452,70 @@ const initializerResult = initializerAssembler.assemble(initializerAssembly, {
 });
 assert.ok(initializerResult.machineCodes.length > 0);
 
+const { assembly: integerConstantArrayAssembly } = compileC(`
+char ice_chars[] = {1 && 2, 'A'};
+short ice_short[] = {0 || 5};
+int ice_short_circuit[] = {0 && (1 / 0), 1 || (1 / 0)};
+unsigned int ice_mixed[] = {
+    -1 / (unsigned int)2,
+    -1 < (unsigned int)1,
+    -1 + (unsigned int)2,
+};
+int main(void) {
+    return ice_chars[0] + ice_chars[1] + ice_short[0]
+        + ice_short_circuit[0] + ice_short_circuit[1]
+        + ice_mixed[0] + ice_mixed[1] + ice_mixed[2];
+}
+`, {
+    moduleName: 'array_integer_constant_expression_test',
+    dataBase: 0x500,
+});
+for (const [address, store, value] of [
+    [0x500, 'sb', 1],
+    [0x501, 'sb', 0x41],
+    [0x502, 'sh', 1],
+    [0x504, 'sw', 0],
+    [0x508, 'sw', 1],
+    [0x510, 'sw', 0],
+    [0x514, 'sw', 1],
+]) {
+    const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
+    assert.match(
+        integerConstantArrayAssembly,
+        new RegExp(
+            `^mov r7, ${immediate}\\r?\\n` +
+            `mov r8, 0x${address.toString(16).toUpperCase()}\\r?\\n` +
+            `${store} \\[r8\\], r7$`,
+            'm',
+        ),
+    );
+}
+assert.match(
+    integerConstantArrayAssembly,
+    /^mov r7, 0x7FFF\r?\nmov r7, r7 << 16\r?\nmov r7, r7 \+ 0xFFFF\r?\nmov r8, 0x50C\r?\nsw \[r8\], r7$/m,
+);
+assert.ok(new SimpleCPUAssembler().assemble(integerConstantArrayAssembly, {
+    sourceFileName: 'array_integer_constant_expression_test.asm',
+}).machineCodes.length > 0);
+
+for (const [testSource, expectedLocation, options] of [
+    ['int a[] = {"a" - "b"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
+    ['int a[] = {"a" == "a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
+    ['int a[] = {(int)"a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
+    ['int value;\nint a[] = {value};\nint main(void) { return 0; }', { line: 2, column: 11 }],
+    ['int seed(void) { return 1; }\nint a[] = {seed()};\nint main(void) { return 0; }', { line: 2, column: 11 }],
+    ['int value;\nint a[] = {value = 1};\nint main(void) { return 0; }', { line: 2, column: 11 }],
+    ['int value;\nint a[] = {value++};\nint main(void) { return 0; }', { line: 2, column: 11 }],
+    ['int values[1];\nint a[] = {values[0]};\nint main(void) { return 0; }', { line: 2, column: 11 }],
+]) {
+    expectCompilerError(
+        testSource,
+        /array initializer element must be an integer constant expression/,
+        expectedLocation,
+        options,
+    );
+}
+
 const { assembly: largeLocalInitializerAssembly } = compileC(`
 int main(void) {
     char bytes[4096] = {1};
@@ -1082,7 +1146,7 @@ for (const [testSource, pattern] of [
     ],
     [
         'int values[1] = {1 ? 7 : missing()}; int main(void) { return values[0]; }',
-        /global initializer must be a constant expression/,
+        /array initializer element must be an integer constant expression/,
     ],
     [
         'int g = 1 ? (void)1 : (void)missing(); int main(void) { return g; }',
@@ -1181,8 +1245,8 @@ expectCompilerError(
 );
 expectCompilerError(
     'int g[1] = {(int)(1 ? (void)1 : (void)2)}; int main(void) { return g[0]; }',
-    /void conditional expression cannot be used where a value is required/,
-    { line: 1, column: 21 },
+    /array initializer element must be an integer constant expression/,
+    { line: 1, column: 12 },
 );
 
 const controlFlowSource = `
