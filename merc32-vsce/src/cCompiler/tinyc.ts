@@ -1484,7 +1484,22 @@ class CodeGenerator {
 
     private evalGlobalConstant(expr: Expr): number {
         this.validateConstantExpression(expr);
+        this.requireExpressionValue(expr, this.exprType(expr), true);
         return this.evalConstant(expr);
+    }
+
+    private requireExpressionValue(expr: Expr, type: CType, valueRequired: boolean): void {
+        if (!valueRequired || !isVoidType(type)) {
+            return;
+        }
+        if (expr.kind === 'conditional') {
+            throw new CompilerError(
+                'void conditional expression cannot be used where a value is required',
+                expr.line,
+                expr.column,
+            );
+        }
+        throw new CompilerError('void expression cannot be used where a value is required');
     }
 
     private validateConstantExpression(expr: Expr): void {
@@ -1499,15 +1514,12 @@ class CodeGenerator {
                 if (!['-', '~', '!'].includes(expr.op)) {
                     throw new CompilerError('global initializer must be a constant expression');
                 }
-                const operandType = this.exprType(expr.expr);
-                if (!isIntegerType(operandType)) {
-                    throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
-                }
+                this.validateUnaryOperand(expr);
                 this.validateConstantExpression(expr.expr);
                 return;
             }
             case 'binary':
-                this.validateConstantBinaryOperator(expr);
+                this.validateBinaryOperands(expr);
                 this.validateConstantExpression(expr.left);
                 this.validateConstantExpression(expr.right);
                 return;
@@ -1527,38 +1539,98 @@ class CodeGenerator {
         }
     }
 
-    private validateConstantBinaryOperator(expr: BinaryExpr): void {
+    private validateUnaryOperand(expr: UnaryExpr): void {
+        const operandType = this.exprType(expr.expr);
+        if (expr.expr.kind === 'conditional') {
+            this.requireExpressionValue(expr.expr, operandType, true);
+        }
+        if (expr.op === '!') {
+            if (isScalarType(operandType)) {
+                return;
+            }
+            throw new CompilerError("operator '!' requires a scalar operand");
+        }
+        if (isIntegerType(operandType)) {
+            return;
+        }
+        if (operandType.pointerDepth > 0) {
+            throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+        }
+        throw new CompilerError(`operator '${expr.op}' requires an integer operand`);
+    }
+
+    private validateBinaryOperands(expr: BinaryExpr): void {
         const leftType = this.exprType(expr.left);
         const rightType = this.exprType(expr.right);
+        if (expr.left.kind === 'conditional') {
+            this.requireExpressionValue(expr.left, leftType, true);
+        }
+        if (expr.right.kind === 'conditional') {
+            this.requireExpressionValue(expr.right, rightType, true);
+        }
         const leftIsPointer = leftType.pointerDepth > 0;
         const rightIsPointer = rightType.pointerDepth > 0;
-        if (!leftIsPointer && !rightIsPointer) {
-            return;
+        const bothInteger = isIntegerType(leftType) && isIntegerType(rightType);
+
+        if (expr.op === '&&' || expr.op === '||') {
+            if (isScalarType(leftType) && isScalarType(rightType)) {
+                return;
+            }
+            throw new CompilerError(`operator '${expr.op}' requires scalar operands`);
+        }
+
+        if (expr.op === '==' || expr.op === '!=') {
+            if (bothInteger || (leftIsPointer && rightIsPointer)) {
+                return;
+            }
+            if (leftIsPointer !== rightIsPointer) {
+                const integerExpr = leftIsPointer ? expr.right : expr.left;
+                if (this.isIntegerConstantZero(integerExpr)) {
+                    return;
+                }
+            }
+            throw new CompilerError(`operator '${expr.op}' requires compatible scalar operands`);
+        }
+
+        if (['<', '<=', '>', '>='].includes(expr.op)) {
+            if (bothInteger || (leftIsPointer && rightIsPointer)) {
+                return;
+            }
+            throw new CompilerError(`operator '${expr.op}' requires compatible scalar operands`);
         }
 
         if (expr.op === '+') {
-            if (leftIsPointer !== rightIsPointer
-                && isIntegerType(leftIsPointer ? rightType : leftType)) {
+            if (bothInteger || (leftIsPointer !== rightIsPointer
+                && isIntegerType(leftIsPointer ? rightType : leftType))) {
                 return;
             }
-            throw new CompilerError("operator '+' cannot add two pointers");
+            if (leftIsPointer && rightIsPointer) {
+                throw new CompilerError("operator '+' cannot add two pointers");
+            }
+            throw new CompilerError("operator '+' requires integer operands or one pointer and one integer");
         }
         if (expr.op === '-') {
-            if (leftIsPointer && (rightIsPointer || isIntegerType(rightType))) {
+            if (bothInteger || (leftIsPointer && isIntegerType(rightType))) {
+                return;
+            }
+            if (leftIsPointer && rightIsPointer) {
+                this.pointerDifferenceElementSize(leftType, rightType);
                 return;
             }
             throw new CompilerError("operator '-' requires a pointer left operand and pointer or integer right operand");
         }
-        if (isComparison(expr.op)) {
-            if (leftIsPointer && rightIsPointer) {
+
+        if (['*', '/', '%', '&', '|', '^', '<<', '>>'].includes(expr.op)) {
+            if (bothInteger) {
                 return;
             }
-            const integerExpr = leftIsPointer ? expr.right : expr.left;
-            if (this.isIntegerConstantExpression(integerExpr)) {
-                return;
+            if (leftIsPointer || rightIsPointer) {
+                throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
             }
+            throw new CompilerError(`operator '${expr.op}' requires integer operands`);
         }
-        throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+
+        throw new CompilerError(`unsupported binary operator '${expr.op}'`);
     }
 
     private evalConstant(expr: Expr): number {
@@ -1568,6 +1640,7 @@ class CodeGenerator {
             case 'string':
                 return this.staticStringAddress(expr);
             case 'unary': {
+                this.validateUnaryOperand(expr);
                 const value = this.evalConstant(expr.expr);
                 if (expr.op === '-') return -value;
                 if (expr.op === '~') return ~value;
@@ -1583,14 +1656,11 @@ class CodeGenerator {
                 return convertConstant(this.evalConstant(selected), resultType);
             }
             case 'binary': {
+                this.validateBinaryOperands(expr);
                 const left = this.evalConstant(expr.left);
                 const right = this.evalConstant(expr.right);
                 const leftType = this.exprType(expr.left);
                 const rightType = this.exprType(expr.right);
-                if (['*', '/', '%'].includes(expr.op) &&
-                    (leftType.pointerDepth > 0 || rightType.pointerDepth > 0)) {
-                    throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
-                }
                 switch (expr.op) {
                     case '+': return this.evalConstantAddition(left, right, leftType, rightType);
                     case '-': return this.evalConstantSubtraction(left, right, leftType, rightType);
@@ -1641,11 +1711,7 @@ class CodeGenerator {
         const leftIsPointer = leftType.pointerDepth > 0;
         const rightIsPointer = rightType.pointerDepth > 0;
         if (leftIsPointer && rightIsPointer) {
-            const leftSize = typeSizeBytes(derefType(leftType));
-            const rightSize = typeSizeBytes(derefType(rightType));
-            if (leftSize !== rightSize) {
-                throw new CompilerError('cannot subtract pointers to differently sized types');
-            }
+            const leftSize = this.pointerDifferenceElementSize(leftType, rightType);
             const difference = left - right;
             if (leftSize === 2) return difference >>> 1;
             if (leftSize === 4) return difference >>> 2;
@@ -2064,6 +2130,7 @@ class CodeGenerator {
     }
 
     private emitExpr(expr: Expr, target: string, valueRequired = true): CType {
+        this.requireExpressionValue(expr, this.exprType(expr), valueRequired);
         switch (expr.kind) {
             case 'number':
                 this.loadImm(target, expr.value);
@@ -2090,7 +2157,7 @@ class CodeGenerator {
             case 'update':
                 return this.emitUpdate(expr, target);
             case 'conditional':
-                return this.emitConditional(expr, target, valueRequired);
+                return this.emitConditional(expr, target);
             case 'unary':
                 return this.emitUnary(expr, target);
             case 'binary':
@@ -2098,6 +2165,10 @@ class CodeGenerator {
             case 'call':
                 return this.emitCall(expr, target, valueRequired);
             case 'cast':
+                if (isVoidType(expr.type)) {
+                    this.emitExpr(expr.expr, target, false);
+                    return voidType();
+                }
                 this.emitExpr(expr.expr, target);
                 this.convertValue(target, expr.type);
                 return expr.type;
@@ -2110,16 +2181,9 @@ class CodeGenerator {
         }
     }
 
-    private emitConditional(expr: ConditionalExpr, target: string, valueRequired: boolean): CType {
+    private emitConditional(expr: ConditionalExpr, target: string): CType {
         const resultType = this.conditionalResultType(expr);
         const resultIsVoid = isVoidType(resultType);
-        if (resultIsVoid && valueRequired) {
-            throw new CompilerError(
-                'void conditional expression cannot be used where a value is required',
-                expr.line,
-                expr.column,
-            );
-        }
         const falseLabel = this.newLabel('conditional_false');
         const trueLabel = this.newLabel('conditional_true');
         const endLabel = this.newLabel('conditional_end');
@@ -2252,6 +2316,7 @@ class CodeGenerator {
             return valueType;
         }
 
+        this.validateUnaryOperand(expr);
         const type = this.emitExpr(expr.expr, target);
         if (expr.op === '-') {
             this.emit(`mov ${target}, r0 - ${target}`);
@@ -2270,6 +2335,7 @@ class CodeGenerator {
     }
 
     private emitBinary(expr: BinaryExpr, target: string): CType {
+        this.validateBinaryOperands(expr);
         if (expr.op === '&&' || expr.op === '||') {
             return this.emitLogical(expr, target);
         }
@@ -2715,7 +2781,7 @@ class CodeGenerator {
         if (!this.isIntegerConstantExpression(expr)) {
             return false;
         }
-        return this.evalIntegerConstantExpression(expr) === 0;
+        return this.evalIntegerConstantExpression(expr).value === 0;
     }
 
     private isIntegerConstantExpression(expr: Expr): boolean {
@@ -2753,74 +2819,101 @@ class CodeGenerator {
         }
     }
 
-    private evalIntegerConstantExpression(expr: Expr): number {
+    private evalIntegerConstantExpression(expr: Expr): { value: number; type: CType } {
         switch (expr.kind) {
             case 'number':
-                return convertConstant(expr.value, intType());
-            case 'cast':
-                return convertConstant(this.evalIntegerConstantExpression(expr.expr), expr.type);
+                return { value: convertConstant(expr.value, intType()), type: intType() };
+            case 'cast': {
+                const operand = this.evalIntegerConstantExpression(expr.expr);
+                return { value: convertConstant(operand.value, expr.type), type: expr.type };
+            }
             case 'unary': {
-                const value = this.evalIntegerConstantExpression(expr.expr);
-                if (expr.op === '-') return convertConstant(-value, this.exprType(expr));
-                if (expr.op === '~') return convertConstant(~value, this.exprType(expr));
-                if (expr.op === '!') return value ? 0 : 1;
+                const operand = this.evalIntegerConstantExpression(expr.expr);
+                if (expr.op === '!') {
+                    return { value: operand.value ? 0 : 1, type: intType() };
+                }
+                const resultType = promoteIntegerType(operand.type);
+                const value = convertConstant(operand.value, resultType);
+                if (expr.op === '-') {
+                    return { value: convertConstant(-value, resultType), type: resultType };
+                }
+                if (expr.op === '~') {
+                    return { value: convertConstant(~value, resultType), type: resultType };
+                }
                 break;
             }
             case 'conditional': {
-                const selected = this.evalIntegerConstantExpression(expr.test)
+                const selected = this.evalIntegerConstantExpression(expr.test).value
                     ? expr.consequent
                     : expr.alternate;
-                return convertConstant(
-                    this.evalIntegerConstantExpression(selected),
-                    this.conditionalResultType(expr),
-                );
+                const selectedValue = this.evalIntegerConstantExpression(selected);
+                const resultType = this.conditionalResultType(expr);
+                return {
+                    value: convertConstant(selectedValue.value, resultType),
+                    type: resultType,
+                };
             }
             case 'binary': {
                 const left = this.evalIntegerConstantExpression(expr.left);
                 if (expr.op === '&&') {
-                    return left && this.evalIntegerConstantExpression(expr.right) ? 1 : 0;
+                    return {
+                        value: left.value && this.evalIntegerConstantExpression(expr.right).value ? 1 : 0,
+                        type: intType(),
+                    };
                 }
                 if (expr.op === '||') {
-                    return left || this.evalIntegerConstantExpression(expr.right) ? 1 : 0;
+                    return {
+                        value: left.value || this.evalIntegerConstantExpression(expr.right).value ? 1 : 0,
+                        type: intType(),
+                    };
                 }
 
                 const right = this.evalIntegerConstantExpression(expr.right);
+                if (expr.op === '<<' || expr.op === '>>') {
+                    const resultType = promoteIntegerType(left.type);
+                    const leftValue = convertConstant(left.value, resultType);
+                    const rightValue = convertConstant(right.value, promoteIntegerType(right.type));
+                    const value = expr.op === '<<'
+                        ? leftValue << rightValue
+                        : isUnsignedType(resultType)
+                            ? leftValue >>> rightValue
+                            : leftValue >> rightValue;
+                    return { value: convertConstant(value, resultType), type: resultType };
+                }
+
+                const arithmeticType = usualArithmeticType(left.type, right.type);
+                const leftValue = convertConstant(left.value, arithmeticType);
+                const rightValue = convertConstant(right.value, arithmeticType);
                 let value: number;
                 switch (expr.op) {
-                    case '+': value = left + right; break;
-                    case '-': value = left - right; break;
-                    case '*': value = Math.imul(left, right); break;
+                    case '+': value = leftValue + rightValue; break;
+                    case '-': value = leftValue - rightValue; break;
+                    case '*': value = Math.imul(leftValue, rightValue); break;
                     case '/':
-                        if (right === 0) {
+                        if (rightValue === 0) {
                             throw new CompilerError('division by zero in integer constant expression');
                         }
-                        value = Math.trunc(left / right);
+                        value = Math.trunc(leftValue / rightValue);
                         break;
                     case '%':
-                        if (right === 0) {
+                        if (rightValue === 0) {
                             throw new CompilerError('division by zero in integer constant expression');
                         }
-                        value = left % right;
+                        value = leftValue % rightValue;
                         break;
-                    case '&': value = left & right; break;
-                    case '|': value = left | right; break;
-                    case '^': value = left ^ right; break;
-                    case '<<': value = left << right; break;
-                    case '>>':
-                        value = isUnsignedType(promoteIntegerType(this.exprType(expr.left)))
-                            ? left >>> right
-                            : left >> right;
-                        break;
-                    case '==': return left === right ? 1 : 0;
-                    case '!=': return left !== right ? 1 : 0;
-                    case '<': return left < right ? 1 : 0;
-                    case '<=': return left <= right ? 1 : 0;
-                    case '>': return left > right ? 1 : 0;
-                    case '>=': return left >= right ? 1 : 0;
+                    case '&': value = leftValue & rightValue; break;
+                    case '|': value = leftValue | rightValue; break;
+                    case '^': value = leftValue ^ rightValue; break;
+                    case '==': return { value: leftValue === rightValue ? 1 : 0, type: intType() };
+                    case '!=': return { value: leftValue !== rightValue ? 1 : 0, type: intType() };
+                    case '<': return { value: leftValue < rightValue ? 1 : 0, type: intType() };
+                    case '<=': return { value: leftValue <= rightValue ? 1 : 0, type: intType() };
+                    case '>': return { value: leftValue > rightValue ? 1 : 0, type: intType() };
+                    case '>=': return { value: leftValue >= rightValue ? 1 : 0, type: intType() };
                     default:
                         throw new CompilerError('internal error: invalid integer constant expression');
                 }
-                return convertConstant(value, this.exprType(expr));
+                return { value: convertConstant(value, arithmeticType), type: arithmeticType };
             }
             default:
                 break;
@@ -2857,16 +2950,21 @@ class CodeGenerator {
     }
 
     private scalePointerDifference(target: string, leftType: CType, rightType: CType): void {
-        const leftSize = typeSizeBytes(derefType(leftType));
-        const rightSize = typeSizeBytes(derefType(rightType));
-        if (leftSize !== rightSize) {
-            throw new CompilerError('cannot subtract pointers to differently sized types');
-        }
+        const leftSize = this.pointerDifferenceElementSize(leftType, rightType);
         if (leftSize === 2) {
             this.emit(`mov ${target}, ${target} >>> 1`);
         } else if (leftSize === 4) {
             this.emit(`mov ${target}, ${target} >>> 2`);
         }
+    }
+
+    private pointerDifferenceElementSize(leftType: CType, rightType: CType): number {
+        const leftSize = typeSizeBytes(derefType(leftType));
+        const rightSize = typeSizeBytes(derefType(rightType));
+        if (leftSize !== rightSize) {
+            throw new CompilerError('cannot subtract pointers to differently sized types');
+        }
+        return leftSize;
     }
 
     private scaleRegister(register: string, sizeBytes: number): void {
@@ -3174,6 +3272,10 @@ function isVoidType(type: CType): boolean {
 
 function isIntegerType(type: CType): boolean {
     return type.pointerDepth === 0 && type.base !== 'void' && !isArrayType(type);
+}
+
+function isScalarType(type: CType): boolean {
+    return isIntegerType(type) || type.pointerDepth > 0;
 }
 
 function isArrayType(type: CType): type is CType & { arrayLength: number | null } {

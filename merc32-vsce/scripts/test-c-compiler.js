@@ -854,6 +854,8 @@ const conditionalExpressionSource = `
 int global_choice = 1 ? 41 : 99;
 char *global_text = 0 ? "LEFT" : "RIGHT";
 int global_short_circuit = 1 ? 7 : 1 / 0;
+int global_not_string = !"abc";
+int global_not_string_choice = !"abc" ? 1 : 2;
 
 void __irq_handler(void) {
 }
@@ -907,6 +909,10 @@ int unselected_null_error(int condition, int *pointer) {
     return *(condition ? pointer : (0 ? 1 / 0 : 0));
 }
 
+int unsigned_comparison_null(int condition, int *pointer) {
+    return *(condition ? pointer : (-1 < (unsigned int)1));
+}
+
 char *choose_text(int condition) {
     return condition ? "TRUE" : "FALSE";
 }
@@ -925,17 +931,25 @@ void choose_user_void(int condition) {
     condition ? void_true() : void_false();
 }
 
+void casted_void_conditionals(int condition) {
+    (void)(condition ? void_true() : void_false());
+    condition ? (void)void_true() : (void)void_false();
+}
+
 int main(void) {
     int counter = 10;
     int a = choose(1, &counter);
     int b = choose(0, &counter);
     choose_void(1);
     choose_user_void(0);
+    casted_void_conditionals(1);
     return a + b + right_associative() + expression_containers(1)
         + calls_in_branches(0) + pointer_or_null(1, &counter)
         + null_or_pointer(0, &counter) + unselected_null_error(1, &counter)
+        + unsigned_comparison_null(1, &counter)
         + choose_text(0)[0] + global_choice + global_text[0]
-        + global_short_circuit + counter;
+        + global_short_circuit + global_not_string
+        + global_not_string_choice + counter;
 }
 `;
 
@@ -1010,6 +1024,14 @@ assert.match(chooseUserVoidBody, /^jmp void_true, r14$/m);
 assert.match(chooseUserVoidBody, /^jmp void_false, r14$/m);
 assert.doesNotMatch(chooseUserVoidBody, /^mov r7, r4$/m);
 
+const castedVoidBody = conditionalExpressionAssembly.match(
+    /^casted_void_conditionals:\r?\n([\s\S]*?)^__casted_void_conditionals_return:/m,
+)?.[1];
+assert.ok(castedVoidBody, 'missing casted void conditional assembly body');
+assert.strictEqual((castedVoidBody.match(/^jmp void_true, r14$/gm) || []).length, 2);
+assert.strictEqual((castedVoidBody.match(/^jmp void_false, r14$/gm) || []).length, 2);
+assert.doesNotMatch(castedVoidBody, /^mov r7, r4$/m);
+
 const conditionalStaticBytes = new Map();
 for (const match of conditionalExpressionAssembly.matchAll(
     /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
@@ -1040,8 +1062,20 @@ for (const [testSource, pattern] of [
         /global initializer must be a constant expression/,
     ],
     [
+        'int g = 1 ? (void)1 : (void)missing(); int main(void) { return g; }',
+        /global initializer must be a constant expression/,
+    ],
+    [
         'int data[1]; int g = 1 ? 7 : data * data; int main(void) { return g; }',
         /operator '\*' does not accept pointer operands/,
+    ],
+    [
+        'int g = 1 ? 7 : (int *)"x" - (short *)"x"; int main(void) { return g; }',
+        /cannot subtract pointers to differently sized types/,
+    ],
+    [
+        'int g = 1 ? 7 : (void)1 + 2; int main(void) { return g; }',
+        /operator '\+' requires integer operands/,
     ],
     ['int main(void) { return 1 ? 2; }', /expected ':'/],
     [
@@ -1069,6 +1103,14 @@ for (const [testSource, pattern] of [
         /division by zero/,
     ],
     [
+        'int main(void) { int values[1]; int *pointer = values; return *(1 ? pointer : (-1 / (unsigned int)2)); }',
+        /conditional expression cannot combine a pointer with a nonzero integer/,
+    ],
+    [
+        'int main(void) { int values[1]; int *pointer = values; return *(1 ? pointer : (-1 > (unsigned int)1)); }',
+        /conditional expression cannot combine a pointer with a nonzero integer/,
+    ],
+    [
         'void __irq_handler(void) {} int main(void) { return 1 ? __irq_enable() : 2; }',
         /conditional expression branches must both have void type or both produce values/,
     ],
@@ -1094,6 +1136,10 @@ for (const [testSource, pattern] of [
     ],
     [
         'void __irq_handler(void) {} int main(void) { int condition = 1; return (condition ? __irq_enable() : __irq_disable()) + 1; }',
+        /void conditional expression cannot be used where a value is required/,
+    ],
+    [
+        'int global_value = 1 ? (void)1 : (void)2; int main(void) { return global_value; }',
         /void conditional expression cannot be used where a value is required/,
     ],
 ]) {
