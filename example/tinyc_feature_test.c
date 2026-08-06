@@ -475,6 +475,11 @@ int bit_ops(int x) {
 int main(void) {
     int total = 0;
     int expected = 520;
+    int initializer_result = 0;
+    int update_result = 0;
+    int pointer_result = 0;
+    int conditional_result = 0;
+    int control_result = 0;
     unsigned int ures = 0;
     volatile unsigned int *status = (volatile unsigned int *)status_addr;
     volatile unsigned int *fail = (volatile unsigned int *)fail_addr;
@@ -490,11 +495,43 @@ int main(void) {
     total = total + bit_ops(9);
     total = total + pointer_demo();
     total = total + array_demo();
-    total = total + initializer_syntax_tests();
-    total = total + update_syntax_tests();
-    total = total + pointer_update_tests();
-    total = total + conditional_syntax_tests();
-    total = total + control_syntax_tests();
+
+    initializer_result = initializer_syntax_tests();
+    if (initializer_result != 59) {
+        *fail = 0x01000000 | (initializer_result & 0x00FFFFFF);
+        *status = fail_code;
+        return initializer_result;
+    }
+    update_result = update_syntax_tests();
+    if (update_result != 27) {
+        *fail = 0x02000000 | (update_result & 0x00FFFFFF);
+        *status = fail_code;
+        return update_result;
+    }
+    pointer_result = pointer_update_tests();
+    if (pointer_result != 12) {
+        *fail = 0x03000000 | (pointer_result & 0x00FFFFFF);
+        *status = fail_code;
+        return pointer_result;
+    }
+    conditional_result = conditional_syntax_tests();
+    if (conditional_result != 9) {
+        *fail = 0x04000000 | (conditional_result & 0x00FFFFFF);
+        *status = fail_code;
+        return conditional_result;
+    }
+    control_result = control_syntax_tests();
+    if (control_result != 18) {
+        *fail = 0x05000000 | (control_result & 0x00FFFFFF);
+        *status = fail_code;
+        return control_result;
+    }
+
+    total = total + initializer_result;
+    total = total + update_result;
+    total = total + pointer_result;
+    total = total + conditional_result;
+    total = total + control_result;
 
     ures = unsigned_check(0xFFFF, 1);
     total = total + ures;

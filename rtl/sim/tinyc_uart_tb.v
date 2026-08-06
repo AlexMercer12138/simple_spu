@@ -81,9 +81,11 @@ module tinyc_uart_tb();
 
     wire firmware_pass_write = dlb_en && dlb_we &&
                                (dlb_addr == STATUS_ADDR) &&
+                               (dlb_strb === 4'b1111) &&
                                (dlb_wdata == PASS_CODE);
     wire firmware_fail_write = dlb_en && dlb_we &&
                                (dlb_addr == STATUS_ADDR) &&
+                               (dlb_strb === 4'b1111) &&
                                (dlb_wdata == FAIL_CODE);
 
     assign ilb_rdata = program_rom[ilb_addr];
@@ -368,7 +370,20 @@ module tinyc_uart_tb();
             if (firmware_pass_write)
                 firmware_pass_seen <= 1'b1;
 
-            if (firmware_fail_write) begin
+            if (dlb_en && dlb_we &&
+                (((^dlb_strb) === 1'bx) || (dlb_strb === 4'b0000))) begin
+                done <= 1'b1;
+                $display("TEST FAIL: invalid DLB write strobe=%b addr=%0d data=0x%08h",
+                         dlb_strb, dlb_addr, dlb_wdata);
+                $finish;
+            end else if (dlb_en && dlb_we &&
+                         (dlb_addr == STATUS_ADDR) &&
+                         !(dlb_strb === 4'b1111)) begin
+                done <= 1'b1;
+                $display("TEST FAIL: partial firmware status write strobe=%b data=0x%08h",
+                         dlb_strb, dlb_wdata);
+                $finish;
+            end else if (firmware_fail_write) begin
                 done <= 1'b1;
                 $display("TEST FAIL: firmware status=0x%08h detail=0x%08h",
                          dlb_wdata, dlb_ram[FAIL_ADDR]);

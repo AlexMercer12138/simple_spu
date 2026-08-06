@@ -144,7 +144,21 @@ module tinyc_cpu_tb();
         end else if (!done) begin
             cycle_count <= cycle_count + 1;
 
-            if (dlb_en && dlb_we && (dlb_addr == STATUS_ADDR)) begin
+            if (dlb_en && dlb_we &&
+                (((^dlb_strb) === 1'bx) || (dlb_strb === 4'b0000))) begin
+                done <= 1'b1;
+                $display("TEST FAIL: invalid DLB write strobe=%b addr=%0d data=0x%08h",
+                         dlb_strb, dlb_addr, dlb_wdata);
+                $finish;
+            end else if (dlb_en && dlb_we &&
+                         (dlb_addr == STATUS_ADDR) &&
+                         !(dlb_strb === 4'b1111)) begin
+                done <= 1'b1;
+                $display("TEST FAIL: partial firmware status write strobe=%b data=0x%08h",
+                         dlb_strb, dlb_wdata);
+                $finish;
+            end else if (dlb_en && dlb_we &&
+                         (dlb_addr == STATUS_ADDR)) begin
                 if (dlb_wdata == PASS_CODE) begin
                     done <= 1'b1;
                     $display("TEST PASS");
