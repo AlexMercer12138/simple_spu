@@ -28,6 +28,7 @@ module tinyc_cpu_tb();
     wire        dlb_en;
     wire        dlb_we;
     wire [15:0] dlb_addr;
+    wire [3:0]  dlb_strb;
     wire [31:0] dlb_wdata;
     reg  [31:0] dlb_rdata = 32'd0;
 
@@ -75,6 +76,7 @@ module tinyc_cpu_tb();
         .dlb_en         (dlb_en),
         .dlb_we         (dlb_we),
         .dlb_addr       (dlb_addr),
+        .dlb_strb       (dlb_strb),
         .dlb_wdata      (dlb_wdata),
         .dlb_rdata      (dlb_rdata),
 
@@ -120,8 +122,16 @@ module tinyc_cpu_tb();
             plb_rdata <= 32'd0;
             plb_ack <= 1'b0;
         end else begin
-            if (dlb_en && dlb_we)
-                dlb_ram[dlb_addr] <= dlb_wdata;
+            if (dlb_en && dlb_we) begin
+                if (dlb_strb[0])
+                    dlb_ram[dlb_addr][7:0] <= dlb_wdata[7:0];
+                if (dlb_strb[1])
+                    dlb_ram[dlb_addr][15:8] <= dlb_wdata[15:8];
+                if (dlb_strb[2])
+                    dlb_ram[dlb_addr][23:16] <= dlb_wdata[23:16];
+                if (dlb_strb[3])
+                    dlb_ram[dlb_addr][31:24] <= dlb_wdata[31:24];
+            end
             dlb_rdata <= dlb_en ? dlb_ram[dlb_addr] : dlb_rdata;
             plb_rdata <= 32'd0;
             plb_ack <= plb_rden | plb_wren;

@@ -47,14 +47,14 @@ int uart_putc(unsigned int value) {
     return 1;
 }
 
-int uart_write(unsigned int *data, int length) {
+int uart_print(char *text) {
     int index = 0;
 
-    while (index < length) {
-        if (uart_putc(data[index]) == 0) {
+    while (text[index] != '\0') {
+        if (uart_putc((unsigned char)text[index]) == 0) {
             return 0;
         }
-        index = index + 1;
+        index++;
     }
     return 1;
 }
@@ -96,20 +96,10 @@ int main(void) {
         (volatile unsigned int *)status_addr;
     volatile unsigned int *detail =
         (volatile unsigned int *)detail_addr;
-    unsigned int message[8];
     unsigned int received = 0;
 
-    message[0] = 0x4D;
-    message[1] = 0x45;
-    message[2] = 0x52;
-    message[3] = 0x43;
-    message[4] = 0x33;
-    message[5] = 0x32;
-    message[6] = 0x0D;
-    message[7] = 0x0A;
-
     uart_init(100000);
-    if (uart_write(message, 8) == 0) {
+    if (uart_print("MERC32\r\n") == 0) {
         return uart_fail(1);
     }
     if (uart_getc_with_limit(&received, 128) != 0) {

@@ -4,6 +4,361 @@ unsigned int pass_code = 0x600D;
 unsigned int fail_code = 0x0BAD;
 int global_seed = 3;
 int global_buf[4];
+int local_initializer_calls = 0;
+char global_char_values[] = {
+    'A', '\a', '\b', '\f', '\n', '\r', '\t', '\v',
+    '\\', '\'', '\"', '\0', '\101', '\x42',
+};
+unsigned char global_utf8[8] = "中";
+short global_short_values[] = {-2, 300,};
+unsigned short global_ushort_values[4] = {65535, 9};
+int global_int_values[] = {1000, -50, 7,};
+unsigned int global_uint_values[4] = {0xFFFFFFFF, 10};
+
+int local_initializer_value(void) {
+    local_initializer_calls++;
+    return 1234;
+}
+
+int initializer_syntax_tests(void) {
+    int score = 0;
+    char local_chars[8] = "A\n\t\\\"";
+    unsigned char local_uchars[] = {1, 255, 3,};
+    short local_shorts[4] = {-300, 400};
+    unsigned short local_ushorts[] = {60000, 2,};
+    int local_ints[4] = {local_initializer_value(), 20};
+    unsigned int local_uints[] = {0x80000000, 7,};
+
+    if (global_char_values[0] == 65) score = score + 1;
+    if (global_char_values[1] == 7) score = score + 1;
+    if (global_char_values[2] == 8) score = score + 1;
+    if (global_char_values[3] == 12) score = score + 1;
+    if (global_char_values[4] == 10) score = score + 1;
+    if (global_char_values[5] == 13) score = score + 1;
+    if (global_char_values[6] == 9) score = score + 1;
+    if (global_char_values[7] == 11) score = score + 1;
+    if (global_char_values[8] == 92) score = score + 1;
+    if (global_char_values[9] == 39) score = score + 1;
+    if (global_char_values[10] == 34) score = score + 1;
+    if (global_char_values[11] == 0) score = score + 1;
+    if (global_char_values[12] == 65) score = score + 1;
+    if (global_char_values[13] == 66) score = score + 1;
+
+    if (global_utf8[0] == 0xE4) score = score + 1;
+    if (global_utf8[1] == 0xB8) score = score + 1;
+    if (global_utf8[2] == 0xAD) score = score + 1;
+    if (global_utf8[3] == 0) score = score + 1;
+    if (global_utf8[4] == 0) score = score + 1;
+    if (global_utf8[5] == 0) score = score + 1;
+    if (global_utf8[6] == 0) score = score + 1;
+    if (global_utf8[7] == 0) score = score + 1;
+
+    if (global_short_values[0] == -2) score = score + 1;
+    if (global_short_values[1] == 300) score = score + 1;
+    if (global_ushort_values[0] == 65535) score = score + 1;
+    if (global_ushort_values[1] == 9) score = score + 1;
+    if (global_ushort_values[2] == 0) score = score + 1;
+    if (global_ushort_values[3] == 0) score = score + 1;
+    if (global_int_values[0] == 1000) score = score + 1;
+    if (global_int_values[1] == -50) score = score + 1;
+    if (global_int_values[2] == 7) score = score + 1;
+    if (global_uint_values[0] == 0xFFFFFFFF) score = score + 1;
+    if (global_uint_values[1] == 10) score = score + 1;
+    if (global_uint_values[2] == 0) score = score + 1;
+    if (global_uint_values[3] == 0) score = score + 1;
+
+    if (local_chars[0] == 65) score = score + 1;
+    if (local_chars[1] == 10) score = score + 1;
+    if (local_chars[2] == 9) score = score + 1;
+    if (local_chars[3] == 92) score = score + 1;
+    if (local_chars[4] == 34) score = score + 1;
+    if (local_chars[5] == 0) score = score + 1;
+    if (local_chars[6] == 0) score = score + 1;
+    if (local_chars[7] == 0) score = score + 1;
+    if (local_uchars[0] == 1) score = score + 1;
+    if (local_uchars[1] == 255) score = score + 1;
+    if (local_uchars[2] == 3) score = score + 1;
+    if (local_shorts[0] == -300) score = score + 1;
+    if (local_shorts[1] == 400) score = score + 1;
+    if (local_shorts[2] == 0) score = score + 1;
+    if (local_shorts[3] == 0) score = score + 1;
+    if (local_ushorts[0] == 60000) score = score + 1;
+    if (local_ushorts[1] == 2) score = score + 1;
+    if (local_ints[0] == 1234) score = score + 1;
+    if (local_ints[1] == 20) score = score + 1;
+    if (local_ints[2] == 0) score = score + 1;
+    if (local_ints[3] == 0) score = score + 1;
+    if (local_uints[0] == 0x80000000) score = score + 1;
+    if (local_uints[1] == 7) score = score + 1;
+    if (local_initializer_calls == 1) score = score + 1;
+
+    return score;
+}
+
+int update_syntax_tests(void) {
+    int score = 0;
+    int value = 10;
+    unsigned int unsigned_value = 0x80000000;
+    char narrow_char = 127;
+    unsigned char narrow_uchar = 255;
+    short narrow_short = 32767;
+    unsigned short narrow_ushort = 65535;
+    int data[3] = {10, 20, 30};
+    int index = 0;
+    int assigned = 0;
+    int old = 0;
+    int updated = 0;
+
+    value += 5;
+    if (value == 15) score = score + 1;
+    value -= 3;
+    if (value == 12) score = score + 1;
+    value *= 4;
+    if (value == 48) score = score + 1;
+    value /= 6;
+    if (value == 8) score = score + 1;
+    value %= 5;
+    if (value == 3) score = score + 1;
+    value &= 6;
+    if (value == 2) score = score + 1;
+    value |= 8;
+    if (value == 10) score = score + 1;
+    value ^= 3;
+    if (value == 9) score = score + 1;
+    value <<= 2;
+    if (value == 36) score = score + 1;
+    value >>= 1;
+    if (value == 18) score = score + 1;
+
+    unsigned_value >>= 31;
+    if (unsigned_value == 1) score = score + 1;
+    narrow_char += 2;
+    if (narrow_char == -127) score = score + 1;
+    narrow_uchar += 2;
+    if (narrow_uchar == 1) score = score + 1;
+    narrow_short += 2;
+    if (narrow_short == -32767) score = score + 1;
+    narrow_ushort += 2;
+    if (narrow_ushort == 1) score = score + 1;
+
+    assigned = (data[index++] += 5);
+    if (assigned == 15) score = score + 1;
+    if (index == 1) score = score + 1;
+    if (data[0] == 15) score = score + 1;
+    if (data[1] == 20) score = score + 1;
+
+    value = 5;
+    old = value++;
+    if (old == 5) score = score + 1;
+    if (value == 6) score = score + 1;
+    updated = ++value;
+    if (updated == 7) score = score + 1;
+    if (value == 7) score = score + 1;
+    old = value--;
+    if (old == 7) score = score + 1;
+    if (value == 6) score = score + 1;
+    updated = --value;
+    if (updated == 5) score = score + 1;
+    if (value == 5) score = score + 1;
+
+    return score;
+}
+
+int pointer_update_tests(void) {
+    int score = 0;
+    char bytes[] = {1, 2, 3};
+    short halves[] = {10, 20, 30, 40};
+    int words[] = {100, 200, 300, 400};
+    char *byte_ptr = bytes;
+    short *half_ptr = halves;
+    int *word_ptr = words;
+
+    byte_ptr++;
+    if (*byte_ptr == 2) score = score + 1;
+    byte_ptr--;
+    if (*byte_ptr == 1) score = score + 1;
+    byte_ptr += 2;
+    if (*byte_ptr == 3) score = score + 1;
+    byte_ptr -= 1;
+    if (*byte_ptr == 2) score = score + 1;
+
+    half_ptr++;
+    if (*half_ptr == 20) score = score + 1;
+    half_ptr--;
+    if (*half_ptr == 10) score = score + 1;
+    half_ptr += 3;
+    if (*half_ptr == 40) score = score + 1;
+    half_ptr -= 2;
+    if (*half_ptr == 20) score = score + 1;
+
+    word_ptr++;
+    if (*word_ptr == 200) score = score + 1;
+    word_ptr--;
+    if (*word_ptr == 100) score = score + 1;
+    word_ptr += 2;
+    if (*word_ptr == 300) score = score + 1;
+    word_ptr -= 1;
+    if (*word_ptr == 200) score = score + 1;
+
+    return score;
+}
+
+int conditional_syntax_tests(void) {
+    int score = 0;
+    int condition = 0;
+    int counter = 10;
+    int choice = 0;
+    int nested = 0;
+
+    choice = condition++ ? ++counter : --counter;
+    if (condition == 1) score = score + 1;
+    if (counter == 9) score = score + 1;
+    if (choice == 9) score = score + 1;
+
+    choice = condition++ ? (counter += 3) : (counter += 100);
+    if (condition == 2) score = score + 1;
+    if (counter == 12) score = score + 1;
+    if (choice == 12) score = score + 1;
+
+    nested = 0 ? (counter += 1000) : 0 ? (counter += 2000) : (counter += 4);
+    if (nested == 16) score = score + 1;
+    if (counter == 16) score = score + 1;
+    nested = 1 ? (0 ? 100 : 7) : 200;
+    if (nested == 7) score = score + 1;
+
+    return score;
+}
+
+int switch_classify(int value) {
+    int result = 0;
+
+    switch (value) {
+    case 1:
+        result += 1;
+    case 2:
+        result += 2;
+        break;
+    case 3:
+    case 4:
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int switch_without_default(int value) {
+    int result = 1;
+
+    switch (value) {
+    case 7:
+        result += 2;
+    }
+    return result;
+}
+
+int nested_switch_value(int outer, int inner) {
+    int result = 0;
+
+    switch (outer) {
+    case 1:
+        switch (inner) {
+        case 2:
+            result += 1;
+            break;
+        default:
+            result += 2;
+        }
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int loop_in_switch_value(void) {
+    int result = 0;
+
+    switch (1) {
+    case 1:
+        while (result < 3) {
+            result++;
+            break;
+        }
+        result += 4;
+        break;
+    default:
+        result += 8;
+    }
+    return result;
+}
+
+int control_syntax_tests(void) {
+    int score = 0;
+    int count = 0;
+    int sum = 0;
+    int index = 0;
+    int result = 0;
+    int loop_index = 0;
+    int loop_sum = 0;
+
+    do {
+        count++;
+    } while (0);
+    if (count == 1) score = score + 1;
+
+    count = 0;
+    do {
+        count++;
+        if (count < 3) continue;
+        sum += count;
+    } while (count < 4);
+    if (count == 4) score = score + 1;
+    if (sum == 7) score = score + 1;
+
+    if (switch_classify(1) == 3) score = score + 1;
+    if (switch_classify(2) == 2) score = score + 1;
+    if (switch_classify(3) == 4) score = score + 1;
+    if (switch_classify(4) == 4) score = score + 1;
+    if (switch_classify(9) == 8) score = score + 1;
+    if (switch_without_default(7) == 3) score = score + 1;
+    if (switch_without_default(99) == 1) score = score + 1;
+    if (nested_switch_value(1, 2) == 5) score = score + 1;
+    if (nested_switch_value(1, 9) == 6) score = score + 1;
+    if (nested_switch_value(9, 2) == 8) score = score + 1;
+
+    switch (index++) {
+    case 0:
+        result = 10;
+        break;
+    default:
+        result = 20;
+    }
+    if (index == 1) score = score + 1;
+    if (result == 10) score = score + 1;
+
+    while (loop_index < 4) {
+        loop_index++;
+        switch (loop_index) {
+        case 1:
+            continue;
+        case 2:
+            loop_sum += 2;
+            break;
+        default:
+            loop_sum += 1;
+        }
+        loop_sum += 10;
+        if (loop_index == 3) break;
+    }
+    if (loop_index == 3) score = score + 1;
+    if (loop_sum == 23) score = score + 1;
+    if (loop_in_switch_value() == 5) score = score + 1;
+
+    return score;
+}
 
 int pointer_demo(void) {
     int local = 40;
@@ -119,7 +474,7 @@ int bit_ops(int x) {
 
 int main(void) {
     int total = 0;
-    int expected = 395;
+    int expected = 520;
     unsigned int ures = 0;
     volatile unsigned int *status = (volatile unsigned int *)status_addr;
     volatile unsigned int *fail = (volatile unsigned int *)fail_addr;
@@ -135,6 +490,11 @@ int main(void) {
     total = total + bit_ops(9);
     total = total + pointer_demo();
     total = total + array_demo();
+    total = total + initializer_syntax_tests();
+    total = total + update_syntax_tests();
+    total = total + pointer_update_tests();
+    total = total + conditional_syntax_tests();
+    total = total + control_syntax_tests();
 
     ures = unsigned_check(0xFFFF, 1);
     total = total + ures;
