@@ -50,6 +50,9 @@ module jtag_debug_tb;
     integer                             memory_count = 0;
     integer                             memory_accesses = 0;
     integer                             memory_accesses_before;
+    integer                             dbg_request_pulses = 0;
+    integer                             dbg_request_pulses_before;
+    integer                             dbg_request_width_failures = 0;
     integer                             snapshot_delay = 0;
     integer                             snapshot_delay_count = 0;
     integer                             snapshot_index = 0;
@@ -70,6 +73,7 @@ module jtag_debug_tb;
     reg                                 memory_pending = 1'b0;
     reg                                 memory_request_seen = 1'b0;
     reg                                 memory_write_hold = 1'b0;
+    reg                                 dbg_request_d = 1'b0;
     reg     [31:0]                      memory_addr_hold = 32'h0;
     reg     [31:0]                      memory_data_hold = 32'h0;
     reg     [31:0]                      debug_memory [0:15];
@@ -88,6 +92,22 @@ module jtag_debug_tb;
     end
 
     initial #(CLK_HALF_PERIOD * 7) rst_n = 1'b1;
+
+    always @(posedge clk) begin
+        if(!rst_n) begin
+            dbg_request_d <= 1'b0;
+            dbg_request_pulses <= 0;
+            dbg_request_width_failures <= 0;
+        end else begin
+            dbg_request_d <= dbg_rden | dbg_wren;
+            if ((dbg_rden | dbg_wren) && !dbg_request_d)
+                dbg_request_pulses <= dbg_request_pulses + 1;
+            if ((dbg_rden | dbg_wren) && dbg_request_d) begin
+                dbg_request_width_failures <= dbg_request_width_failures + 1;
+                $display("TEST FAIL: debug request wider than one clk cycle");
+            end
+        end
+    end
 
     always @(posedge clk) begin
         if(!rst_n) begin
@@ -461,6 +481,7 @@ module jtag_debug_tb;
 
         debug_memory[1] = 32'h1234_5678;
         memory_delay = 20;
+        dbg_request_pulses_before = dbg_request_pulses;
         debug_xfer(32'h0000_0004, 32'h0, XFER_READ,
                    response_address, response_data, response_status);
         poll_xfer(response_address, response_data, response_status);
@@ -468,8 +489,11 @@ module jtag_debug_tb;
                     {30'h0, RESP_SUCCESS});
         check_value("aligned read returns address", response_address, 32'h0000_0004);
         check_value("aligned read returns data", response_data, 32'h1234_5678);
+        check_value("aligned read emits one request pulse", dbg_request_pulses,
+                    dbg_request_pulses_before + 1);
 
         memory_delay = 20;
+        dbg_request_pulses_before = dbg_request_pulses;
         debug_xfer(32'h0000_0008, 32'h89ab_cdef, XFER_WRITE,
                    response_address, response_data, response_status);
         poll_xfer(response_address, response_data, response_status);
@@ -477,6 +501,8 @@ module jtag_debug_tb;
                     {30'h0, RESP_SUCCESS});
         check_value("aligned write echoes data", response_data, 32'h89ab_cdef);
         check_value("aligned write changes memory", debug_memory[2], 32'h89ab_cdef);
+        check_value("aligned write emits one request pulse", dbg_request_pulses,
+                    dbg_request_pulses_before + 1);
 
         debug_memory[3] = 32'h0bad_f00d;
         debug_memory[4] = 32'hfeed_face;
@@ -603,10 +629,11 @@ module jtag_debug_tb;
         check_value("TAP reset clears execute busy", {31'h0, status_value[7]}, 32'h0);
         memory_hold_response = 1'b0;
 
-        if(failures == 0) begin
+        if((failures == 0) && (dbg_request_width_failures == 0)) begin
             $display("TEST PASS: jtag_debug checks=%0d", checks);
         end else begin
-            $display("TEST FAIL: jtag_debug failures=%0d checks=%0d", failures, checks);
+            $display("TEST FAIL: jtag_debug failures=%0d pulse_failures=%0d checks=%0d",
+                     failures, dbg_request_width_failures, checks);
         end
         $finish;
     end

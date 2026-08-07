@@ -581,11 +581,9 @@ module jtag_debug #(
                     end
                 end
                 XFER_WAIT_ACK: begin
-                    dbg_rden_clk <= dbg_rden_clk;
-                    dbg_wren_clk <= dbg_wren_clk;
+                    dbg_rden_clk <= 1'b0;
+                    dbg_wren_clk <= 1'b0;
                     if(dbg_ack) begin
-                        dbg_rden_clk <= 1'b0;
-                        dbg_wren_clk <= 1'b0;
                         xfer_response_data_clk <= xfer_op_clk == XFER_READ ?
                                                   dbg_rdata : xfer_data_clk;
                         xfer_response_status_clk <= RESP_SUCCESS;
