@@ -25,22 +25,27 @@ module merc32_top_tb;
     wire                                tdo;
     reg                                 interrupt = 1'b0;
 
-    wire                                dlb_en;
-    wire                                dlb_we;
+    wire                                dlb_rden;
+    wire                                dlb_wren;
     wire    [7:0]                       dlb_addr;
+    wire    [3:0]                       dlb_strb;
     wire    [31:0]                      dlb_wdata;
-    wire    [31:0]                      dlb_rdata;
+    reg     [31:0]                      dlb_rdata = 32'h0;
+    reg                                 dlb_ack = 1'b0;
 
-    wire                                ilb_en;
-    wire                                ilb_we;
+    wire                                ilb_rden;
+    wire                                ilb_wren;
     wire    [7:0]                       ilb_addr;
+    wire    [3:0]                       ilb_strb;
     wire    [31:0]                      ilb_wdata;
-    wire    [31:0]                      ilb_rdata;
+    reg     [31:0]                      ilb_rdata = 32'h0;
+    reg                                 ilb_ack = 1'b0;
 
     wire                                m_apb_psel;
     wire                                m_apb_penable;
     wire    [31:0]                      m_apb_paddr;
     wire                                m_apb_pwrite;
+    wire    [3:0]                       m_apb_pstrb;
     wire    [31:0]                      m_apb_pwdata;
     reg     [31:0]                      m_apb_prdata = 32'h0;
     reg                                 m_apb_pready = 1'b1;
@@ -64,9 +69,9 @@ module merc32_top_tb;
     reg     [1:0]                       response_status;
     reg     [31:0]                      pc_before_step;
     reg     [31:0]                      pc_after_step;
-
-    assign  ilb_rdata = instruction_memory[ilb_addr];
-    assign  dlb_rdata = data_memory[dlb_addr];
+    reg                                 protocol_failed = 1'b0;
+    reg                                 ilb_request_last = 1'b0;
+    reg                                 dlb_request_last = 1'b0;
 
     always #(CLK_HALF_PERIOD) clk = ~clk;
     always #(TCK_HALF_PERIOD) tck = ~tck;
@@ -74,11 +79,56 @@ module merc32_top_tb;
     initial #(CLK_HALF_PERIOD * 7) rst_n = 1'b1;
 
     always @(posedge clk) begin
-        if(ilb_en && ilb_we) begin
-            instruction_memory[ilb_addr] <= ilb_wdata;
+        if(!rst_n) begin
+            ilb_rdata <= 32'h0;
+            ilb_ack <= 1'b0;
+            dlb_rdata <= 32'h0;
+            dlb_ack <= 1'b0;
+        end else begin
+            ilb_ack <= ilb_rden | ilb_wren;
+            if(ilb_wren) begin
+                if(ilb_strb[0]) instruction_memory[ilb_addr][7:0] <= ilb_wdata[7:0];
+                if(ilb_strb[1]) instruction_memory[ilb_addr][15:8] <= ilb_wdata[15:8];
+                if(ilb_strb[2]) instruction_memory[ilb_addr][23:16] <= ilb_wdata[23:16];
+                if(ilb_strb[3]) instruction_memory[ilb_addr][31:24] <= ilb_wdata[31:24];
+            end
+            if(ilb_rden)
+                ilb_rdata <= instruction_memory[ilb_addr];
+            dlb_ack <= dlb_rden | dlb_wren;
+            if(dlb_wren) begin
+                if(dlb_strb[0]) data_memory[dlb_addr][7:0] <= dlb_wdata[7:0];
+                if(dlb_strb[1]) data_memory[dlb_addr][15:8] <= dlb_wdata[15:8];
+                if(dlb_strb[2]) data_memory[dlb_addr][23:16] <= dlb_wdata[23:16];
+                if(dlb_strb[3]) data_memory[dlb_addr][31:24] <= dlb_wdata[31:24];
+            end
+            if(dlb_rden)
+                dlb_rdata <= data_memory[dlb_addr];
         end
-        if(dlb_en && dlb_we) begin
-            data_memory[dlb_addr] <= dlb_wdata;
+    end
+
+    always @(posedge clk) begin
+        if(!rst_n) begin
+            ilb_request_last <= 1'b0;
+            dlb_request_last <= 1'b0;
+        end else begin
+            if(ilb_rden && ilb_wren) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: top-level ILB read and write requests overlap");
+            end
+            if(dlb_rden && dlb_wren) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: top-level DLB read and write requests overlap");
+            end
+            if((ilb_rden || ilb_wren) && ilb_request_last) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: top-level ILB request lasted more than one cycle");
+            end
+            if((dlb_rden || dlb_wren) && dlb_request_last) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: top-level DLB request lasted more than one cycle");
+            end
+            ilb_request_last <= ilb_rden || ilb_wren;
+            dlb_request_last <= dlb_rden || dlb_wren;
         end
     end
 
@@ -103,22 +153,27 @@ module merc32_top_tb;
         .tdi                            (tdi                    ),
         .tdo                            (tdo                    ),
 
-        .dlb_en                         (dlb_en                 ),
-        .dlb_we                         (dlb_we                 ),
+        .dlb_rden                       (dlb_rden               ),
+        .dlb_wren                       (dlb_wren               ),
         .dlb_addr                       (dlb_addr               ),
+        .dlb_strb                       (dlb_strb               ),
         .dlb_wdata                      (dlb_wdata              ),
         .dlb_rdata                      (dlb_rdata              ),
+        .dlb_ack                        (dlb_ack                ),
 
-        .ilb_en                         (ilb_en                 ),
-        .ilb_we                         (ilb_we                 ),
+        .ilb_rden                       (ilb_rden               ),
+        .ilb_wren                       (ilb_wren               ),
         .ilb_addr                       (ilb_addr               ),
+        .ilb_strb                       (ilb_strb               ),
         .ilb_wdata                      (ilb_wdata              ),
         .ilb_rdata                      (ilb_rdata              ),
+        .ilb_ack                        (ilb_ack                ),
 
         .m_apb_psel                     (m_apb_psel             ),
         .m_apb_penable                  (m_apb_penable          ),
         .m_apb_paddr                    (m_apb_paddr            ),
         .m_apb_pwrite                   (m_apb_pwrite           ),
+        .m_apb_pstrb                    (m_apb_pstrb            ),
         .m_apb_pwdata                   (m_apb_pwdata           ),
         .m_apb_prdata                   (m_apb_prdata           ),
         .m_apb_pready                   (m_apb_pready           ));
@@ -371,6 +426,8 @@ module merc32_top_tb;
                    response_address, response_data, response_status);
         poll_xfer(response_address, response_data, response_status);
         check_value("data read returns write", response_data, 32'h55aa_a55a);
+        check_value("local-bus requests are single-cycle and mutually exclusive",
+                    {31'h0, protocol_failed}, 32'h0);
 
         if(failures == 0) begin
             $display("TEST PASS: MERC32_top JTAG checks=%0d", checks);

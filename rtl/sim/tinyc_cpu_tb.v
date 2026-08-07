@@ -19,18 +19,20 @@ module tinyc_cpu_tb();
     reg         rst_n     = 1'b0;
     reg         interrupt = 1'b0;
 
-    wire        ilb_en;
-    wire        ilb_we;
+    wire        ilb_rden;
+    wire        ilb_wren;
     wire [15:0] ilb_addr;
     wire [31:0] ilb_wdata;
-    wire [31:0] ilb_rdata;
+    reg  [31:0] ilb_rdata = 32'd0;
+    reg         ilb_ack = 1'b0;
 
-    wire        dlb_en;
-    wire        dlb_we;
+    wire        dlb_rden;
+    wire        dlb_wren;
     wire [15:0] dlb_addr;
     wire [3:0]  dlb_strb;
     wire [31:0] dlb_wdata;
     reg  [31:0] dlb_rdata = 32'd0;
+    reg         dlb_ack = 1'b0;
 
     wire        plb_rden;
     wire        plb_wren;
@@ -47,8 +49,6 @@ module tinyc_cpu_tb();
     integer rom_words   = 0;
     integer cycle_count = 0;
     reg     done        = 1'b0;
-
-    assign ilb_rdata = program_rom[ilb_addr];
 
     merc32_core #(
         .ILB_ADDR_WIDTH (16),
@@ -73,18 +73,21 @@ module tinyc_cpu_tb();
         .dbg_rdata      (),
         .dbg_ack        (),
 
-        .dlb_en         (dlb_en),
-        .dlb_we         (dlb_we),
+        .dlb_rden       (dlb_rden),
+        .dlb_wren       (dlb_wren),
         .dlb_addr       (dlb_addr),
         .dlb_strb       (dlb_strb),
         .dlb_wdata      (dlb_wdata),
         .dlb_rdata      (dlb_rdata),
+        .dlb_ack        (dlb_ack),
 
-        .ilb_en         (ilb_en),
-        .ilb_we         (ilb_we),
+        .ilb_rden       (ilb_rden),
+        .ilb_wren       (ilb_wren),
         .ilb_addr       (ilb_addr),
+        .ilb_strb       (),
         .ilb_wdata      (ilb_wdata),
         .ilb_rdata      (ilb_rdata),
+        .ilb_ack        (ilb_ack),
 
         .plb_rden       (plb_rden),
         .plb_wren       (plb_wren),
@@ -118,11 +121,19 @@ module tinyc_cpu_tb();
 
     always @(posedge clk) begin
         if (!rst_n) begin
+            ilb_rdata <= 32'd0;
+            ilb_ack <= 1'b0;
             dlb_rdata <= 32'd0;
+            dlb_ack <= 1'b0;
             plb_rdata <= 32'd0;
             plb_ack <= 1'b0;
         end else begin
-            if (dlb_en && dlb_we) begin
+            ilb_ack <= ilb_rden | ilb_wren;
+            if (ilb_rden)
+                ilb_rdata <= program_rom[ilb_addr];
+
+            dlb_ack <= dlb_rden | dlb_wren;
+            if (dlb_wren) begin
                 if (dlb_strb[0])
                     dlb_ram[dlb_addr][7:0] <= dlb_wdata[7:0];
                 if (dlb_strb[1])
@@ -132,7 +143,8 @@ module tinyc_cpu_tb();
                 if (dlb_strb[3])
                     dlb_ram[dlb_addr][31:24] <= dlb_wdata[31:24];
             end
-            dlb_rdata <= dlb_en ? dlb_ram[dlb_addr] : dlb_rdata;
+            if (dlb_rden)
+                dlb_rdata <= dlb_ram[dlb_addr];
             plb_rdata <= 32'd0;
             plb_ack <= plb_rden | plb_wren;
         end
@@ -144,20 +156,20 @@ module tinyc_cpu_tb();
         end else if (!done) begin
             cycle_count <= cycle_count + 1;
 
-            if (dlb_en && dlb_we &&
+            if (dlb_wren &&
                 (((^dlb_strb) === 1'bx) || (dlb_strb === 4'b0000))) begin
                 done <= 1'b1;
                 $display("TEST FAIL: invalid DLB write strobe=%b addr=%0d data=0x%08h",
                          dlb_strb, dlb_addr, dlb_wdata);
                 $finish;
-            end else if (dlb_en && dlb_we &&
+            end else if (dlb_wren &&
                          (dlb_addr == STATUS_ADDR) &&
                          !(dlb_strb === 4'b1111)) begin
                 done <= 1'b1;
                 $display("TEST FAIL: partial firmware status write strobe=%b data=0x%08h",
                          dlb_strb, dlb_wdata);
                 $finish;
-            end else if (dlb_en && dlb_we &&
+            end else if (dlb_wren &&
                          (dlb_addr == STATUS_ADDR)) begin
                 if (dlb_wdata == PASS_CODE) begin
                     done <= 1'b1;

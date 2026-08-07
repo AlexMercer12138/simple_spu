@@ -30,17 +30,20 @@ module tinyc_i2c_tb();
     reg         rst_n = 1'b0;
     reg         cpu_rst_n = 1'b0;
 
-    wire        ilb_en;
-    wire        ilb_we;
+    wire        ilb_rden;
+    wire        ilb_wren;
     wire [15:0] ilb_addr;
     wire [31:0] ilb_wdata;
-    wire [31:0] ilb_rdata;
+    reg  [31:0] ilb_rdata = 32'd0;
+    reg         ilb_ack = 1'b0;
 
-    wire        dlb_en;
-    wire        dlb_we;
+    wire        dlb_rden;
+    wire        dlb_wren;
     wire [15:0] dlb_addr;
+    wire [3:0]  dlb_strb;
     wire [31:0] dlb_wdata;
     reg  [31:0] dlb_rdata = 32'd0;
+    reg         dlb_ack = 1'b0;
 
     wire        cpu_psel;
     wire        cpu_penable;
@@ -89,14 +92,13 @@ module tinyc_i2c_tb();
     reg     done = 1'b0;
     reg  [31:0] peer_read_data = 32'd0;
 
-    wire firmware_pass_write = dlb_en && dlb_we &&
+    wire firmware_pass_write = dlb_wren &&
                                (dlb_addr == STATUS_ADDR) &&
                                (dlb_wdata == PASS_CODE);
-    wire firmware_fail_write = dlb_en && dlb_we &&
+    wire firmware_fail_write = dlb_wren &&
                                (dlb_addr == STATUS_ADDR) &&
                                (dlb_wdata == FAIL_CODE);
 
-    assign ilb_rdata = program_rom[ilb_addr];
     assign shared_scl = master_scl_t && peer_scl_t;
     assign shared_sda = master_sda_t && peer_sda_t;
 
@@ -112,17 +114,20 @@ module tinyc_i2c_tb();
         .tdi            (1'b0),
         .tdo            (),
 
-        .dlb_en         (dlb_en),
-        .dlb_we         (dlb_we),
+        .dlb_rden       (dlb_rden),
+        .dlb_wren       (dlb_wren),
         .dlb_addr       (dlb_addr),
+        .dlb_strb       (dlb_strb),
         .dlb_wdata      (dlb_wdata),
         .dlb_rdata      (dlb_rdata),
+        .dlb_ack        (dlb_ack),
 
-        .ilb_en         (ilb_en),
-        .ilb_we         (ilb_we),
+        .ilb_rden       (ilb_rden),
+        .ilb_wren       (ilb_wren),
         .ilb_addr       (ilb_addr),
         .ilb_wdata      (ilb_wdata),
         .ilb_rdata      (ilb_rdata),
+        .ilb_ack        (ilb_ack),
 
         .m_apb_psel     (cpu_psel),
         .m_apb_penable  (cpu_penable),
@@ -361,15 +366,26 @@ module tinyc_i2c_tb();
 
     always @(posedge clk) begin
         if (!rst_n) begin
+            ilb_rdata <= 32'd0;
+            ilb_ack <= 1'b0;
             dlb_rdata <= 32'd0;
+            dlb_ack <= 1'b0;
             detail_value <= 32'd0;
         end else begin
-            if (dlb_en && dlb_we) begin
-                dlb_ram[dlb_addr] <= dlb_wdata;
+            ilb_ack <= ilb_rden | ilb_wren;
+            if (ilb_rden)
+                ilb_rdata <= program_rom[ilb_addr];
+            dlb_ack <= dlb_rden | dlb_wren;
+            if (dlb_wren) begin
+                if (dlb_strb[0]) dlb_ram[dlb_addr][7:0] <= dlb_wdata[7:0];
+                if (dlb_strb[1]) dlb_ram[dlb_addr][15:8] <= dlb_wdata[15:8];
+                if (dlb_strb[2]) dlb_ram[dlb_addr][23:16] <= dlb_wdata[23:16];
+                if (dlb_strb[3]) dlb_ram[dlb_addr][31:24] <= dlb_wdata[31:24];
                 if (dlb_addr == DETAIL_ADDR)
                     detail_value <= dlb_wdata;
             end
-            dlb_rdata <= dlb_en ? dlb_ram[dlb_addr] : dlb_rdata;
+            if (dlb_rden)
+                dlb_rdata <= dlb_ram[dlb_addr];
         end
     end
 

@@ -62,19 +62,21 @@ module MERC32_top #(
     input                               tdi,
     output                              tdo,
 
-    output                              dlb_en,
-    output                              dlb_we,
+    output                              dlb_rden,
+    output                              dlb_wren,
     output      [DLB_ADDR_WIDTH-1:0]    dlb_addr,
     output      [3:0]                   dlb_strb,
     output      [31:0]                  dlb_wdata,
     input       [31:0]                  dlb_rdata,
+    input                               dlb_ack,
 
-    output                              ilb_en,
-    output                              ilb_we,
+    output                              ilb_rden,
+    output                              ilb_wren,
     output      [ILB_ADDR_WIDTH-1:0]    ilb_addr,
     output      [3:0]                   ilb_strb,
     output      [31:0]                  ilb_wdata,
-    input       [31:0]                  ilb_rdata
+    input       [31:0]                  ilb_rdata,
+    input                               ilb_ack
 
 `ifdef IF_AXI_LITE
     ,
@@ -232,19 +234,21 @@ module MERC32_top #(
         .plb_rdata                      (cpu_plb_rdata          ),
         .plb_ack                        (cpu_plb_ack            ),
 
-        .dlb_en                         (dlb_en                 ),
-        .dlb_we                         (dlb_we                 ),
+        .dlb_rden                       (dlb_rden               ),
+        .dlb_wren                       (dlb_wren               ),
         .dlb_addr                       (dlb_addr               ),
         .dlb_strb                       (dlb_strb               ),
         .dlb_wdata                      (dlb_wdata              ),
         .dlb_rdata                      (dlb_rdata              ),
+        .dlb_ack                        (dlb_ack                ),
 
-        .ilb_en                         (ilb_en                 ),
-        .ilb_we                         (ilb_we                 ),
+        .ilb_rden                       (ilb_rden               ),
+        .ilb_wren                       (ilb_wren               ),
         .ilb_addr                       (ilb_addr               ),
         .ilb_strb                       (ilb_strb               ),
         .ilb_wdata                      (ilb_wdata              ),
-        .ilb_rdata                      (ilb_rdata              ));
+        .ilb_rdata                      (ilb_rdata              ),
+        .ilb_ack                        (ilb_ack                ));
 
     //----------------------------------------------------------------------------
     // Bus interface selection (mutually exclusive, priority based)

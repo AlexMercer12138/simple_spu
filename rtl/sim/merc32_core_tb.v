@@ -7,18 +7,20 @@ module merc32_core_tb();
     localparam integer WATCHDOG_CYCLES   = 30000;
     localparam integer MEMORY_WORDS      = 65536;
 
-    localparam [3:0] OP_IMM              = 4'h1;
-    localparam [3:0] OP_REG              = 4'h2;
-    localparam [3:0] OP_ICMP             = 4'h3;
-    localparam [3:0] OP_RCMP             = 4'h4;
+    localparam [3:0] OP_IALU             = 4'h0;
+    localparam [3:0] OP_RALU             = 4'h1;
+    localparam [3:0] OP_IPCU             = 4'h2;
+    localparam [3:0] OP_RPCU             = 4'h3;
+    localparam [3:0] OP_IMCU             = 4'h4;
+    localparam [3:0] OP_RMCU             = 4'h5;
 
     localparam [3:0] FUNC_SET            = 4'h0;
     localparam [3:0] FUNC_SUB            = 4'h2;
     localparam [3:0] FUNC_SLL            = 4'h6;
-    localparam [3:0] FUNC_MWR            = 4'h9;
-    localparam [3:0] FUNC_BZ             = 4'hb;
-    localparam [3:0] FUNC_BNZ            = 4'hc;
-    localparam [3:0] FUNC_JAL            = 4'hd;
+    localparam [3:0] FUNC_BEZ            = 4'ha;
+    localparam [3:0] FUNC_BNZ            = 4'hb;
+    localparam [3:0] FUNC_JAL            = 4'hc;
+    localparam [3:0] FUNC_SW             = 4'h5;
 
     localparam [3:0] CMP_EQ              = 4'd0;
     localparam [3:0] CMP_NE              = 4'd1;
@@ -39,21 +41,26 @@ module merc32_core_tb();
     reg         rst_n = 1'b0;
     reg         interrupt = 1'b0;
 
-    wire        ilb_en;
-    wire        ilb_we;
+    wire        ilb_rden;
+    wire        ilb_wren;
     wire [15:0] ilb_addr;
+    wire [3:0]  ilb_strb;
     wire [31:0] ilb_wdata;
-    wire [31:0] ilb_rdata;
+    reg  [31:0] ilb_rdata = 32'd0;
+    reg         ilb_ack = 1'b0;
 
-    wire        dlb_en;
-    wire        dlb_we;
+    wire        dlb_rden;
+    wire        dlb_wren;
     wire [15:0] dlb_addr;
+    wire [3:0]  dlb_strb;
     wire [31:0] dlb_wdata;
     reg  [31:0] dlb_rdata = 32'd0;
+    reg         dlb_ack = 1'b0;
 
     wire        plb_rden;
     wire        plb_wren;
     wire [31:0] plb_addr;
+    wire [3:0]  plb_strb;
     wire [31:0] plb_wdata;
     reg  [31:0] plb_rdata = 32'd0;
     reg         plb_ack = 1'b0;
@@ -68,8 +75,10 @@ module merc32_core_tb();
     integer i;
     reg     done = 1'b0;
     reg     decode_smoke_passed = 1'b0;
-
-    assign ilb_rdata = program_rom[ilb_addr];
+    reg     protocol_failed = 1'b0;
+    reg     ilb_request_last = 1'b0;
+    reg     dlb_request_last = 1'b0;
+    reg     plb_request_last = 1'b0;
 
     merc32_core #(
         .ILB_ADDR_WIDTH (16),
@@ -89,25 +98,31 @@ module merc32_core_tb();
         .dbg_rden       (1'b0),
         .dbg_wren       (1'b0),
         .dbg_addr       (32'd0),
+        .dbg_strb       (4'b1111),
         .dbg_wdata      (32'd0),
         .dbg_rdata      (),
         .dbg_ack        (),
 
-        .dlb_en         (dlb_en),
-        .dlb_we         (dlb_we),
+        .dlb_rden       (dlb_rden),
+        .dlb_wren       (dlb_wren),
         .dlb_addr       (dlb_addr),
+        .dlb_strb       (dlb_strb),
         .dlb_wdata      (dlb_wdata),
         .dlb_rdata      (dlb_rdata),
+        .dlb_ack        (dlb_ack),
 
-        .ilb_en         (ilb_en),
-        .ilb_we         (ilb_we),
+        .ilb_rden       (ilb_rden),
+        .ilb_wren       (ilb_wren),
         .ilb_addr       (ilb_addr),
+        .ilb_strb       (ilb_strb),
         .ilb_wdata      (ilb_wdata),
         .ilb_rdata      (ilb_rdata),
+        .ilb_ack        (ilb_ack),
 
         .plb_rden       (plb_rden),
         .plb_wren       (plb_wren),
         .plb_addr       (plb_addr),
+        .plb_strb       (plb_strb),
         .plb_wdata      (plb_wdata),
         .plb_rdata      (plb_rdata),
         .plb_ack        (plb_ack));
@@ -116,15 +131,63 @@ module merc32_core_tb();
 
     always @(posedge clk) begin
         if (!rst_n) begin
+            ilb_rdata <= 32'd0;
+            ilb_ack <= 1'b0;
             dlb_rdata <= 32'd0;
+            dlb_ack <= 1'b0;
             plb_rdata <= 32'd0;
             plb_ack <= 1'b0;
         end else begin
-            if (dlb_en && dlb_we)
-                dlb_ram[dlb_addr[7:0]] <= dlb_wdata;
-            dlb_rdata <= dlb_en ? dlb_ram[dlb_addr[7:0]] : dlb_rdata;
+            ilb_ack <= ilb_rden | ilb_wren;
+            if (ilb_rden)
+                ilb_rdata <= program_rom[ilb_addr];
+            dlb_ack <= dlb_rden | dlb_wren;
+            if (dlb_wren) begin
+                if (dlb_strb[0]) dlb_ram[dlb_addr[7:0]][7:0] <= dlb_wdata[7:0];
+                if (dlb_strb[1]) dlb_ram[dlb_addr[7:0]][15:8] <= dlb_wdata[15:8];
+                if (dlb_strb[2]) dlb_ram[dlb_addr[7:0]][23:16] <= dlb_wdata[23:16];
+                if (dlb_strb[3]) dlb_ram[dlb_addr[7:0]][31:24] <= dlb_wdata[31:24];
+            end
+            if (dlb_rden)
+                dlb_rdata <= dlb_ram[dlb_addr[7:0]];
             plb_rdata <= 32'd0;
             plb_ack <= plb_rden | plb_wren;
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            ilb_request_last <= 1'b0;
+            dlb_request_last <= 1'b0;
+            plb_request_last <= 1'b0;
+        end else begin
+            if (ilb_rden && ilb_wren) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: ILB read and write requests overlap");
+            end
+            if (dlb_rden && dlb_wren) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: DLB read and write requests overlap");
+            end
+            if (plb_rden && plb_wren) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: PLB read and write requests overlap");
+            end
+            if ((ilb_rden || ilb_wren) && ilb_request_last) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: ILB request lasted more than one cycle");
+            end
+            if ((dlb_rden || dlb_wren) && dlb_request_last) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: DLB request lasted more than one cycle");
+            end
+            if ((plb_rden || plb_wren) && plb_request_last) begin
+                protocol_failed <= 1'b1;
+                $display("TEST FAIL: PLB request lasted more than one cycle");
+            end
+            ilb_request_last <= ilb_rden || ilb_wren;
+            dlb_request_last <= dlb_rden || dlb_wren;
+            plb_request_last <= plb_rden || plb_wren;
         end
     end
 
@@ -177,7 +240,7 @@ module merc32_core_tb();
             rst_n <= 1'b0;
             interrupt <= 1'b0;
             for (index = 0; index < 256; index = index + 1) begin
-                program_rom[index] = enc_imm(OP_IMM, FUNC_SET, 4'd0, 4'd0, 16'd0);
+                program_rom[index] = enc_imm(OP_IALU, FUNC_SET, 4'd0, 4'd0, 16'd0);
                 dlb_ram[index] = 32'd0;
             end
             repeat (4) @(posedge clk);
@@ -267,10 +330,10 @@ module merc32_core_tb();
         reg [31:0] expected;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, left_immediate);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h5a5a);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd6, 4'd0, 16'h1234);
-            program_rom[3] = enc_imm(OP_ICMP, compare_function, 4'd5, 4'd4,
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, left_immediate);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h5a5a);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd6, 4'd0, 16'h1234);
+            program_rom[3] = enc_imm(OP_IPCU, compare_function, 4'd5, 4'd4,
                                      right_immediate);
             expected = compare_expected(compare_function,
                                         {16'd0, left_immediate},
@@ -302,14 +365,14 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd5);
-            program_rom[1] = enc_reg(OP_REG, FUNC_SET, 4'd5, 4'd0, 4'd4);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd5);
+            program_rom[1] = enc_reg(OP_RALU, FUNC_SET, 4'd5, 4'd0, 4'd4);
             wait_for_pc(32'd8, reached);
             check_reached("opcode smoke test retires", reached);
             if (reached) begin
-                check_value("opcode 0x1 decodes immediate instruction",
+                check_value("opcode 0x0 decodes immediate ALU instruction",
                             merc32_core_inst.regi_int[4], 32'd5);
-                check_value("opcode 0x2 decodes register instruction",
+                check_value("opcode 0x1 decodes register ALU instruction",
                             merc32_core_inst.regi_int[5], 32'd5);
             end
             passed = reached &&
@@ -326,10 +389,10 @@ module merc32_core_tb();
         reg [31:0] expected;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, left_immediate);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, right_immediate);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd6, 4'd0, 16'h5a5a);
-            program_rom[3] = enc_reg(OP_RCMP, compare_function, 4'd6, 4'd4, 4'd5);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, left_immediate);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, right_immediate);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd6, 4'd0, 16'h5a5a);
+            program_rom[3] = enc_reg(OP_RPCU, compare_function, 4'd6, 4'd4, 4'd5);
             expected = compare_expected(compare_function,
                                         {16'd0, left_immediate},
                                         {16'd0, right_immediate});
@@ -375,10 +438,10 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SUB, 4'd4, 4'd4, 16'h8000);
-            program_rom[2] = enc_imm(OP_ICMP, CMP_EQ, 4'd5, 4'd4, 16'h8000);
-            program_rom[3] = enc_imm(OP_ICMP, CMP_SGE, 4'd6, 4'd4, 16'h8000);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SUB, 4'd4, 4'd4, 16'h8000);
+            program_rom[2] = enc_imm(OP_IPCU, CMP_EQ, 4'd5, 4'd4, 16'h8000);
+            program_rom[3] = enc_imm(OP_IPCU, CMP_SGE, 4'd6, 4'd4, 16'h8000);
             wait_for_pc(32'd16, reached);
             check_reached("-32768 immediate compare retires", reached);
             if (reached) begin
@@ -389,18 +452,18 @@ module merc32_core_tb();
             end
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'h7fff);
-            program_rom[1] = enc_imm(OP_ICMP, CMP_EQ, 4'd5, 4'd4, 16'h7fff);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h7fff);
+            program_rom[1] = enc_imm(OP_IPCU, CMP_EQ, 4'd5, 4'd4, 16'h7fff);
             wait_for_pc(32'd8, reached);
             check_reached("32767 immediate compare retires", reached);
             if (reached)
                 check_value("32767 immediate boundary", merc32_core_inst.regi_int[5], 32'd1);
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SUB, 4'd4, 4'd4, 16'd1);
-            program_rom[2] = enc_imm(OP_ICMP, CMP_EQ, 4'd5, 4'd4, 16'hffff);
-            program_rom[3] = enc_imm(OP_ICMP, CMP_SGE, 4'd6, 4'd4, 16'hffff);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SUB, 4'd4, 4'd4, 16'd1);
+            program_rom[2] = enc_imm(OP_IPCU, CMP_EQ, 4'd5, 4'd4, 16'hffff);
+            program_rom[3] = enc_imm(OP_IPCU, CMP_SGE, 4'd6, 4'd4, 16'hffff);
             wait_for_pc(32'd16, reached);
             check_reached("-1 immediate compare retires", reached);
             if (reached) begin
@@ -411,9 +474,9 @@ module merc32_core_tb();
             end
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd1);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SLL, 4'd4, 4'd4, 16'd16);
-            program_rom[2] = enc_imm(OP_ICMP, CMP_ULT, 4'd5, 4'd4, 16'hffff);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd1);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
+            program_rom[2] = enc_imm(OP_IPCU, CMP_ULT, 4'd5, 4'd4, 16'hffff);
             wait_for_pc(32'd12, reached);
             check_reached("unsigned ffff immediate compare retires", reached);
             if (reached) begin
@@ -424,11 +487,11 @@ module merc32_core_tb();
             end
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SUB, 4'd4, 4'd4, 16'd1);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'd1);
-            program_rom[3] = enc_reg(OP_RCMP, CMP_SLT, 4'd6, 4'd4, 4'd5);
-            program_rom[4] = enc_reg(OP_RCMP, CMP_UGT, 4'd7, 4'd4, 4'd5);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SUB, 4'd4, 4'd4, 16'd1);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'd1);
+            program_rom[3] = enc_reg(OP_RPCU, CMP_SLT, 4'd6, 4'd4, 4'd5);
+            program_rom[4] = enc_reg(OP_RPCU, CMP_UGT, 4'd7, 4'd4, 4'd5);
             wait_for_pc(32'd20, reached);
             check_reached("signed and unsigned register compares retire", reached);
             if (reached) begin
@@ -443,11 +506,11 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd1, 4'd0, 16'h002a);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd2, 4'd0, 16'h1234);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd3, 4'd0, 16'h5678);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'd9);
-            program_rom[4] = enc_imm(OP_ICMP, CMP_EQ, 4'd8, 4'd7, 16'd9);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd1, 4'd0, 16'h002a);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd2, 4'd0, 16'h1234);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd3, 4'd0, 16'h5678);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'd9);
+            program_rom[4] = enc_imm(OP_IPCU, CMP_EQ, 4'd8, 4'd7, 16'd9);
             wait_for_pc(32'd20, reached);
             check_reached("compare side-effect test retires", reached);
             if (reached) begin
@@ -468,9 +531,9 @@ module merc32_core_tb();
         reg [31:0] next_pc;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, condition_value);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[2] = enc_imm(OP_IMM, branch_function, 4'd4, 4'd0,
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, condition_value);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[2] = enc_imm(OP_IPCU, branch_function, 4'd4, 4'd0,
                                      target_immediate);
             capture_next_pc(32'd8, reached, next_pc);
             check_reached("immediate branch executes", reached);
@@ -486,18 +549,18 @@ module merc32_core_tb();
         reg reached;
         reg [31:0] next_pc;
         begin
-            run_immediate_branch_case(FUNC_BZ, 16'd0, 16'h0040, 32'h0000_0040);
-            run_immediate_branch_case(FUNC_BZ, 16'd1, 16'h0040, 32'h0000_000c);
+            run_immediate_branch_case(FUNC_BEZ, 16'd0, 16'h0040, 32'h0000_0040);
+            run_immediate_branch_case(FUNC_BEZ, 16'd1, 16'h0040, 32'h0000_000c);
             run_immediate_branch_case(FUNC_BNZ, 16'd1, 16'h0040, 32'h0000_0040);
             run_immediate_branch_case(FUNC_BNZ, 16'd0, 16'h0040, 32'h0000_000c);
-            run_immediate_branch_case(FUNC_BZ, 16'd0, 16'h8000, 32'h0000_8000);
-            run_immediate_branch_case(FUNC_BZ, 16'd0, 16'hffff, 32'h0000_ffff);
+            run_immediate_branch_case(FUNC_BEZ, 16'd0, 16'h8000, 32'h0000_8000);
+            run_immediate_branch_case(FUNC_BEZ, 16'd0, 16'hffff, 32'h0000_ffff);
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h0020);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_BZ, 4'd4, 4'd5, 16'h0030);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h0020);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[3] = enc_imm(OP_IPCU, FUNC_BEZ, 4'd4, 4'd5, 16'h0030);
             capture_next_pc(32'd12, reached, next_pc);
             check_reached("nonzero-base immediate branch executes", reached);
             if (reached)
@@ -516,11 +579,11 @@ module merc32_core_tb();
         reg [31:0] next_pc;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, condition_value);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, base_value);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd6, 4'd0, offset_value);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[4] = enc_reg(OP_REG, branch_function, 4'd4, 4'd5, 4'd6);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, condition_value);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, base_value);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd6, 4'd0, offset_value);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[4] = enc_reg(OP_RPCU, branch_function, 4'd4, 4'd5, 4'd6);
             capture_next_pc(32'd16, reached, next_pc);
             check_reached("register branch executes", reached);
             if (reached) begin
@@ -535,9 +598,9 @@ module merc32_core_tb();
         reg reached;
         reg [31:0] next_pc;
         begin
-            run_register_branch_case(FUNC_BZ, 16'd0, 16'h0018, 16'h0028,
+            run_register_branch_case(FUNC_BEZ, 16'd0, 16'h0018, 16'h0028,
                                      32'h0000_0040);
-            run_register_branch_case(FUNC_BZ, 16'd1, 16'h0018, 16'h0028,
+            run_register_branch_case(FUNC_BEZ, 16'd1, 16'h0018, 16'h0028,
                                      32'h0000_0014);
             run_register_branch_case(FUNC_BNZ, 16'd1, 16'h0018, 16'h0028,
                                      32'h0000_0040);
@@ -545,10 +608,10 @@ module merc32_core_tb();
                                      32'h0000_0014);
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h0030);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[3] = enc_reg(OP_REG, FUNC_BZ, 4'd4, 4'd0, 4'd5);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h0030);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[3] = enc_reg(OP_RPCU, FUNC_BEZ, 4'd4, 4'd0, 4'd5);
             capture_next_pc(32'd12, reached, next_pc);
             check_reached("r0-based register branch executes", reached);
             if (reached)
@@ -562,7 +625,7 @@ module merc32_core_tb();
         begin
             prepare_case;
             for (i = 0; i < 15; i = i + 1)
-                program_rom[i] = enc_imm(OP_IMM, FUNC_SET, i[3:0], 4'd0,
+                program_rom[i] = enc_imm(OP_IALU, FUNC_SET, i[3:0], 4'd0,
                                          16'h0200 + (i * 2));
             wait_for_pc(32'd60, reached);
             check_reached("r0-r14 write test retires", reached);
@@ -580,8 +643,8 @@ module merc32_core_tb();
             end
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd15, 4'd0, 16'h0040);
-            program_rom[1] = enc_reg(OP_REG, FUNC_SET, 4'd4, 4'd0, 4'd15);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd15, 4'd0, 16'h0040);
+            program_rom[1] = enc_reg(OP_RALU, FUNC_SET, 4'd4, 4'd0, 4'd15);
             wait_for_step_pc(32'd0, reached);
             check_reached("write to r15 executes", reached);
             if (reached) begin
@@ -607,10 +670,10 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'h0080);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SLL, 4'd4, 4'd4, 16'd16);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h1234);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_MWR, 4'd5, 4'd4, 16'd4);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0080);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h1234);
+            program_rom[3] = enc_imm(OP_IMCU, FUNC_SW, 4'd5, 4'd4, 16'd4);
             wait_for_pc(32'd16, reached);
             check_reached("immediate store retires", reached);
             if (reached)
@@ -618,11 +681,11 @@ module merc32_core_tb();
                             dlb_ram[1], 32'h0000_1234);
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'h0080);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SLL, 4'd4, 4'd4, 16'd16);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h5678);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_SET, 4'd6, 4'd0, 16'd4);
-            program_rom[4] = enc_reg(OP_REG, FUNC_MWR, 4'd5, 4'd4, 4'd6);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0080);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h5678);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd6, 4'd0, 16'd4);
+            program_rom[4] = enc_reg(OP_RMCU, FUNC_SW, 4'd5, 4'd4, 4'd6);
             wait_for_pc(32'd20, reached);
             check_reached("register store retires", reached);
             if (reached)
@@ -636,9 +699,9 @@ module merc32_core_tb();
         reg [31:0] next_pc;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd1, 4'd0, 16'h002a);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd3, 4'd0, 16'h0020);
-            program_rom[2] = enc_reg(OP_REG, FUNC_JAL, 4'd0, 4'd0, 4'd3);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd1, 4'd0, 16'h002a);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd3, 4'd0, 16'h0020);
+            program_rom[2] = enc_reg(OP_RPCU, FUNC_JAL, 4'd0, 4'd0, 4'd3);
             capture_next_pc(32'd8, reached, next_pc);
             check_reached("jmp r3 executes", reached);
             if (reached) begin
@@ -673,11 +736,11 @@ module merc32_core_tb();
         reg [31:0] r1_before;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd1, 4'd0, 16'ha5a1);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd2, 4'd0, 16'h0040);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd4, 4'd0, 16'd0);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[4] = enc_imm(OP_IMM, FUNC_BZ, 4'd4, 4'd0, 16'h0020);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd1, 4'd0, 16'ha5a1);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd2, 4'd0, 16'h0040);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd0);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[4] = enc_imm(OP_IPCU, FUNC_BEZ, 4'd4, 4'd0, 16'h0020);
 
             wait_for_step_pc(32'd12, reached);
             check_reached("interrupt setup reaches instruction before branch", reached);
@@ -706,11 +769,11 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd1, 4'd0, 16'h0001);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd2, 4'd0, 16'h0040);
-            program_rom[2] = enc_imm(OP_IMM, FUNC_SET, 4'd5, 4'd0, 16'h0024);
-            program_rom[3] = enc_imm(OP_IMM, FUNC_SET, 4'd7, 4'd0, 16'h7777);
-            program_rom[4] = enc_reg(OP_REG, FUNC_JAL, 4'd6, 4'd0, 4'd5);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd1, 4'd0, 16'h0001);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd2, 4'd0, 16'h0040);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h0024);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd7, 4'd0, 16'h7777);
+            program_rom[4] = enc_reg(OP_RPCU, FUNC_JAL, 4'd6, 4'd0, 4'd5);
 
             wait_for_step_pc(32'd12, reached);
             check_reached("interrupt setup reaches instruction before jump", reached);
@@ -739,8 +802,8 @@ module merc32_core_tb();
         integer cycles;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IMM, FUNC_SET, 4'd1, 4'd0, 16'h0005);
-            program_rom[1] = enc_imm(OP_IMM, FUNC_SET, 4'd2, 4'd0, 16'h0040);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd1, 4'd0, 16'h0005);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SET, 4'd2, 4'd0, 16'h0040);
 
             wait_for_step_pc(32'd4, reached);
             check_reached("level interrupt setup writes vector", reached);
@@ -772,7 +835,7 @@ module merc32_core_tb();
 
     initial begin
         for (i = 0; i < MEMORY_WORDS; i = i + 1)
-            program_rom[i] = enc_imm(OP_IMM, FUNC_SET, 4'd0, 4'd0, 16'd0);
+            program_rom[i] = enc_imm(OP_IALU, FUNC_SET, 4'd0, 4'd0, 16'd0);
         for (i = 0; i < 256; i = i + 1)
             dlb_ram[i] = 32'd0;
 
@@ -791,6 +854,12 @@ module merc32_core_tb();
             test_level_interrupt_stays_disabled;
         end else begin
             $display("TEST NOTE: remaining checks skipped after opcode smoke failure");
+        end
+
+        checks = checks + 1;
+        if (protocol_failed) begin
+            failures = failures + 1;
+            $display("TEST FAIL: local-bus request protocol checks failed");
         end
 
         done = 1'b1;
