@@ -84,8 +84,8 @@ module merc32_core #(
     input                               dbg_halt_req,
     input                               dbg_step_req,
     input                               dbg_regi_req,
-    output                              dbg_regi_vld,
-    output      [31:0]                  dbg_regi_data,
+    output reg                          dbg_regi_vld,
+    output reg  [31:0]                  dbg_regi_data,
     output                              dbg_halted,
 
     input                               dbg_rden,
@@ -93,30 +93,32 @@ module merc32_core #(
     input       [31:0]                  dbg_addr,
     input       [3:0]                   dbg_strb,
     input       [31:0]                  dbg_wdata,
-    output      [31:0]                  dbg_rdata,
-    output                              dbg_ack,
+    output reg  [31:0]                  dbg_rdata,
+    output reg                          dbg_ack,
 
-    output                              plb_rden,
-    output                              plb_wren,
-    output      [31:0]                  plb_addr,
-    output      [3:0]                   plb_strb,
-    output      [31:0]                  plb_wdata,
+    output reg                          plb_rden,
+    output reg                          plb_wren,
+    output reg  [31:0]                  plb_addr,
+    output reg  [3:0]                   plb_strb,
+    output reg  [31:0]                  plb_wdata,
     input       [31:0]                  plb_rdata,
     input                               plb_ack,
 
-    output                              dlb_en,
-    output                              dlb_we,
-    output      [DLB_ADDR_WIDTH-1:0]    dlb_addr,
-    output      [3:0]                   dlb_strb,
-    output      [31:0]                  dlb_wdata,
+    output reg                          dlb_rden,
+    output reg                          dlb_wren,
+    output reg  [DLB_ADDR_WIDTH-1:0]    dlb_addr,
+    output reg  [3:0]                   dlb_strb,
+    output reg  [31:0]                  dlb_wdata,
     input       [31:0]                  dlb_rdata,
+    input                               dlb_ack,
 
-    output                              ilb_en,
-    output                              ilb_we,
-    output      [ILB_ADDR_WIDTH-1:0]    ilb_addr,
-    output      [3:0]                   ilb_strb,
-    output      [31:0]                  ilb_wdata,
-    input       [31:0]                  ilb_rdata
+    output reg                          ilb_rden,
+    output reg                          ilb_wren,
+    output reg  [ILB_ADDR_WIDTH-1:0]    ilb_addr,
+    output reg  [3:0]                   ilb_strb,
+    output reg  [31:0]                  ilb_wdata,
+    input       [31:0]                  ilb_rdata,
+    input                               ilb_ack
     );
 
     localparam  OPT_ALU                 = 3'd0;
@@ -183,14 +185,17 @@ module merc32_core #(
 
     wire                                cpu_rst_n;
     reg     [5:0]                       cpu_state;
+    reg     [5:0]                       state_last;
+
+    wire                                load_start;
     reg     [31:0]                      prog_addr;
     reg     [31:0]                      prog_next;
 
-    reg                                 exec_start;
+    wire                                exec_start;
+    reg                                 exec_done;
     reg                                 exec_busrd;
     reg                                 exec_buswr;
     reg     [31:0]                      exec_baddr;
-    reg                                 exec_done;
     reg                                 wback_req;
 
     reg     [3:0]                       alu_ptr;
@@ -206,13 +211,13 @@ module merc32_core #(
 
     reg     signed  [31:0]              regi_int    [0:15];
 
-    wire    [15:0]                      imm;
-    wire    [3:0]                       rs1;
-    wire    [3:0]                       rs2;
-    wire    [3:0]                       rd;
-    wire    [2:0]                       opt;
-    wire    [3:0]                       opc;
-    wire    [3:0]                       fun;
+    reg     [15:0]                      imm;
+    reg     [3:0]                       rs1;
+    reg     [3:0]                       rs2;
+    reg     [3:0]                       rd;
+    reg     [2:0]                       opt;
+    reg     [3:0]                       opc;
+    reg     [3:0]                       fun;
 
     reg                                 mul_start;
     reg                                 mul_mode;
@@ -234,8 +239,8 @@ module merc32_core #(
     reg     [31:0]                      cpu_addr;
     reg     [3:0]                       cpu_strb;
     reg     [31:0]                      cpu_wdata;
-    wire    [31:0]                      cpu_rdata;
-    wire                                cpu_ack;
+    reg     [31:0]                      cpu_rdata;
+    reg                                 cpu_ack;
 
     wire                                bus_rden;
     wire                                bus_wren;
@@ -249,23 +254,12 @@ module merc32_core #(
     wire                                data_addr_hit;
     wire                                peri_addr_hit;
 
-    reg                                 inst_pending;
-    reg                                 data_pending;
-
-    reg                                 regi_en;
-    reg                                 regi_vld;
-    reg     [3:0]                       regi_cnt;
-    reg     [31:0]                      regi_data;
+    reg                                 dbg_regi_en;
+    reg     [3:0]                       dbg_regi_cnt;
 
     assign  cpu_rst_n = rst_n & (~dbg_rst_req);
-
-    assign  imm = ilb_rdata[31:16];
-    assign  rs1 = ilb_rdata[19:16];
-    assign  rs2 = ilb_rdata[15:12];
-    assign  rd  = ilb_rdata[11:8];
-    assign  opt = ilb_rdata[7:5];
-    assign  opc = ilb_rdata[7:4];
-    assign  fun = ilb_rdata[3:0];
+    assign  load_start = (cpu_state == ST_LOAD) & (state_last != ST_LOAD);
+    assign  exec_start = (cpu_state == ST_EXEC) & (state_last != ST_EXEC);
 
     assign  bus_rden    = dbg_halted ? dbg_rden : cpu_rden;
     assign  bus_wren    = dbg_halted ? dbg_wren : cpu_wren;
@@ -273,48 +267,24 @@ module merc32_core #(
     assign  bus_addr    = dbg_halted ? dbg_addr : cpu_addr;
     assign  bus_wdata   = dbg_halted ? dbg_wdata : cpu_wdata;
     assign  bus_rdata   = inst_addr_hit ? ilb_rdata : data_addr_hit ? dlb_rdata : peri_addr_hit ? plb_rdata : 32'hdece;
-    assign  bus_ack     = (inst_addr_hit & inst_pending)|(data_addr_hit & data_pending)|(peri_addr_hit & plb_ack);
-
-    assign  ilb_en      = dbg_halted ? (bus_wren | bus_rden) & inst_addr_hit : cpu_state == ST_LOAD;
-    assign  ilb_we      = dbg_halted ? bus_wren & inst_addr_hit : 1'b0;
-    assign  ilb_strb    = dbg_halted ? bus_strb : 4'b1111;
-    assign  ilb_addr    = dbg_halted ? bus_addr[ILB_ADDR_WIDTH+1:2] : prog_addr[ILB_ADDR_WIDTH+1:2];
-    assign  ilb_wdata   = dbg_halted ? bus_wdata : 32'h0;
-
-    assign  dlb_en      = (bus_wren | bus_rden) & data_addr_hit;
-    assign  dlb_we      = bus_wren & data_addr_hit;
-    assign  dlb_strb    = bus_strb;
-    assign  dlb_addr    = bus_addr[DLB_ADDR_WIDTH+1:2];
-    assign  dlb_wdata   = bus_wdata;
-
-    assign  plb_rden    = bus_rden & peri_addr_hit;
-    assign  plb_wren    = bus_wren & peri_addr_hit;
-    assign  plb_strb    = bus_strb;
-    assign  plb_addr    = bus_addr;
-    assign  plb_wdata   = bus_wdata;
-
-    assign  cpu_ack     = ~dbg_halted & bus_ack & ~inst_addr_hit;
-    assign  cpu_rdata   = bus_rdata;
-    assign  dbg_ack     = dbg_halted & bus_ack;
-    assign  dbg_rdata   = bus_rdata;
+    assign  bus_ack     = (inst_addr_hit & ilb_ack)|(data_addr_hit & dlb_ack)|(peri_addr_hit & plb_ack);
 
     assign  inst_addr_hit = (bus_addr < 32'h0080_0000);
     assign  data_addr_hit = (bus_addr >= 32'h0080_0000) && (bus_addr < 32'h0100_0000);
     assign  peri_addr_hit = (bus_addr >= 32'h1000_0000);
 
     assign  dbg_halted    = (cpu_state == ST_HALT);
-    assign  dbg_regi_vld  = regi_vld;
-    assign  dbg_regi_data = regi_data;
 
     // Advance the CPU control state, holding ST_EXEC until the current
     // instruction reports completion.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
             cpu_state <= ST_IDLE;
+            state_last <= ST_IDLE;
         end else begin
             case(cpu_state)
                 ST_IDLE:cpu_state <= ST_LOAD;
-                ST_LOAD:cpu_state <= ST_EXEC;
+                ST_LOAD:cpu_state <= ilb_ack ? ST_EXEC : ST_LOAD;
                 ST_EXEC:cpu_state <= exec_done ? ST_WREG : ST_EXEC;
                 ST_WREG:cpu_state <= ST_STEP;
                 ST_STEP:cpu_state <= dbg_halt_req ? ST_HALT : intr_flag ? ST_INTR : ST_LOAD;
@@ -322,6 +292,27 @@ module merc32_core #(
                 ST_HALT:cpu_state <= dbg_step_req ? ST_LOAD : ST_HALT;
                 default:cpu_state <= ST_IDLE;
             endcase
+            state_last <= cpu_state;
+        end
+    end
+
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            imm <= 16'h0;
+            rs1 <= 4'h0;
+            rs2 <= 4'h0;
+            rd  <= 4'h0;
+            opt <= 3'd0;
+            opc <= 4'd0;
+            fun <= 4'd0;
+        end else if(ilb_ack) begin
+            imm <= ilb_rdata[31:16];
+            rs1 <= ilb_rdata[19:16];
+            rs2 <= ilb_rdata[15:12];
+            rd  <= ilb_rdata[11:8];
+            opt <= ilb_rdata[7:5];
+            opc <= ilb_rdata[7:4];
+            fun <= ilb_rdata[3:0];
         end
     end
 
@@ -359,12 +350,10 @@ module merc32_core #(
     // to launch memory transactions.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            exec_start <= 1'b0;
             exec_busrd <= 1'b0;
             exec_buswr <= 1'b0;
             exec_baddr <= 32'h0;
         end else begin
-            exec_start <= cpu_state == ST_LOAD;
             exec_busrd <= exec_start && (opt == OPT_MCU) && (fun == 0 | fun == 1 | fun == 2 | fun == 3 | fun == 4);
             exec_buswr <= exec_start && (opt == OPT_MCU) && (fun == 5 | fun == 6 | fun == 7);
             exec_baddr <= exec_start ? regi_int[rs2] + (opc[0] ? regi_int[rs1] : imm) : exec_baddr;
@@ -582,36 +571,6 @@ module merc32_core #(
         end
     end
 
-    // Generate the registered CPU data-bus request pulse and capture its
-    // address and write payload from the decoded memory instruction.
-    always @(posedge clk) begin
-        if(!cpu_rst_n) begin
-            cpu_rden  <= 1'b0;
-            cpu_wren  <= 1'b0;
-            cpu_strb <= 4'b0;
-            cpu_addr  <= 32'h0;
-            cpu_wdata <= 32'h0;
-        end else begin
-            cpu_rden  <= exec_busrd;
-            cpu_wren  <= exec_buswr;
-            cpu_addr  <= exec_baddr;
-            case(fun)
-                FUNC_SW:begin
-                    cpu_strb <= 4'b1111;
-                    cpu_wdata <= regi_int[rd];
-                end
-                FUNC_SH:begin
-                    cpu_strb <= exec_baddr[1] ? 4'b1100 : 4'b0011;
-                    cpu_wdata <= exec_baddr[1] ? regi_int[rd] << 16 : regi_int[rd];
-                end
-                FUNC_SB:begin
-                    cpu_strb <= exec_baddr[1:0] == 3 ? 4'b1000 : exec_baddr[1:0] == 2 ? 4'b0100 : exec_baddr[1:0] == 1 ? 4'b0010 : 4'b0001;
-                    cpu_wdata <= exec_baddr[1:0] == 3 ? regi_int[rd] << 24 : exec_baddr[1:0] == 2 ? regi_int[rd] << 16 : exec_baddr[1:0] == 1 ? regi_int[rd] << 8 : regi_int[rd][7:0];
-                end
-            endcase
-        end
-    end
-
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
             mul_start <= 1'b0;
@@ -636,19 +595,105 @@ module merc32_core #(
             div_start <= (fun == FUNC_DIV | fun == FUNC_DIU | fun == FUNC_REM | fun == FUNC_REU) && (opt == OPT_ALU) && exec_start;
             div_mode <= (fun == FUNC_DIV | fun == FUNC_REM);
             dividend <= regi_int[rs2];
-            divisor <= (fun == FUNC_DIV | fun == FUNC_REM) ? (opc[0] ? regi_int[rs1] : $signed(imm)) : (opc[0] ? regi_int[rs1] : imm);
+            divisor <= (fun == FUNC_DIV | fun == FUNC_REM) ? (opc[0] ? regi_int[rs1] : $signed(imm)) : (opc[0] ? regi_int[rs1] : $unsigned(imm));
         end
     end
 
-    // Delay local instruction/data enables by one cycle to form the synchronous
-    // local-memory completion pulses used by the CPU and debugger.
+    // Generate the registered CPU data-bus request pulse and capture its
+    // address and write payload from the decoded memory instruction.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            inst_pending <= 1'b0;
-            data_pending <= 1'b0;
+            cpu_rden  <= 1'b0;
+            cpu_wren  <= 1'b0;
+            cpu_strb  <= 4'b0;
+            cpu_addr  <= 32'h0;
+            cpu_wdata <= 32'h0;
         end else begin
-            inst_pending <= ilb_en;
-            data_pending <= dlb_en;
+            cpu_rden  <= exec_busrd;
+            cpu_wren  <= exec_buswr;
+            cpu_addr  <= exec_baddr;
+            case(fun)
+                FUNC_SW:begin
+                    cpu_strb  <= 4'b1111;
+                    cpu_wdata <= regi_int[rd];
+                end
+                FUNC_SH:begin
+                    cpu_strb  <= exec_baddr[1] ? 4'b1100 : 4'b0011;
+                    cpu_wdata <= exec_baddr[1] ? regi_int[rd] << 16 : regi_int[rd];
+                end
+                FUNC_SB:begin
+                    cpu_strb  <= exec_baddr[1:0] == 3 ? 4'b1000 : exec_baddr[1:0] == 2 ? 4'b0100 : exec_baddr[1:0] == 1 ? 4'b0010 : 4'b0001;
+                    cpu_wdata <= exec_baddr[1:0] == 3 ? regi_int[rd] << 24 : exec_baddr[1:0] == 2 ? regi_int[rd] << 16 : exec_baddr[1:0] == 1 ? regi_int[rd] << 8 : regi_int[rd][7:0];
+                end
+            endcase
+        end
+    end
+
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            ilb_rden  <= 1'b0;
+            ilb_wren  <= 1'b0;
+            ilb_strb  <= 4'b0;
+            ilb_addr  <= 32'h0;
+            ilb_wdata <= 32'h0;
+        end else if(dbg_halted) begin
+            ilb_rden  <= bus_rden & inst_addr_hit;
+            ilb_wren  <= bus_wren & inst_addr_hit;
+            ilb_strb  <= bus_strb;
+            ilb_addr  <= bus_addr[ILB_ADDR_WIDTH+1:2];
+            ilb_wdata <= bus_wdata;
+        end else begin
+            ilb_rden  <= load_start;
+            ilb_wren  <= 1'b0;
+            ilb_strb  <= 4'b1111;
+            ilb_addr  <= prog_addr[ILB_ADDR_WIDTH+1:2];
+            ilb_wdata <= 32'h0;
+        end
+    end
+
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            dlb_rden  <= 1'b0;
+            dlb_wren  <= 1'b0;
+            dlb_strb  <= 4'b0;
+            dlb_addr  <= 32'h0;
+            dlb_wdata <= 32'h0;
+        end else begin
+            dlb_rden  <= bus_rden & data_addr_hit;
+            dlb_wren  <= bus_wren & data_addr_hit;
+            dlb_strb  <= bus_strb;
+            dlb_addr  <= bus_addr[DLB_ADDR_WIDTH+1:2];
+            dlb_wdata <= bus_wdata;
+        end
+    end
+
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            plb_rden  <= 1'b0;
+            plb_wren  <= 1'b0;
+            plb_strb  <= 4'b0;
+            plb_addr  <= 32'h0;
+            plb_wdata <= 32'h0;
+        end else begin
+            plb_rden  <= bus_rden & peri_addr_hit;
+            plb_wren  <= bus_wren & peri_addr_hit;
+            plb_strb  <= bus_strb;
+            plb_addr  <= bus_addr;
+            plb_wdata <= bus_wdata;
+        end
+    end
+
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            cpu_ack <= 1'b0;
+            cpu_rdata <= 32'h0;
+            dbg_ack <= 1'b0;
+            dbg_rdata <= 32'h0;
+        end else begin
+            cpu_ack <= ~dbg_halted & bus_ack & ~inst_addr_hit;
+            cpu_rdata <= bus_rdata;
+            dbg_ack <= dbg_halted & bus_ack;
+            dbg_rdata <= bus_rdata;
         end
     end
 
@@ -656,20 +701,20 @@ module merc32_core #(
     // clock after a register-inspection request.
     always @(posedge clk) begin
         if(!rst_n) begin
-            regi_en <= 1'b0;
-            regi_vld <= 1'b0;
-            regi_cnt <= 4'd0;
-            regi_data <= 32'h0;
+            dbg_regi_en <= 1'b0;
+            dbg_regi_vld <= 1'b0;
+            dbg_regi_cnt <= 4'd0;
+            dbg_regi_data <= 32'h0;
         end else if(dbg_regi_req) begin
-            regi_en <= 1'b1;
-            regi_vld <= 1'b0;
-            regi_cnt <= 4'd0;
-            regi_data <= regi_data;
+            dbg_regi_en <= 1'b1;
+            dbg_regi_vld <= 1'b0;
+            dbg_regi_cnt <= 4'd0;
+            dbg_regi_data <= dbg_regi_data;
         end else begin
-            regi_en <= &regi_cnt ? 1'b0 : regi_en;
-            regi_vld <= regi_en;
-            regi_cnt <= regi_en ? regi_cnt + 1'b1 : regi_cnt;
-            regi_data <= regi_en ? regi_int[regi_cnt] : regi_data;
+            dbg_regi_en <= &dbg_regi_cnt ? 1'b0 : dbg_regi_en;
+            dbg_regi_vld <= dbg_regi_en;
+            dbg_regi_cnt <= dbg_regi_en ? dbg_regi_cnt + 1'b1 : dbg_regi_cnt;
+            dbg_regi_data <= dbg_regi_en ? regi_int[dbg_regi_cnt] : dbg_regi_data;
         end
     end
 

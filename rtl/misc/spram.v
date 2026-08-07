@@ -27,13 +27,15 @@ spram #(
     .ADDR_WIDTH                     (32             ),
     .INIT_FILE                      (""             ))
 u_spram (
-    .clk                            (clk            ),
-    .en                             (en             ),
-    .we                             (we             ),
-    .be                             (be             ),
+    .clka                           (clka           ),
+    .wren                           (wren           ),
     .din                            (din            ),
+    .addra                          (addra          ),
+    .clkb                           (clkb           ),
+    .rden                           (rden           ),
     .dout                           (dout           ),
-    .addr                           (addr           ));
+    .addrb                          (addrb          ),
+    .ack                            (ack            ));
 */
 
 //================================================================================
@@ -45,32 +47,33 @@ module spram #(
     parameter   INIT_FILE           = ""
 ) (
     input                           clk,
-    input                           en,
-    input                           we,
+    input                           wr,
+    input                           rd,
     input   [3:0]                   be,
     input   [31:0]                  din,
     output  reg [31:0]              dout,
-    input   [ADDR_WIDTH-1:0]        addr
+    input   [ADDR_WIDTH-1:0]        addr,
+    output  reg                     ack
 );
 
     reg     [31:0]                  ram [0:(1<<ADDR_WIDTH)-1];
 
     always @(posedge clk) begin
-        if (en & we & be[3])
+        ack <= wr | rd;
+        if (wr & be[3])
             ram[addr][31:24] <= din[31:24];
-        if (en & we & be[2])
+        if (wr & be[2])
             ram[addr][23:16] <= din[23:16];
-        if (en & we & be[1])
+        if (wr & be[1])
             ram[addr][15:08] <= din[15:08];
-        if (en & we & be[0])
+        if (wr & be[0])
             ram[addr][07:00] <= din[07:00];
-        if (en)
+        if (rd)
             dout <= ram[addr];
     end
 
     initial begin : initialization
         integer i;
-
         if (INIT_FILE != "") begin
             $readmemh(INIT_FILE, ram, 0, (1<<ADDR_WIDTH)-1);
         end else begin
