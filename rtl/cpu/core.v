@@ -36,6 +36,7 @@ u_merc32_core (
     .dbg_step_req                       (dbg_step_req   ),
     .dbg_rst_req                        (dbg_rst_req    ),
     .dbg_regi_req                       (dbg_regi_req   ),
+    .dbg_regi_addr                      (dbg_regi_addr  ),
     .dbg_regi_vld                       (dbg_regi_vld   ),
     .dbg_regi_data                      (dbg_regi_data  ),
     .dbg_halted                         (dbg_halted     ),
@@ -43,6 +44,7 @@ u_merc32_core (
     .dbg_rden                           (dbg_rden       ),
     .dbg_wren                           (dbg_wren       ),
     .dbg_addr                           (dbg_addr       ),
+    .dbg_strb                           (dbg_strb       ),
     .dbg_wdata                          (dbg_wdata      ),
     .dbg_rdata                          (dbg_rdata      ),
     .dbg_ack                            (dbg_ack        ),
@@ -50,21 +52,26 @@ u_merc32_core (
     .plb_rden                           (plb_rden       ),
     .plb_wren                           (plb_wren       ),
     .plb_addr                           (plb_addr       ),
+    .plb_strb                           (plb_strb       ),
     .plb_wdata                          (plb_wdata      ),
     .plb_rdata                          (plb_rdata      ),
     .plb_ack                            (plb_ack        ),
 
-    .dlb_en                             (dlb_en         ),
-    .dlb_we                             (dlb_we         ),
+    .dlb_rden                           (dlb_rden       ),
+    .dlb_wren                           (dlb_wren       ),
     .dlb_addr                           (dlb_addr       ),
+    .dlb_strb                           (dlb_strb       ),
     .dlb_wdata                          (dlb_wdata      ),
     .dlb_rdata                          (dlb_rdata      ),
+    .dlb_ack                            (dlb_ack        ),
 
-    .ilb_en                             (ilb_en         ),
-    .ilb_we                             (ilb_we         ),
+    .ilb_rden                           (ilb_rden       ),
+    .ilb_wren                           (ilb_wren       ),
     .ilb_addr                           (ilb_addr       ),
+    .ilb_strb                           (ilb_strb       ),
     .ilb_wdata                          (ilb_wdata      ),
-    .ilb_rdata                          (ilb_rdata      ));
+    .ilb_rdata                          (ilb_rdata      ),
+    .ilb_ack                            (ilb_ack        ));
 */
 
 //================================================================================
@@ -84,6 +91,7 @@ module merc32_core #(
     input                               dbg_halt_req,
     input                               dbg_step_req,
     input                               dbg_regi_req,
+    input       [3:0]                   dbg_regi_addr,
     output reg                          dbg_regi_vld,
     output reg  [31:0]                  dbg_regi_data,
     output                              dbg_halted,
@@ -96,27 +104,27 @@ module merc32_core #(
     output reg  [31:0]                  dbg_rdata,
     output reg                          dbg_ack,
 
-    output reg                          plb_rden,
-    output reg                          plb_wren,
-    output reg  [31:0]                  plb_addr,
-    output reg  [3:0]                   plb_strb,
-    output reg  [31:0]                  plb_wdata,
+    output                              plb_rden,
+    output                              plb_wren,
+    output      [31:0]                  plb_addr,
+    output      [3:0]                   plb_strb,
+    output      [31:0]                  plb_wdata,
     input       [31:0]                  plb_rdata,
     input                               plb_ack,
 
-    output reg                          dlb_rden,
-    output reg                          dlb_wren,
-    output reg  [DLB_ADDR_WIDTH-1:0]    dlb_addr,
-    output reg  [3:0]                   dlb_strb,
-    output reg  [31:0]                  dlb_wdata,
+    output                              dlb_rden,
+    output                              dlb_wren,
+    output      [DLB_ADDR_WIDTH-1:0]    dlb_addr,
+    output      [3:0]                   dlb_strb,
+    output      [31:0]                  dlb_wdata,
     input       [31:0]                  dlb_rdata,
     input                               dlb_ack,
 
-    output reg                          ilb_rden,
-    output reg                          ilb_wren,
-    output reg  [ILB_ADDR_WIDTH-1:0]    ilb_addr,
-    output reg  [3:0]                   ilb_strb,
-    output reg  [31:0]                  ilb_wdata,
+    output                              ilb_rden,
+    output                              ilb_wren,
+    output      [ILB_ADDR_WIDTH-1:0]    ilb_addr,
+    output      [3:0]                   ilb_strb,
+    output      [31:0]                  ilb_wdata,
     input       [31:0]                  ilb_rdata,
     input                               ilb_ack
     );
@@ -124,13 +132,6 @@ module merc32_core #(
     localparam  OPT_ALU                 = 3'd0;
     localparam  OPT_PCU                 = 3'd1;
     localparam  OPT_MCU                 = 3'd2;
-
-    localparam  OP_IALU                 = 4'd0;
-    localparam  OP_RALU                 = 4'd1;
-    localparam  OP_IPCU                 = 4'd2;
-    localparam  OP_RPCU                 = 4'd3;
-    localparam  OP_IMCU                 = 4'd4;
-    localparam  OP_RMCU                 = 4'd5;
 
     localparam  FUNC_SET                = 4'd0;
     localparam  FUNC_ADD                = 4'd1;
@@ -170,22 +171,28 @@ module merc32_core #(
     localparam  FUNC_SH                 = 4'd6;
     localparam  FUNC_SB                 = 4'd7;
 
-    localparam  ST_IDLE                 = 6'b000000;
-    localparam  ST_LOAD                 = 6'b000001;
-    localparam  ST_EXEC                 = 6'b000010;
-    localparam  ST_WREG                 = 6'b000100;
-    localparam  ST_STEP                 = 6'b001000;
-    localparam  ST_INTR                 = 6'b010000;
-    localparam  ST_HALT                 = 6'b100000;
+    localparam  ST_IDLE                 = 7'b0000000;
+    localparam  ST_LOAD                 = 7'b0000001;
+    localparam  ST_EXEC                 = 7'b0000010;
+    localparam  ST_WREG                 = 7'b0000100;
+    localparam  ST_STEP                 = 7'b0001000;
+    localparam  ST_INTR                 = 7'b0010000;
+    localparam  ST_HALT                 = 7'b0100000;
+    localparam  ST_DECODE               = 7'b1000000;
 
     localparam  TRIG_RISE               = 2'b00;
     localparam  TRIG_FALL               = 2'b01;
     localparam  TRIG_HIGH               = 2'b10;
     localparam  TRIG_LOW                = 2'b11;
 
+    localparam  BUS_NONE                = 2'd0;
+    localparam  BUS_ILB                 = 2'd1;
+    localparam  BUS_DLB                 = 2'd2;
+    localparam  BUS_PLB                 = 2'd3;
+
     wire                                cpu_rst_n;
-    reg     [5:0]                       cpu_state;
-    reg     [5:0]                       state_last;
+    reg     [6:0]                       cpu_state;
+    reg     [6:0]                       state_last;
 
     wire                                load_start;
     reg     [31:0]                      prog_addr;
@@ -196,9 +203,7 @@ module merc32_core #(
     reg                                 exec_busrd;
     reg                                 exec_buswr;
     reg     [31:0]                      exec_baddr;
-    reg                                 wback_req;
 
-    reg     [3:0]                       alu_ptr;
     reg     signed  [31:0]              alu_data;
 
     reg                                 intr_ff0;
@@ -209,69 +214,257 @@ module merc32_core #(
     reg                                 intr_trig;
     reg                                 intr_flag;
 
-    reg     signed  [31:0]              regi_int    [0:15];
+    reg     signed  [31:0]              regi_r1;
+    reg     signed  [31:0]              regi_r2;
+    reg     signed  [31:0]              regi_r3;
+    reg     signed  [31:0]              regi_r15;
+    (* ram_style = "distributed" *)
+    reg     signed  [31:0]              regi_general [0:10];
+    reg                                 regi_clear_active;
+    reg     [3:0]                       regi_clear_index;
 
-    reg     [15:0]                      imm;
-    reg     [3:0]                       rs1;
-    reg     [3:0]                       rs2;
     reg     [3:0]                       rd;
-    reg     [2:0]                       opt;
     reg     [3:0]                       opc;
     reg     [3:0]                       fun;
+    reg     [31:0]                      instruction;
+    reg     signed  [31:0]              operand_a;
+    reg     signed  [31:0]              operand_b;
+    reg     signed  [31:0]              operand_d;
+    reg                                 shift_out_of_range;
 
     reg                                 mul_start;
-    reg                                 mul_mode;
-    reg     [31:0]                      mul_opa;
-    reg     [31:0]                      mul_opb;
     wire                                mul_done;
     wire    [63:0]                      mul_res;
 
     reg                                 div_start;
-    reg                                 div_mode;
-    reg     [31:0]                      dividend;
-    reg     [31:0]                      divisor;
     wire                                div_done;
     wire    [31:0]                      div_quo;
     wire    [31:0]                      div_rem;
 
     reg                                 cpu_rden;
     reg                                 cpu_wren;
-    reg     [31:0]                      cpu_addr;
-    reg     [3:0]                       cpu_strb;
-    reg     [31:0]                      cpu_wdata;
     reg     [31:0]                      cpu_rdata;
     reg                                 cpu_ack;
 
-    wire                                bus_rden;
-    wire                                bus_wren;
-    wire    [31:0]                      bus_addr;
-    wire    [3:0]                       bus_strb;
-    wire    [31:0]                      bus_wdata;
+    reg                                 bus_req_rden;
+    reg                                 bus_req_wren;
+    reg     [1:0]                       bus_req_target;
+    reg                                 bus_req_debug;
+    reg     [31:0]                      bus_req_addr;
+    reg     [3:0]                       bus_req_strb;
+    reg     [31:0]                      bus_req_wdata;
     wire    [31:0]                      bus_rdata;
     wire                                bus_ack;
+    wire    signed  [31:0]              add_result;
+    wire            [32:0]              subtract_wide;
+    wire    signed  [31:0]              subtract_result;
+    wire                                compare_equal;
+    wire                                compare_signed_less;
+    wire                                compare_unsigned_less;
+    wire                                compare_result;
+    wire    [31:0]                      load_result;
+    wire                                wback_req;
 
-    wire                                inst_addr_hit;
-    wire                                data_addr_hit;
-    wire                                peri_addr_hit;
+    function [31:0] read_register;
+        input   [3:0] address;
+        begin
+            case(address)
+                4'h0:read_register = 32'h0;
+                4'h1:read_register = regi_r1;
+                4'h2:read_register = regi_r2;
+                4'h3:read_register = regi_r3;
+                4'hf:read_register = regi_r15;
+                default:read_register = regi_general[address - 4'h4];
+            endcase
+        end
+    endfunction
 
-    reg                                 dbg_regi_en;
-    reg     [3:0]                       dbg_regi_cnt;
+    function [31:0] extend_immediate;
+        input   [15:0] value;
+        input   [2:0]  operation;
+        input   [3:0]  function_code;
+        begin
+            if(((operation == OPT_ALU) &&
+                ((function_code == FUNC_MUL) ||
+                 (function_code == FUNC_DIV) ||
+                 (function_code == FUNC_REM))) ||
+               ((operation == OPT_PCU) &&
+                (function_code <= FCMP_SLE))) begin
+                extend_immediate = {{16{value[15]}}, value};
+            end else begin
+                extend_immediate = {16'h0, value};
+            end
+        end
+    endfunction
+
+    function compare_condition;
+        input   [3:0] function_code;
+        input         equal_flag;
+        input         signed_less_flag;
+        input         unsigned_less_flag;
+        begin
+            case(function_code)
+                FCMP_EQ :compare_condition = equal_flag;
+                FCMP_NE :compare_condition = ~equal_flag;
+                FCMP_SGE:compare_condition = ~signed_less_flag;
+                FCMP_SLT:compare_condition = signed_less_flag;
+                FCMP_SGT:compare_condition = ~signed_less_flag & ~equal_flag;
+                FCMP_SLE:compare_condition = signed_less_flag | equal_flag;
+                FCMP_UGE:compare_condition = ~unsigned_less_flag;
+                FCMP_ULT:compare_condition = unsigned_less_flag;
+                FCMP_UGT:compare_condition = ~unsigned_less_flag & ~equal_flag;
+                FCMP_ULE:compare_condition = unsigned_less_flag | equal_flag;
+                default :compare_condition = 1'b0;
+            endcase
+        end
+    endfunction
+
+    function [31:0] format_load_data;
+        input   [3:0]  function_code;
+        input   [1:0]  byte_offset;
+        input   [31:0] word_data;
+        reg     [15:0] half_data;
+        reg     [7:0]  byte_data;
+        begin
+            half_data = byte_offset[1] ? word_data[31:16] : word_data[15:0];
+            case(byte_offset)
+                2'd0:byte_data = word_data[7:0];
+                2'd1:byte_data = word_data[15:8];
+                2'd2:byte_data = word_data[23:16];
+                default:byte_data = word_data[31:24];
+            endcase
+
+            case(function_code)
+                FUNC_LW :format_load_data = word_data;
+                FUNC_LH :format_load_data = {{16{half_data[15]}}, half_data};
+                FUNC_LHU:format_load_data = {16'h0, half_data};
+                FUNC_LB :format_load_data = {{24{byte_data[7]}}, byte_data};
+                FUNC_LBU:format_load_data = {24'h0, byte_data};
+                default :format_load_data = word_data;
+            endcase
+        end
+    endfunction
+
+    function [1:0] decode_bus_target;
+        input   [31:0] byte_address;
+        begin
+            if(byte_address < 32'h0080_0000) begin
+                decode_bus_target = BUS_ILB;
+            end else if(byte_address < 32'h0100_0000) begin
+                decode_bus_target = BUS_DLB;
+            end else if(byte_address >= 32'h1000_0000) begin
+                decode_bus_target = BUS_PLB;
+            end else begin
+                decode_bus_target = BUS_NONE;
+            end
+        end
+    endfunction
+
+    function [3:0] store_strobe;
+        input   [3:0] function_code;
+        input   [1:0] byte_offset;
+        begin
+            case(function_code)
+                FUNC_SH:store_strobe = byte_offset[1] ? 4'b1100 : 4'b0011;
+                FUNC_SB:begin
+                    case(byte_offset)
+                        2'd0:store_strobe = 4'b0001;
+                        2'd1:store_strobe = 4'b0010;
+                        2'd2:store_strobe = 4'b0100;
+                        default:store_strobe = 4'b1000;
+                    endcase
+                end
+                default:store_strobe = 4'b1111;
+            endcase
+        end
+    endfunction
+
+    function [31:0] format_store_data;
+        input   [3:0]  function_code;
+        input   [1:0]  byte_offset;
+        input   [31:0] register_data;
+        begin
+            case(function_code)
+                FUNC_SH:format_store_data = byte_offset[1]
+                                           ? register_data << 16
+                                           : register_data;
+                FUNC_SB:begin
+                    case(byte_offset)
+                        2'd0:format_store_data = {24'h0, register_data[7:0]};
+                        2'd1:format_store_data = register_data << 8;
+                        2'd2:format_store_data = register_data << 16;
+                        default:format_store_data = register_data << 24;
+                    endcase
+                end
+                default:format_store_data = register_data;
+            endcase
+        end
+    endfunction
+
+`ifndef SYNTHESIS
+    wire    signed  [31:0]              regi_int [0:15];
+
+    assign  regi_int[0] = 32'h0;
+    assign  regi_int[1] = regi_r1;
+    assign  regi_int[2] = regi_r2;
+    assign  regi_int[3] = regi_r3;
+    assign  regi_int[4] = regi_general[0];
+    assign  regi_int[5] = regi_general[1];
+    assign  regi_int[6] = regi_general[2];
+    assign  regi_int[7] = regi_general[3];
+    assign  regi_int[8] = regi_general[4];
+    assign  regi_int[9] = regi_general[5];
+    assign  regi_int[10] = regi_general[6];
+    assign  regi_int[11] = regi_general[7];
+    assign  regi_int[12] = regi_general[8];
+    assign  regi_int[13] = regi_general[9];
+    assign  regi_int[14] = regi_general[10];
+    assign  regi_int[15] = regi_r15;
+`endif
 
     assign  cpu_rst_n = rst_n & (~dbg_rst_req);
     assign  load_start = (cpu_state == ST_LOAD) & (state_last != ST_LOAD);
     assign  exec_start = (cpu_state == ST_EXEC) & (state_last != ST_EXEC);
+    assign  add_result = operand_a + operand_b;
+    assign  subtract_wide = {1'b0, operand_a} - {1'b0, operand_b};
+    assign  subtract_result = subtract_wide[31:0];
+    assign  compare_equal = operand_a == operand_b;
+    assign  compare_signed_less = (operand_a[31] != operand_b[31])
+                                ? operand_a[31] : subtract_result[31];
+    assign  compare_unsigned_less = subtract_wide[32];
+    assign  compare_result = compare_condition(fun, compare_equal,
+                                                compare_signed_less,
+                                                compare_unsigned_less);
+    assign  load_result = format_load_data(fun, exec_baddr[1:0], cpu_rdata);
+    assign  wback_req = !(((opc[3:1] == OPT_MCU) &&
+                           (fun >= FUNC_SW) && (fun <= FUNC_SB)) ||
+                          ((opc[3:1] == OPT_PCU) &&
+                           ((fun == FUNC_BEZ) || (fun == FUNC_BNZ))));
 
-    assign  bus_rden    = dbg_halted ? dbg_rden : cpu_rden;
-    assign  bus_wren    = dbg_halted ? dbg_wren : cpu_wren;
-    assign  bus_strb    = dbg_halted ? dbg_strb : cpu_strb;
-    assign  bus_addr    = dbg_halted ? dbg_addr : cpu_addr;
-    assign  bus_wdata   = dbg_halted ? dbg_wdata : cpu_wdata;
-    assign  bus_rdata   = inst_addr_hit ? ilb_rdata : data_addr_hit ? dlb_rdata : peri_addr_hit ? plb_rdata : 32'hdece;
-    assign  bus_ack     = (inst_addr_hit & ilb_ack)|(data_addr_hit & dlb_ack)|(peri_addr_hit & plb_ack);
+    assign  ilb_rden = bus_req_rden && (bus_req_target == BUS_ILB);
+    assign  ilb_wren = bus_req_wren && (bus_req_target == BUS_ILB);
+    assign  ilb_addr = bus_req_addr[ILB_ADDR_WIDTH+1:2];
+    assign  ilb_strb = bus_req_strb;
+    assign  ilb_wdata = bus_req_wdata;
 
-    assign  inst_addr_hit = (bus_addr < 32'h0080_0000);
-    assign  data_addr_hit = (bus_addr >= 32'h0080_0000) && (bus_addr < 32'h0100_0000);
-    assign  peri_addr_hit = (bus_addr >= 32'h1000_0000);
+    assign  dlb_rden = bus_req_rden && (bus_req_target == BUS_DLB);
+    assign  dlb_wren = bus_req_wren && (bus_req_target == BUS_DLB);
+    assign  dlb_addr = bus_req_addr[DLB_ADDR_WIDTH+1:2];
+    assign  dlb_strb = bus_req_strb;
+    assign  dlb_wdata = bus_req_wdata;
+
+    assign  plb_rden = bus_req_rden && (bus_req_target == BUS_PLB);
+    assign  plb_wren = bus_req_wren && (bus_req_target == BUS_PLB);
+    assign  plb_addr = bus_req_addr;
+    assign  plb_strb = bus_req_strb;
+    assign  plb_wdata = bus_req_wdata;
+
+    assign  bus_rdata = bus_req_target == BUS_ILB ? ilb_rdata :
+                        bus_req_target == BUS_DLB ? dlb_rdata :
+                        bus_req_target == BUS_PLB ? plb_rdata : 32'hdece;
+    assign  bus_ack = bus_req_target == BUS_ILB ? ilb_ack :
+                      bus_req_target == BUS_DLB ? dlb_ack :
+                      bus_req_target == BUS_PLB ? plb_ack : 1'b0;
 
     assign  dbg_halted    = (cpu_state == ST_HALT);
 
@@ -283,8 +476,9 @@ module merc32_core #(
             state_last <= ST_IDLE;
         end else begin
             case(cpu_state)
-                ST_IDLE:cpu_state <= ST_LOAD;
-                ST_LOAD:cpu_state <= ilb_ack ? ST_EXEC : ST_LOAD;
+                ST_IDLE:cpu_state <= regi_clear_active ? ST_IDLE : ST_LOAD;
+                ST_LOAD:cpu_state <= ilb_ack ? ST_DECODE : ST_LOAD;
+                ST_DECODE:cpu_state <= ST_EXEC;
                 ST_EXEC:cpu_state <= exec_done ? ST_WREG : ST_EXEC;
                 ST_WREG:cpu_state <= ST_STEP;
                 ST_STEP:cpu_state <= dbg_halt_req ? ST_HALT : intr_flag ? ST_INTR : ST_LOAD;
@@ -296,23 +490,43 @@ module merc32_core #(
         end
     end
 
+    // Register the instruction response before any decode or register-file
+    // selection so BRAM clock-to-output delay ends at this pipeline stage.
+    always @(posedge clk) begin
+        if(ilb_ack) begin
+            instruction <= ilb_rdata;
+        end
+    end
+
+    // Decode the registered instruction and capture all execution operands.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            imm <= 16'h0;
-            rs1 <= 4'h0;
-            rs2 <= 4'h0;
             rd  <= 4'h0;
-            opt <= 3'd0;
             opc <= 4'd0;
             fun <= 4'd0;
-        end else if(ilb_ack) begin
-            imm <= ilb_rdata[31:16];
-            rs1 <= ilb_rdata[19:16];
-            rs2 <= ilb_rdata[15:12];
-            rd  <= ilb_rdata[11:8];
-            opt <= ilb_rdata[7:5];
-            opc <= ilb_rdata[7:4];
-            fun <= ilb_rdata[3:0];
+            operand_a <= 32'h0;
+            operand_b <= 32'h0;
+            operand_d <= 32'h0;
+            shift_out_of_range <= 1'b0;
+        end else if(cpu_state == ST_DECODE) begin
+            rd  <= instruction[11:8];
+            opc <= instruction[7:4];
+            fun <= instruction[3:0];
+            operand_a <= read_register(instruction[15:12]);
+            operand_d <= read_register(instruction[11:8]);
+            if(instruction[4]) begin
+                operand_b <= read_register(instruction[19:16]);
+                shift_out_of_range <=
+                    |(read_register(instruction[19:16]) >> 5);
+            end else begin
+                operand_b <= extend_immediate(instruction[31:16],
+                                              instruction[7:5],
+                                              instruction[3:0]);
+                shift_out_of_range <=
+                    |(extend_immediate(instruction[31:16],
+                                       instruction[7:5],
+                                       instruction[3:0]) >> 5);
+            end
         end
     end
 
@@ -334,13 +548,10 @@ module merc32_core #(
         if(!cpu_rst_n) begin
             prog_next <= 0;
         end else if(cpu_state == ST_EXEC) begin
-            case({opc, fun})
-                {OP_IPCU, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
-                {OP_IPCU, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + imm : prog_addr + 4;
-                {OP_IPCU, FUNC_JAL}:prog_next <= regi_int[rs2] + imm;
-                {OP_RPCU, FUNC_BEZ}:prog_next <= regi_int[rd] == 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
-                {OP_RPCU, FUNC_BNZ}:prog_next <= regi_int[rd] != 32'd0 ? regi_int[rs2] + regi_int[rs1] : prog_addr + 4;
-                {OP_RPCU, FUNC_JAL}:prog_next <= regi_int[rs2] + regi_int[rs1];
+            case({opc[3:1], fun})
+                {OPT_PCU, FUNC_BEZ}:prog_next <= operand_d == 32'd0 ? add_result : prog_addr + 4;
+                {OPT_PCU, FUNC_BNZ}:prog_next <= operand_d != 32'd0 ? add_result : prog_addr + 4;
+                {OPT_PCU, FUNC_JAL}:prog_next <= add_result;
                 default:prog_next <= prog_addr + 4;
             endcase
         end
@@ -354,9 +565,11 @@ module merc32_core #(
             exec_buswr <= 1'b0;
             exec_baddr <= 32'h0;
         end else begin
-            exec_busrd <= exec_start && (opt == OPT_MCU) && (fun == 0 | fun == 1 | fun == 2 | fun == 3 | fun == 4);
-            exec_buswr <= exec_start && (opt == OPT_MCU) && (fun == 5 | fun == 6 | fun == 7);
-            exec_baddr <= exec_start ? regi_int[rs2] + (opc[0] ? regi_int[rs1] : imm) : exec_baddr;
+            exec_busrd <= exec_start && (opc[3:1] == OPT_MCU) &&
+                          (fun <= FUNC_LBU);
+            exec_buswr <= exec_start && (opc[3:1] == OPT_MCU) &&
+                          (fun >= FUNC_SW) && (fun <= FUNC_SB);
+            exec_baddr <= exec_start ? add_result : exec_baddr;
         end
     end
 
@@ -366,33 +579,20 @@ module merc32_core #(
         if(!cpu_rst_n) begin
             exec_done <= 1'b0;
         end else if(cpu_state == ST_EXEC) begin
-            case({opc, fun})
-                {OP_IALU, FUNC_MUL} : exec_done <= mul_done;
-                {OP_IALU, FUNC_DIV} : exec_done <= div_done;
-                {OP_IALU, FUNC_DIU} : exec_done <= div_done;
-                {OP_IALU, FUNC_REM} : exec_done <= div_done;
-                {OP_IALU, FUNC_REU} : exec_done <= div_done;
-                {OP_RALU, FUNC_MUL} : exec_done <= mul_done;
-                {OP_RALU, FUNC_DIV} : exec_done <= div_done;
-                {OP_RALU, FUNC_DIU} : exec_done <= div_done;
-                {OP_RALU, FUNC_REM} : exec_done <= div_done;
-                {OP_RALU, FUNC_REU} : exec_done <= div_done;
-                {OP_IMCU, FUNC_LW}  : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_LH}  : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_LHU} : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_LB}  : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_LBU} : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_SW}  : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_SH}  : exec_done <= cpu_ack;
-                {OP_IMCU, FUNC_SB}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_LW}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_LH}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_LHU} : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_LB}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_LBU} : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_SW}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_SH}  : exec_done <= cpu_ack;
-                {OP_RMCU, FUNC_SB}  : exec_done <= cpu_ack;
+            case({opc[3:1], fun})
+                {OPT_ALU, FUNC_MUL} : exec_done <= mul_done;
+                {OPT_ALU, FUNC_DIV} : exec_done <= div_done;
+                {OPT_ALU, FUNC_DIU} : exec_done <= div_done;
+                {OPT_ALU, FUNC_REM} : exec_done <= div_done;
+                {OPT_ALU, FUNC_REU} : exec_done <= div_done;
+                {OPT_MCU, FUNC_LW}  : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_LH}  : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_LHU} : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_LB}  : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_LBU} : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_SW}  : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_SH}  : exec_done <= cpu_ack;
+                {OPT_MCU, FUNC_SB}  : exec_done <= cpu_ack;
                 default:exec_done <= 1'b1;
             endcase
         end else begin
@@ -400,138 +600,104 @@ module merc32_core #(
         end
     end
 
-    // Record whether the executing instruction requires a destination-register
-    // write when it reaches ST_WREG.
-    always @(posedge clk) begin
-        if(!cpu_rst_n) begin
-            wback_req <= 1'b0;
-        end else if(cpu_state == ST_EXEC) begin
-            case({opc, fun})
-                {OP_IMCU, FUNC_SW}  : wback_req <= 1'b0;
-                {OP_IMCU, FUNC_SH}  : wback_req <= 1'b0;
-                {OP_IMCU, FUNC_SB}  : wback_req <= 1'b0;
-                {OP_IPCU, FUNC_BEZ} : wback_req <= 1'b0;
-                {OP_IPCU, FUNC_BNZ} : wback_req <= 1'b0;
-                {OP_RMCU, FUNC_SW}  : wback_req <= 1'b0;
-                {OP_RMCU, FUNC_SH}  : wback_req <= 1'b0;
-                {OP_RMCU, FUNC_SB}  : wback_req <= 1'b0;
-                {OP_RPCU, FUNC_BEZ} : wback_req <= 1'b0;
-                {OP_RPCU, FUNC_BNZ} : wback_req <= 1'b0;
-                default:wback_req <= 1'b1;
-            endcase
-        end else begin
-            wback_req <= 1'b0;
-        end
-    end
-
     // Capture the destination register and execution result while in ST_EXEC;
     // load instructions sample the active bus return data through cpu_rdata.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            alu_ptr  <= 4'd0;
             alu_data <= 32'h0;
         end else if(cpu_state == ST_EXEC) begin
-            alu_ptr  <= rd;
-            case({opc, fun})
-                {OP_IALU, FUNC_SET} : alu_data <= imm;
-                {OP_IALU, FUNC_ADD} : alu_data <= regi_int[rs2] + imm;
-                {OP_IALU, FUNC_SUB} : alu_data <= regi_int[rs2] - imm;
-                {OP_IALU, FUNC_AND} : alu_data <= regi_int[rs2] & imm;
-                {OP_IALU, FUNC_OR}  : alu_data <= regi_int[rs2] | imm;
-                {OP_IALU, FUNC_XOR} : alu_data <= regi_int[rs2] ^ imm;
-                {OP_IALU, FUNC_SLL} : alu_data <= regi_int[rs2] << imm;
-                {OP_IALU, FUNC_SRL} : alu_data <= regi_int[rs2] >> imm;
-                {OP_IALU, FUNC_SRA} : alu_data <= regi_int[rs2] >>> imm;
-                {OP_IALU, FUNC_MUL} : alu_data <= mul_res[31:0];
-                {OP_IALU, FUNC_DIV} : alu_data <= div_quo;
-                {OP_IALU, FUNC_DIU} : alu_data <= div_quo;
-                {OP_IALU, FUNC_REM} : alu_data <= div_rem;
-                {OP_IALU, FUNC_REU} : alu_data <= div_rem;
-                {OP_RALU, FUNC_SET} : alu_data <= regi_int[rs1];
-                {OP_RALU, FUNC_ADD} : alu_data <= regi_int[rs2] + regi_int[rs1];
-                {OP_RALU, FUNC_SUB} : alu_data <= regi_int[rs2] - regi_int[rs1];
-                {OP_RALU, FUNC_AND} : alu_data <= regi_int[rs2] & regi_int[rs1];
-                {OP_RALU, FUNC_OR}  : alu_data <= regi_int[rs2] | regi_int[rs1];
-                {OP_RALU, FUNC_XOR} : alu_data <= regi_int[rs2] ^ regi_int[rs1];
-                {OP_RALU, FUNC_SLL} : alu_data <= regi_int[rs2] << regi_int[rs1];
-                {OP_RALU, FUNC_SRL} : alu_data <= regi_int[rs2] >> regi_int[rs1];
-                {OP_RALU, FUNC_SRA} : alu_data <= regi_int[rs2] >>> regi_int[rs1];
-                {OP_RALU, FUNC_MUL} : alu_data <= mul_res[31:0];
-                {OP_RALU, FUNC_DIV} : alu_data <= div_quo;
-                {OP_RALU, FUNC_DIU} : alu_data <= div_quo;
-                {OP_RALU, FUNC_REM} : alu_data <= div_rem;
-                {OP_RALU, FUNC_REU} : alu_data <= div_rem;
-                {OP_IPCU, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(imm);
-                {OP_IPCU, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(imm);
-                {OP_IPCU, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(imm);
-                {OP_IPCU, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(imm);
-                {OP_IPCU, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(imm);
-                {OP_IPCU, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(imm);
-                {OP_IPCU, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(imm);
-                {OP_IPCU, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(imm);
-                {OP_IPCU, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(imm);
-                {OP_IPCU, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(imm);
-                {OP_IPCU, FUNC_JAL} : alu_data <= prog_addr + 4;
-                {OP_RPCU, FCMP_EQ}  : alu_data <= $signed(regi_int[rs2]) == $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_NE}  : alu_data <= $signed(regi_int[rs2]) != $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_SGE} : alu_data <= $signed(regi_int[rs2]) >= $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_SLT} : alu_data <= $signed(regi_int[rs2]) <  $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_SGT} : alu_data <= $signed(regi_int[rs2]) >  $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_SLE} : alu_data <= $signed(regi_int[rs2]) <= $signed(regi_int[rs1]);
-                {OP_RPCU, FCMP_UGE} : alu_data <= $unsigned(regi_int[rs2]) >= $unsigned(regi_int[rs1]);
-                {OP_RPCU, FCMP_ULT} : alu_data <= $unsigned(regi_int[rs2]) <  $unsigned(regi_int[rs1]);
-                {OP_RPCU, FCMP_UGT} : alu_data <= $unsigned(regi_int[rs2]) >  $unsigned(regi_int[rs1]);
-                {OP_RPCU, FCMP_ULE} : alu_data <= $unsigned(regi_int[rs2]) <= $unsigned(regi_int[rs1]);
-                {OP_RPCU, FUNC_JAL} : alu_data <= prog_addr + 4;
-                {OP_IMCU, FUNC_LW}  : alu_data <= cpu_rdata;
-                {OP_IMCU, FUNC_LH}  : alu_data <= exec_baddr[1] ? $signed(cpu_rdata[31:16]) : $signed(cpu_rdata[15:0]);
-                {OP_IMCU, FUNC_LHU} : alu_data <= exec_baddr[1] ? $unsigned(cpu_rdata[31:16]) : $unsigned(cpu_rdata[15:0]);
-                {OP_IMCU, FUNC_LB}  : alu_data <= exec_baddr[1:0] == 3 ? $signed(cpu_rdata[31:24]) : exec_baddr[1:0] == 2 ? $signed(cpu_rdata[23:16]) : exec_baddr[1:0] == 1 ? $signed(cpu_rdata[15:8]) : $signed(cpu_rdata[7:0]);
-                {OP_IMCU, FUNC_LBU} : alu_data <= exec_baddr[1:0] == 3 ? $unsigned(cpu_rdata[31:24]) : exec_baddr[1:0] == 2 ? $unsigned(cpu_rdata[23:16]) : exec_baddr[1:0] == 1 ? $unsigned(cpu_rdata[15:8]) : $unsigned(cpu_rdata[7:0]);
-                {OP_RMCU, FUNC_LW}  : alu_data <= cpu_rdata;
-                {OP_RMCU, FUNC_LH}  : alu_data <= exec_baddr[1] ? $signed(cpu_rdata[31:16]) : $signed(cpu_rdata[15:0]);
-                {OP_RMCU, FUNC_LHU} : alu_data <= exec_baddr[1] ? $unsigned(cpu_rdata[31:16]) : $unsigned(cpu_rdata[15:0]);
-                {OP_RMCU, FUNC_LB}  : alu_data <= exec_baddr[1:0] == 3 ? $signed(cpu_rdata[31:24]) : exec_baddr[1:0] == 2 ? $signed(cpu_rdata[23:16]) : exec_baddr[1:0] == 1 ? $signed(cpu_rdata[15:8]) : $signed(cpu_rdata[7:0]);
-                {OP_RMCU, FUNC_LBU} : alu_data <= exec_baddr[1:0] == 3 ? $unsigned(cpu_rdata[31:24]) : exec_baddr[1:0] == 2 ? $unsigned(cpu_rdata[23:16]) : exec_baddr[1:0] == 1 ? $unsigned(cpu_rdata[15:8]) : $unsigned(cpu_rdata[7:0]);
+            if((opc[3:1] == OPT_PCU) && (fun <= FCMP_ULE)) begin
+                alu_data <= {31'h0, compare_result};
+            end else begin
+                case({opc[3:1], fun})
+                {OPT_ALU, FUNC_SET} : alu_data <= operand_b;
+                {OPT_ALU, FUNC_ADD} : alu_data <= add_result;
+                {OPT_ALU, FUNC_SUB} : alu_data <= subtract_result;
+                {OPT_ALU, FUNC_AND} : alu_data <= operand_a & operand_b;
+                {OPT_ALU, FUNC_OR}  : alu_data <= operand_a | operand_b;
+                {OPT_ALU, FUNC_XOR} : alu_data <= operand_a ^ operand_b;
+                {OPT_ALU, FUNC_SLL} : alu_data <= shift_out_of_range
+                                                 ? 32'h0
+                                                 : operand_a << operand_b[4:0];
+                {OPT_ALU, FUNC_SRL} : alu_data <= shift_out_of_range
+                                                 ? 32'h0
+                                                 : operand_a >> operand_b[4:0];
+                {OPT_ALU, FUNC_SRA} : alu_data <= shift_out_of_range
+                                                 ? {32{operand_a[31]}}
+                                                 : operand_a >>> operand_b[4:0];
+                {OPT_ALU, FUNC_MUL} : alu_data <= mul_res[31:0];
+                {OPT_ALU, FUNC_DIV} : alu_data <= div_quo;
+                {OPT_ALU, FUNC_DIU} : alu_data <= div_quo;
+                {OPT_ALU, FUNC_REM} : alu_data <= div_rem;
+                {OPT_ALU, FUNC_REU} : alu_data <= div_rem;
+                {OPT_PCU, FUNC_JAL} : alu_data <= prog_addr + 4;
+                {OPT_MCU, FUNC_LW}  : alu_data <= load_result;
+                {OPT_MCU, FUNC_LH}  : alu_data <= load_result;
+                {OPT_MCU, FUNC_LHU} : alu_data <= load_result;
+                {OPT_MCU, FUNC_LB}  : alu_data <= load_result;
+                {OPT_MCU, FUNC_LBU} : alu_data <= load_result;
                 default             : alu_data <= alu_data;
+                endcase
+            end
+        end
+    end
+
+    // Clear the general-register RAM through its normal write port, then use
+    // that same port for ordinary writeback.
+    always @(posedge clk) begin
+        if(regi_clear_active) begin
+            regi_general[regi_clear_index] <= 32'h0;
+        end else if(cpu_state == ST_WREG && wback_req &&
+                    (rd >= 4'h4) && (rd <= 4'he)) begin
+            regi_general[rd - 4'h4] <= alu_data;
+        end
+    end
+
+    // Sequence the post-reset general-register clear while the CPU stays idle.
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            regi_clear_active <= 1'b1;
+            regi_clear_index <= 4'h0;
+        end else if(regi_clear_active) begin
+            if(regi_clear_index == 4'd10) begin
+                regi_clear_active <= 1'b0;
+            end else begin
+                regi_clear_index <= regi_clear_index + 1'b1;
+            end
+        end
+    end
+
+    // Maintain the three dedicated interrupt registers. Interrupt entry has
+    // priority over normal software writeback.
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            regi_r1 <= 32'h0;
+            regi_r2 <= 32'h0;
+            regi_r3 <= 32'h0;
+        end else if(cpu_state == ST_INTR) begin
+            regi_r1 <= regi_r1 & 32'hffff_fffe;
+            regi_r3 <= prog_addr;
+        end else if(cpu_state == ST_WREG && wback_req) begin
+            case(rd)
+                4'h1:regi_r1 <= alu_data;
+                4'h2:regi_r2 <= alu_data;
+                4'h3:regi_r3 <= alu_data;
             endcase
         end
     end
 
-    // Maintain the architectural register file, with interrupt entry taking
-    // priority over normal writeback and idle updates to r0 and PC-visible r15.
-    always @(posedge clk) begin:register_files
-        integer i;
+    // Preserve the writable PC-view register and refresh it from the current
+    // PC whenever no explicit write or interrupt entry takes priority.
+    always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            for (i = 0;i < 16;i = i + 1) begin
-                regi_int[i] <= 0;
-            end
+            regi_r15 <= 32'h0;
         end else if(cpu_state == ST_INTR) begin
-            regi_int[01] <= regi_int[01] & 32'hffff_fffe;
-            regi_int[03] <= prog_addr;
-            regi_int[15] <= intr_addr;
-        end else if(cpu_state == ST_WREG && wback_req) begin
-            case (alu_ptr)
-                4'h0:regi_int[00] <= regi_int[00];
-                4'h1:regi_int[01] <= alu_data;
-                4'h2:regi_int[02] <= alu_data;
-                4'h3:regi_int[03] <= alu_data;
-                4'h4:regi_int[04] <= alu_data;
-                4'h5:regi_int[05] <= alu_data;
-                4'h6:regi_int[06] <= alu_data;
-                4'h7:regi_int[07] <= alu_data;
-                4'h8:regi_int[08] <= alu_data;
-                4'h9:regi_int[09] <= alu_data;
-                4'ha:regi_int[10] <= alu_data;
-                4'hb:regi_int[11] <= alu_data;
-                4'hc:regi_int[12] <= alu_data;
-                4'hd:regi_int[13] <= alu_data;
-                4'he:regi_int[14] <= alu_data;
-                4'hf:regi_int[15] <= alu_data;
-            endcase
+            regi_r15 <= intr_addr;
+        end else if(cpu_state == ST_WREG && wback_req &&
+                    (rd == 4'hf)) begin
+            regi_r15 <= alu_data;
         end else begin
-            regi_int[00] <= 32'h0;
-            regi_int[15] <= prog_addr;
+            regi_r15 <= prog_addr;
         end
     end
 
@@ -549,8 +715,8 @@ module merc32_core #(
             intr_ff0  <= interrupt;
             intr_ff1  <= intr_ff0;
             intr_ff2  <= intr_ff1;
-            intr_mode <= regi_int[1][2:1];
-            intr_addr <= regi_int[2];
+            intr_mode <= regi_r1[2:1];
+            intr_addr <= regi_r2;
             case (intr_mode)
                 TRIG_RISE : intr_trig <= intr_ff1 & ~intr_ff2;
                 TRIG_FALL : intr_trig <= ~intr_ff1 & intr_ff2;
@@ -566,7 +732,7 @@ module merc32_core #(
             intr_flag <= 1'b0;
         end else if(cpu_state == ST_INTR) begin
             intr_flag <= 1'b0;
-        end else if(regi_int[1][0] & intr_trig) begin
+        end else if(regi_r1[0] & intr_trig) begin
             intr_flag <= 1'b1;
         end
     end
@@ -574,112 +740,75 @@ module merc32_core #(
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
             mul_start <= 1'b0;
-            mul_mode <= 1'b0;
-            mul_opa <= 32'h0;
-            mul_opb <= 32'h0;
         end else begin
-            mul_start <= ({opt, fun} == {OPT_ALU, FUNC_MUL}) && exec_start;
-            mul_mode <= 1'b1;
-            mul_opa <= regi_int[rs2];
-            mul_opb <= opc[0] ? regi_int[rs1] : $signed(imm);
+            mul_start <= ({opc[3:1], fun} == {OPT_ALU, FUNC_MUL}) && exec_start;
         end
     end
 
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
             div_start <= 1'b0;
-            div_mode <= 1'b0;
-            dividend <= 32'h0;
-            divisor <= 32'h0;
         end else begin
-            div_start <= (fun == FUNC_DIV | fun == FUNC_DIU | fun == FUNC_REM | fun == FUNC_REU) && (opt == OPT_ALU) && exec_start;
-            div_mode <= (fun == FUNC_DIV | fun == FUNC_REM);
-            dividend <= regi_int[rs2];
-            divisor <= (fun == FUNC_DIV | fun == FUNC_REM) ? (opc[0] ? regi_int[rs1] : $signed(imm)) : (opc[0] ? regi_int[rs1] : $unsigned(imm));
+            div_start <= (fun == FUNC_DIV | fun == FUNC_DIU | fun == FUNC_REM | fun == FUNC_REU) && (opc[3:1] == OPT_ALU) && exec_start;
         end
     end
 
-    // Generate the registered CPU data-bus request pulse and capture its
-    // address and write payload from the decoded memory instruction.
+    // Delay the CPU data-access request to preserve the existing execution
+    // timing; the shared request record captures its payload on the next clock.
     always @(posedge clk) begin
         if(!cpu_rst_n) begin
-            cpu_rden  <= 1'b0;
-            cpu_wren  <= 1'b0;
-            cpu_strb  <= 4'b0;
-            cpu_addr  <= 32'h0;
-            cpu_wdata <= 32'h0;
+            cpu_rden <= 1'b0;
+            cpu_wren <= 1'b0;
         end else begin
-            cpu_rden  <= exec_busrd;
-            cpu_wren  <= exec_buswr;
-            cpu_addr  <= exec_baddr;
-            case(fun)
-                FUNC_SW:begin
-                    cpu_strb  <= 4'b1111;
-                    cpu_wdata <= regi_int[rd];
+            cpu_rden <= exec_busrd;
+            cpu_wren <= exec_buswr;
+        end
+    end
+
+    // Register one request payload for instruction fetches, CPU data accesses,
+    // and halted debug accesses. Request strobes default low while the target
+    // and payload remain stable until a later request replaces them.
+    always @(posedge clk) begin
+        if(!cpu_rst_n) begin
+            bus_req_rden <= 1'b0;
+            bus_req_wren <= 1'b0;
+            bus_req_target <= BUS_NONE;
+            bus_req_debug <= 1'b0;
+        end else begin
+            bus_req_rden <= 1'b0;
+            bus_req_wren <= 1'b0;
+
+            if(dbg_halted && (dbg_rden || dbg_wren)) begin
+                bus_req_target <= decode_bus_target(dbg_addr);
+                bus_req_debug <= 1'b1;
+                bus_req_addr <= dbg_addr;
+                bus_req_strb <= dbg_strb;
+                bus_req_wdata <= dbg_wdata;
+                if(decode_bus_target(dbg_addr) != BUS_NONE) begin
+                    bus_req_rden <= dbg_rden;
+                    bus_req_wren <= dbg_wren;
                 end
-                FUNC_SH:begin
-                    cpu_strb  <= exec_baddr[1] ? 4'b1100 : 4'b0011;
-                    cpu_wdata <= exec_baddr[1] ? regi_int[rd] << 16 : regi_int[rd];
+            end else if(!dbg_halted && load_start) begin
+                bus_req_rden <= 1'b1;
+                bus_req_wren <= 1'b0;
+                bus_req_target <= BUS_ILB;
+                bus_req_debug <= 1'b0;
+                bus_req_addr <= prog_addr;
+                bus_req_strb <= 4'b1111;
+                bus_req_wdata <= 32'h0;
+            end else if(!dbg_halted && (cpu_rden || cpu_wren)) begin
+                bus_req_target <= decode_bus_target(exec_baddr);
+                bus_req_debug <= 1'b0;
+                bus_req_addr <= exec_baddr;
+                bus_req_strb <= store_strobe(fun, exec_baddr[1:0]);
+                bus_req_wdata <= format_store_data(fun, exec_baddr[1:0],
+                                                   operand_d);
+                if((decode_bus_target(exec_baddr) == BUS_DLB) ||
+                   (decode_bus_target(exec_baddr) == BUS_PLB)) begin
+                    bus_req_rden <= cpu_rden;
+                    bus_req_wren <= cpu_wren;
                 end
-                FUNC_SB:begin
-                    cpu_strb  <= exec_baddr[1:0] == 3 ? 4'b1000 : exec_baddr[1:0] == 2 ? 4'b0100 : exec_baddr[1:0] == 1 ? 4'b0010 : 4'b0001;
-                    cpu_wdata <= exec_baddr[1:0] == 3 ? regi_int[rd] << 24 : exec_baddr[1:0] == 2 ? regi_int[rd] << 16 : exec_baddr[1:0] == 1 ? regi_int[rd] << 8 : regi_int[rd][7:0];
-                end
-            endcase
-        end
-    end
-
-    always @(posedge clk) begin
-        if(!cpu_rst_n) begin
-            ilb_rden  <= 1'b0;
-            ilb_wren  <= 1'b0;
-            ilb_strb  <= 4'b0;
-            ilb_addr  <= 32'h0;
-            ilb_wdata <= 32'h0;
-        end else if(dbg_halted) begin
-            ilb_rden  <= bus_rden & inst_addr_hit;
-            ilb_wren  <= bus_wren & inst_addr_hit;
-            ilb_strb  <= bus_strb;
-            ilb_addr  <= bus_addr[ILB_ADDR_WIDTH+1:2];
-            ilb_wdata <= bus_wdata;
-        end else begin
-            ilb_rden  <= load_start;
-            ilb_wren  <= 1'b0;
-            ilb_strb  <= 4'b1111;
-            ilb_addr  <= prog_addr[ILB_ADDR_WIDTH+1:2];
-            ilb_wdata <= 32'h0;
-        end
-    end
-
-    always @(posedge clk) begin
-        if(!cpu_rst_n) begin
-            dlb_rden  <= 1'b0;
-            dlb_wren  <= 1'b0;
-            dlb_strb  <= 4'b0;
-            dlb_addr  <= 32'h0;
-            dlb_wdata <= 32'h0;
-        end else begin
-            dlb_rden  <= bus_rden & data_addr_hit;
-            dlb_wren  <= bus_wren & data_addr_hit;
-            dlb_strb  <= bus_strb;
-            dlb_addr  <= bus_addr[DLB_ADDR_WIDTH+1:2];
-            dlb_wdata <= bus_wdata;
-        end
-    end
-
-    always @(posedge clk) begin
-        if(!cpu_rst_n) begin
-            plb_rden  <= 1'b0;
-            plb_wren  <= 1'b0;
-            plb_strb  <= 4'b0;
-            plb_addr  <= 32'h0;
-            plb_wdata <= 32'h0;
-        end else begin
-            plb_rden  <= bus_rden & peri_addr_hit;
-            plb_wren  <= bus_wren & peri_addr_hit;
-            plb_strb  <= bus_strb;
-            plb_addr  <= bus_addr;
-            plb_wdata <= bus_wdata;
+            end
         end
     end
 
@@ -690,31 +819,24 @@ module merc32_core #(
             dbg_ack <= 1'b0;
             dbg_rdata <= 32'h0;
         end else begin
-            cpu_ack <= ~dbg_halted & bus_ack & ~inst_addr_hit;
+            cpu_ack <= !bus_req_debug && bus_ack &&
+                       (bus_req_target != BUS_ILB);
             cpu_rdata <= bus_rdata;
-            dbg_ack <= dbg_halted & bus_ack;
+            dbg_ack <= bus_req_debug && bus_ack;
             dbg_rdata <= bus_rdata;
         end
     end
 
-    // Stream r0 through r15 to the debugger, one valid register value per
-    // clock after a register-inspection request.
+    // Return one indexed architectural register for each debug request.
     always @(posedge clk) begin
         if(!rst_n) begin
-            dbg_regi_en <= 1'b0;
             dbg_regi_vld <= 1'b0;
-            dbg_regi_cnt <= 4'd0;
             dbg_regi_data <= 32'h0;
-        end else if(dbg_regi_req) begin
-            dbg_regi_en <= 1'b1;
-            dbg_regi_vld <= 1'b0;
-            dbg_regi_cnt <= 4'd0;
-            dbg_regi_data <= dbg_regi_data;
         end else begin
-            dbg_regi_en <= &dbg_regi_cnt ? 1'b0 : dbg_regi_en;
-            dbg_regi_vld <= dbg_regi_en;
-            dbg_regi_cnt <= dbg_regi_en ? dbg_regi_cnt + 1'b1 : dbg_regi_cnt;
-            dbg_regi_data <= dbg_regi_en ? regi_int[dbg_regi_cnt] : dbg_regi_data;
+            dbg_regi_vld <= dbg_regi_req;
+            if(dbg_regi_req) begin
+                dbg_regi_data <= read_register(dbg_regi_addr);
+            end
         end
     end
 
@@ -723,9 +845,9 @@ module merc32_core #(
         .rst_n          (cpu_rst_n      ),
 
         .start          (mul_start      ),
-        .signed_mode    (mul_mode       ),
-        .operand_a      (mul_opa        ),
-        .operand_b      (mul_opb        ),
+        .signed_mode    (1'b1           ),
+        .operand_a      (operand_a      ),
+        .operand_b      (operand_b      ),
 
         .done           (mul_done       ),
         .result         (mul_res        ));
@@ -735,9 +857,9 @@ module merc32_core #(
         .rst_n          (cpu_rst_n      ),
 
         .start          (div_start      ),
-        .signed_mode    (div_mode       ),
-        .dividend       (dividend       ),
-        .divisor        (divisor        ),
+        .signed_mode    ((fun == FUNC_DIV) || (fun == FUNC_REM)),
+        .dividend       (operand_a      ),
+        .divisor        (operand_b      ),
 
         .done           (div_done       ),
         .quotient       (div_quo        ),

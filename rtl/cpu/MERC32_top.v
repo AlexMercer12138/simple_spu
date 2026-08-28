@@ -26,7 +26,8 @@
 MERC32_top #(
     .ILB_ADDR_WIDTH             (16             ),
     .DLB_ADDR_WIDTH             (16             ),
-    .JTAG_IDCODE_VALUE          (32'h4d32_0001  ))
+    .JTAG_IDCODE_VALUE          (32'h4d32_0001  ),
+    .DEBUG_EN                   (1              ))
 u_MERC32_top (
     .clk                        (clk            ),
     .rst_n                      (rst_n          ),
@@ -50,7 +51,8 @@ u_MERC32_top (
 module MERC32_top #(
     parameter   ILB_ADDR_WIDTH          = 16,
     parameter   DLB_ADDR_WIDTH          = 16,
-    parameter   JTAG_IDCODE_VALUE       = 32'h4d32_0001
+    parameter   JTAG_IDCODE_VALUE       = 32'h4d32_0001,
+    parameter   DEBUG_EN                = 1
 ) (
     input                               clk,
     input                               rst_n,
@@ -151,6 +153,7 @@ module MERC32_top #(
     wire                                dbg_halt_req;
     wire                                dbg_step_req;
     wire                                dbg_regi_req;
+    wire    [3:0]                       dbg_regi_addr;
     wire                                dbg_regi_vld;
     wire    [31:0]                      dbg_regi_data;
     wire                                dbg_halted;
@@ -172,31 +175,47 @@ module MERC32_top #(
     //----------------------------------------------------------------------------
     // JTAG debug transport
     //----------------------------------------------------------------------------
-    jtag_debug #(
-        .IDCODE_VALUE                   (JTAG_IDCODE_VALUE      ))
-    jtag_debug_inst (
-        .clk                            (clk                    ),
-        .rst_n                          (rst_n                  ),
+    generate
+        if(DEBUG_EN != 0) begin:gen_debug
+            jtag_debug #(
+                .IDCODE_VALUE                   (JTAG_IDCODE_VALUE      ))
+            jtag_debug_inst (
+                .clk                            (clk                    ),
+                .rst_n                          (rst_n                  ),
 
-        .tck                            (tck                    ),
-        .tms                            (tms                    ),
-        .tdi                            (tdi                    ),
-        .tdo                            (tdo                    ),
+                .tck                            (tck                    ),
+                .tms                            (tms                    ),
+                .tdi                            (tdi                    ),
+                .tdo                            (tdo                    ),
 
-        .dbg_rst_req                    (dbg_rst_req            ),
-        .dbg_halt_req                   (dbg_halt_req           ),
-        .dbg_step_req                   (dbg_step_req           ),
-        .dbg_regi_req                   (dbg_regi_req           ),
-        .dbg_regi_vld                   (dbg_regi_vld           ),
-        .dbg_regi_data                  (dbg_regi_data          ),
-        .dbg_halted                     (dbg_halted             ),
+                .dbg_rst_req                    (dbg_rst_req            ),
+                .dbg_halt_req                   (dbg_halt_req           ),
+                .dbg_step_req                   (dbg_step_req           ),
+                .dbg_regi_req                   (dbg_regi_req           ),
+                .dbg_regi_addr                  (dbg_regi_addr          ),
+                .dbg_regi_vld                   (dbg_regi_vld           ),
+                .dbg_regi_data                  (dbg_regi_data          ),
+                .dbg_halted                     (dbg_halted             ),
 
-        .dbg_rden                       (dbg_rden               ),
-        .dbg_wren                       (dbg_wren               ),
-        .dbg_addr                       (dbg_addr               ),
-        .dbg_wdata                      (dbg_wdata              ),
-        .dbg_rdata                      (dbg_rdata              ),
-        .dbg_ack                        (dbg_ack                ));
+                .dbg_rden                       (dbg_rden               ),
+                .dbg_wren                       (dbg_wren               ),
+                .dbg_addr                       (dbg_addr               ),
+                .dbg_wdata                      (dbg_wdata              ),
+                .dbg_rdata                      (dbg_rdata              ),
+                .dbg_ack                        (dbg_ack                ));
+        end else begin:gen_no_debug
+            assign  tdo = 1'b0;
+            assign  dbg_rst_req = 1'b0;
+            assign  dbg_halt_req = 1'b0;
+            assign  dbg_step_req = 1'b0;
+            assign  dbg_regi_req = 1'b0;
+            assign  dbg_regi_addr = 4'h0;
+            assign  dbg_rden = 1'b0;
+            assign  dbg_wren = 1'b0;
+            assign  dbg_addr = 32'h0;
+            assign  dbg_wdata = 32'h0;
+        end
+    endgenerate
 
     //----------------------------------------------------------------------------
     // merc32_core instantiation
@@ -214,6 +233,7 @@ module MERC32_top #(
         .dbg_halt_req                   (dbg_halt_req           ),
         .dbg_step_req                   (dbg_step_req           ),
         .dbg_regi_req                   (dbg_regi_req           ),
+        .dbg_regi_addr                  (dbg_regi_addr          ),
         .dbg_regi_vld                   (dbg_regi_vld           ),
         .dbg_regi_data                  (dbg_regi_data          ),
         .dbg_halted                     (dbg_halted             ),

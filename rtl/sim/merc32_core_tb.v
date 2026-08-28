@@ -3,7 +3,7 @@
 module merc32_core_tb();
 
     localparam integer CLK_HALF_NS       = 5;
-    localparam integer MAX_WAIT_CYCLES   = 120;
+    localparam integer MAX_WAIT_CYCLES   = 160;
     localparam integer WATCHDOG_CYCLES   = 30000;
     localparam integer MEMORY_WORDS      = 65536;
 
@@ -17,6 +17,8 @@ module merc32_core_tb();
     localparam [3:0] FUNC_SET            = 4'h0;
     localparam [3:0] FUNC_SUB            = 4'h2;
     localparam [3:0] FUNC_SLL            = 4'h6;
+    localparam [3:0] FUNC_SRL            = 4'h7;
+    localparam [3:0] FUNC_SRA            = 4'h8;
     localparam [3:0] FUNC_BEZ            = 4'ha;
     localparam [3:0] FUNC_BNZ            = 4'hb;
     localparam [3:0] FUNC_JAL            = 4'hc;
@@ -34,6 +36,8 @@ module merc32_core_tb();
     localparam [3:0] CMP_ULE             = 4'd9;
 
     localparam [5:0] ST_LOAD             = 6'b000001;
+    localparam [6:0] ST_DECODE           = 7'b1000000;
+    localparam [5:0] ST_EXEC             = 6'b000010;
     localparam [5:0] ST_STEP             = 6'b001000;
     localparam [5:0] ST_INTR             = 6'b010000;
 
@@ -92,6 +96,7 @@ module merc32_core_tb();
         .dbg_halt_req   (1'b0),
         .dbg_step_req   (1'b0),
         .dbg_regi_req   (1'b0),
+        .dbg_regi_addr  (4'h0),
         .dbg_regi_vld   (),
         .dbg_regi_data  (),
         .dbg_halted     (),
@@ -381,6 +386,37 @@ module merc32_core_tb();
         end
     endtask
 
+    task test_registered_instruction_decode;
+        reg reached;
+        integer cycles;
+        begin
+            prepare_case;
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0,
+                                     16'h1234);
+            reached = 1'b0;
+            cycles = 0;
+            while ((cycles < MAX_WAIT_CYCLES) && !reached) begin
+                @(posedge clk);
+                #1;
+                if (merc32_core_inst.cpu_state === ST_DECODE)
+                    reached = 1'b1;
+                cycles = cycles + 1;
+            end
+            check_reached("instruction response enters registered decode stage",
+                          reached);
+            if (reached) begin
+                @(posedge clk);
+                #1;
+                check_value("decode stage advances to execute",
+                            merc32_core_inst.cpu_state, ST_EXEC);
+                check_value("decode stage captures source operand",
+                            merc32_core_inst.operand_a, 32'd0);
+                check_value("decode stage captures immediate operand",
+                            merc32_core_inst.operand_b, 32'h0000_1234);
+            end
+        end
+    endtask
+
     task run_register_compare_case;
         input [3:0] compare_function;
         input [15:0] left_immediate;
@@ -666,6 +702,32 @@ module merc32_core_tb();
         end
     endtask
 
+    task test_shift_boundaries;
+        reg reached;
+        begin
+            prepare_case;
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'd1);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd6, 4'd4, 16'd32);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'd32);
+            program_rom[3] = enc_reg(OP_RALU, FUNC_SLL, 4'd7, 4'd4, 4'd5);
+            program_rom[4] = enc_imm(OP_IALU, FUNC_SLL, 4'd8, 4'd4, 16'd31);
+            program_rom[5] = enc_reg(OP_RALU, FUNC_SRL, 4'd9, 4'd8, 4'd5);
+            program_rom[6] = enc_reg(OP_RALU, FUNC_SRA, 4'd10, 4'd8, 4'd5);
+            wait_for_pc(32'd28, reached);
+            check_reached("large shift cases retire", reached);
+            if (reached) begin
+                check_value("immediate left shift by 32 returns zero",
+                            merc32_core_inst.regi_int[6], 32'd0);
+                check_value("register left shift by 32 returns zero",
+                            merc32_core_inst.regi_int[7], 32'd0);
+                check_value("register logical right shift by 32 returns zero",
+                            merc32_core_inst.regi_int[9], 32'd0);
+                check_value("register arithmetic right shift by 32 sign fills",
+                            merc32_core_inst.regi_int[10], 32'hffff_ffff);
+            end
+        end
+    endtask
+
     task test_memory_addressing;
         reg reached;
         begin
@@ -839,6 +901,7 @@ module merc32_core_tb();
         for (i = 0; i < 256; i = i + 1)
             dlb_ram[i] = 32'd0;
 
+        test_registered_instruction_decode;
         test_decode_smoke(decode_smoke_passed);
         if (decode_smoke_passed) begin
             test_compare_matrix;
@@ -847,6 +910,7 @@ module merc32_core_tb();
             test_immediate_branches;
             test_register_branches;
             test_register_writes;
+            test_shift_boundaries;
             test_memory_addressing;
             test_jmp_r3;
             test_interrupt_after_branch;

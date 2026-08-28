@@ -61,14 +61,16 @@ module merc32_top_tb;
     reg     [4:0]                       ir_captured;
     reg     [65:0]                      small_scan_in;
     reg     [65:0]                      small_scan_out;
-    reg     [511:0]                     register_scan_in;
-    reg     [511:0]                     register_scan_out;
+    reg     [36:0]                      register_scan_in;
+    reg     [36:0]                      register_scan_out;
     reg     [31:0]                      status_value;
     reg     [31:0]                      response_address;
     reg     [31:0]                      response_data;
     reg     [1:0]                       response_status;
     reg     [31:0]                      pc_before_step;
     reg     [31:0]                      pc_after_step;
+    reg     [3:0]                       register_response_index;
+    integer                             core_regi_vld_cycles_before;
     reg                                 protocol_failed = 1'b0;
     reg                                 ilb_request_last = 1'b0;
     reg                                 dlb_request_last = 1'b0;
@@ -242,18 +244,18 @@ module merc32_top_tb;
         end
     endtask
 
-    task shift_dr_registers;
-        input   [511:0] value;
-        output  [511:0] captured;
-        reg     [511:0] captured;
+    task shift_dr_register;
+        input   [36:0] value;
+        output  [36:0] captured;
+        reg     [36:0] captured;
         integer bit_index;
         begin
-            captured = 512'h0;
+            captured = 37'h0;
             jtag_cycle(1'b1, 1'b0, sampled_tdo);
             jtag_cycle(1'b0, 1'b0, sampled_tdo);
             jtag_cycle(1'b0, 1'b0, sampled_tdo);
-            for(bit_index = 0; bit_index < 512; bit_index = bit_index + 1) begin
-                jtag_cycle(bit_index == 511, value[bit_index], sampled_tdo);
+            for(bit_index = 0; bit_index < 37; bit_index = bit_index + 1) begin
+                jtag_cycle(bit_index == 36, value[bit_index], sampled_tdo);
                 captured[bit_index] = sampled_tdo;
             end
             jtag_cycle(1'b1, 1'b0, sampled_tdo);
@@ -340,13 +342,24 @@ module merc32_top_tb;
         end
     endtask
 
-    task request_snapshot;
+    task request_register;
+        input   [3:0] index;
+        output  [3:0] response_index;
+        output  [31:0] value;
+        reg     [3:0] response_index;
+        reg     [31:0] value;
         begin
-            write_control(4'b1001);
+            shift_ir(IR_DBG_REGS, ir_captured);
+            register_scan_in = 37'h0;
+            register_scan_in[4:1] = index;
+            register_scan_in[0] = 1'b1;
+            shift_dr_register(register_scan_in, register_scan_out);
             wait_status(32'h0000_0060, 32'h0000_0040, status_value);
             shift_ir(IR_DBG_REGS, ir_captured);
-            register_scan_in = 512'h0;
-            shift_dr_registers(register_scan_in, register_scan_out);
+            register_scan_in = 37'h0;
+            shift_dr_register(register_scan_in, register_scan_out);
+            response_index = register_scan_out[4:1];
+            value = register_scan_out[36:5];
         end
     endtask
 
@@ -384,17 +397,21 @@ module merc32_top_tb;
         wait_status(32'h0000_0001, 32'h0000_0001, status_value);
         check_value("real core halts", {31'h0, status_value[0]}, 32'h1);
 
-        request_snapshot;
-        check_value("real core snapshot keeps r0 zero", register_scan_out[31:0], 32'h0);
-        check_value("core snapshot emits exactly 16 valid words",
-                    core_regi_vld_cycles, 32'd16);
-        pc_before_step = register_scan_out[511:480];
+        core_regi_vld_cycles_before = core_regi_vld_cycles;
+        request_register(4'h0, register_response_index, response_data);
+        check_value("real core indexed read keeps r0 zero", response_data, 32'h0);
+        check_value("real core indexed read returns r0 index",
+                    {28'h0, register_response_index}, 32'h0);
+        check_value("one indexed read emits one valid word",
+                    core_regi_vld_cycles, core_regi_vld_cycles_before + 1);
+        request_register(4'hf, register_response_index, pc_before_step);
+        check_value("real core indexed read returns r15 index",
+                    {28'h0, register_response_index}, 32'hf);
 
         write_control(4'b0101);
         wait_status(32'h0000_0080, 32'h0000_0000, status_value);
         check_value("real core single-step completes", {31'h0, status_value[7]}, 32'h0);
-        request_snapshot;
-        pc_after_step = register_scan_out[511:480];
+        request_register(4'hf, register_response_index, pc_after_step);
         check_value("single-step advances PC by four", pc_after_step,
                     pc_before_step + 4);
 

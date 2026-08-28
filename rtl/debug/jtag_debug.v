@@ -20,6 +20,7 @@ module jtag_debug #(
     output                              dbg_halt_req,
     output                              dbg_step_req,
     output                              dbg_regi_req,
+    output      [3:0]                   dbg_regi_addr,
     input                               dbg_regi_vld,
     input       [31:0]                  dbg_regi_data,
     input                               dbg_halted,
@@ -76,33 +77,45 @@ module jtag_debug #(
     localparam  XFER_WAIT_ACK           = 3'd3;
     localparam  XFER_RESPOND            = 3'd4;
 
-    localparam  SNAP_IDLE               = 2'd0;
-    localparam  SNAP_SETTLE             = 2'd1;
-    localparam  SNAP_COLLECT            = 2'd2;
-    localparam  SNAP_RESPOND            = 2'd3;
+    localparam  REG_IDLE                = 2'd0;
+    localparam  REG_SETTLE              = 2'd1;
+    localparam  REG_WAIT                = 2'd2;
+    localparam  REG_RESPOND             = 2'd3;
 
     reg     [3:0]                       tap_state;
     reg     [4:0]                       ir_shift;
     reg     [4:0]                       current_ir;
-    reg     [511:0]                     dr_shift;
+    reg     [65:0]                      dr_shift;
     reg                                 bypass_shift;
 
     reg                                 ctrl_halt_tck;
     reg                                 ctrl_rst_tck;
     reg                                 execute_req_tck;
     reg                                 execute_halt_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_ack_sync0_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_ack_sync1_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 dbg_halted_sync0_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 dbg_halted_sync1_tck;
 
+    (* ASYNC_REG = "TRUE" *)
     reg                                 ctrl_halt_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 ctrl_halt_sync1_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 ctrl_rst_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 ctrl_rst_sync1_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_req_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_req_sync1_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_halt_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 execute_halt_sync1_clk;
     reg                                 execute_ack_clk;
     reg     [2:0]                       execute_state_clk;
@@ -113,7 +126,9 @@ module jtag_debug #(
     reg     [31:0]                      xfer_addr_tck;
     reg     [31:0]                      xfer_data_tck;
     reg     [1:0]                       xfer_op_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 xfer_ack_sync0_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 xfer_ack_sync1_tck;
     reg                                 xfer_ack_seen_tck;
     reg     [31:0]                      xfer_response_addr_tck;
@@ -121,7 +136,9 @@ module jtag_debug #(
     reg     [1:0]                       xfer_response_status_tck;
     reg                                 xfer_error_tck;
 
+    (* ASYNC_REG = "TRUE" *)
     reg                                 xfer_req_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 xfer_req_sync1_clk;
     reg                                 xfer_ack_clk;
     reg     [2:0]                       xfer_state_clk;
@@ -136,26 +153,37 @@ module jtag_debug #(
     reg     [31:0]                      dbg_addr_clk;
     reg     [31:0]                      dbg_wdata_clk;
 
-    reg                                 snapshot_req_tck;
-    reg                                 snapshot_ack_sync0_tck;
-    reg                                 snapshot_ack_sync1_tck;
-    reg                                 snapshot_ack_seen_tck;
-    reg                                 snapshot_valid_tck;
-    reg     [511:0]                     snapshot_hold_tck;
+    reg                                 reg_req_tck;
+    reg     [3:0]                       reg_index_tck;
+    (* ASYNC_REG = "TRUE" *)
+    reg                                 reg_ack_sync0_tck;
+    (* ASYNC_REG = "TRUE" *)
+    reg                                 reg_ack_sync1_tck;
+    reg                                 reg_ack_seen_tck;
+    reg                                 reg_valid_tck;
+    reg     [3:0]                       reg_response_index_tck;
+    reg     [31:0]                      reg_response_data_tck;
 
-    reg                                 snapshot_req_sync0_clk;
-    reg                                 snapshot_req_sync1_clk;
-    reg                                 snapshot_ack_clk;
-    reg     [1:0]                       snapshot_state_clk;
-    reg     [3:0]                       snapshot_index_clk;
-    reg                                 snapshot_valid_clk;
-    reg     [511:0]                     snapshot_hold_clk;
+    (* ASYNC_REG = "TRUE" *)
+    reg                                 reg_req_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
+    reg                                 reg_req_sync1_clk;
+    reg                                 reg_ack_clk;
+    reg     [1:0]                       reg_state_clk;
+    reg                                 reg_valid_clk;
+    reg     [3:0]                       reg_response_index_clk;
+    reg     [31:0]                      reg_response_data_clk;
     reg                                 dbg_regi_req_clk;
+    reg     [3:0]                       dbg_regi_addr_clk;
 
     reg                                 tap_reset_req_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 tap_reset_ack_sync0_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 tap_reset_ack_sync1_tck;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 tap_reset_req_sync0_clk;
+    (* ASYNC_REG = "TRUE" *)
     reg                                 tap_reset_req_sync1_clk;
     reg                                 tap_reset_ack_clk;
     reg                                 tap_reset_seen_clk;
@@ -163,18 +191,18 @@ module jtag_debug #(
 
     wire                                execute_busy_tck;
     wire                                xfer_busy_tck;
-    wire                                snapshot_busy_tck;
+    wire                                reg_busy_tck;
     wire    [31:0]                      status_value_tck;
 
     assign  execute_busy_tck = execute_req_tck != execute_ack_sync1_tck;
     assign  xfer_busy_tck = xfer_req_tck != xfer_ack_seen_tck;
-    assign  snapshot_busy_tck = snapshot_req_tck != snapshot_ack_seen_tck;
+    assign  reg_busy_tck = reg_req_tck != reg_ack_seen_tck;
     assign  status_value_tck = {
         16'h0000,
         8'h01,
         execute_busy_tck,
-        snapshot_valid_tck,
-        snapshot_busy_tck,
+        reg_valid_tck,
+        reg_busy_tck,
         xfer_error_tck,
         xfer_busy_tck,
         ctrl_rst_tck,
@@ -186,6 +214,7 @@ module jtag_debug #(
     assign  dbg_halt_req = tap_ready_clk ? ctrl_halt_sync1_clk : 1'b0;
     assign  dbg_step_req = tap_ready_clk ? dbg_step_req_clk : 1'b0;
     assign  dbg_regi_req = tap_ready_clk ? dbg_regi_req_clk : 1'b0;
+    assign  dbg_regi_addr = dbg_regi_addr_clk;
     assign  dbg_rden = tap_ready_clk ? dbg_rden_clk : 1'b0;
     assign  dbg_wren = tap_ready_clk ? dbg_wren_clk : 1'b0;
     assign  dbg_addr = dbg_addr_clk;
@@ -222,7 +251,7 @@ module jtag_debug #(
             tap_state <= TAP_TEST_LOGIC_RESET;
             ir_shift <= IR_IDCODE;
             current_ir <= IR_IDCODE;
-            dr_shift <= 512'h0;
+            dr_shift <= 66'h0;
             bypass_shift <= 1'b0;
             ctrl_halt_tck <= 1'b0;
             ctrl_rst_tck <= 1'b0;
@@ -273,7 +302,11 @@ module jtag_debug #(
                             };
                         end
                     end else if(current_ir == IR_DBG_REGS) begin
-                        dr_shift <= snapshot_hold_tck;
+                        dr_shift[36:0] <= {
+                            reg_response_data_tck,
+                            reg_response_index_tck,
+                            1'b0
+                        };
                     end else begin
                         bypass_shift <= 1'b0;
                     end
@@ -288,7 +321,7 @@ module jtag_debug #(
                     end else if(current_ir == IR_DBG_XFER) begin
                         dr_shift[65:0] <= {tdi, dr_shift[65:1]};
                     end else if(current_ir == IR_DBG_REGS) begin
-                        dr_shift <= {tdi, dr_shift[511:1]};
+                        dr_shift[36:0] <= {tdi, dr_shift[36:1]};
                     end else begin
                         bypass_shift <= tdi;
                     end
@@ -394,33 +427,39 @@ module jtag_debug #(
 
     always @(posedge tck) begin
         if(!rst_n) begin
-            snapshot_req_tck <= 1'b0;
-            snapshot_ack_sync0_tck <= 1'b0;
-            snapshot_ack_sync1_tck <= 1'b0;
-            snapshot_ack_seen_tck <= 1'b0;
-            snapshot_valid_tck <= 1'b0;
-            snapshot_hold_tck <= 512'h0;
+            reg_req_tck <= 1'b0;
+            reg_index_tck <= 4'h0;
+            reg_ack_sync0_tck <= 1'b0;
+            reg_ack_sync1_tck <= 1'b0;
+            reg_ack_seen_tck <= 1'b0;
+            reg_valid_tck <= 1'b0;
+            reg_response_index_tck <= 4'h0;
+            reg_response_data_tck <= 32'h0;
         end else begin
-            snapshot_ack_sync0_tck <= snapshot_ack_clk;
-            snapshot_ack_sync1_tck <= snapshot_ack_sync0_tck;
+            reg_ack_sync0_tck <= reg_ack_clk;
+            reg_ack_sync1_tck <= reg_ack_sync0_tck;
 
             if(tap_state == TAP_TEST_LOGIC_RESET) begin
-                snapshot_req_tck <= 1'b0;
-                snapshot_ack_seen_tck <= 1'b0;
-                snapshot_valid_tck <= 1'b0;
-                snapshot_hold_tck <= 512'h0;
-            end else if(snapshot_ack_sync1_tck != snapshot_ack_seen_tck) begin
-                snapshot_ack_seen_tck <= snapshot_ack_sync1_tck;
-                snapshot_valid_tck <= snapshot_valid_clk;
-                if(snapshot_valid_clk) begin
-                    snapshot_hold_tck <= snapshot_hold_clk;
+                reg_req_tck <= 1'b0;
+                reg_index_tck <= 4'h0;
+                reg_ack_seen_tck <= 1'b0;
+                reg_valid_tck <= 1'b0;
+                reg_response_index_tck <= 4'h0;
+                reg_response_data_tck <= 32'h0;
+            end else if(reg_ack_sync1_tck != reg_ack_seen_tck) begin
+                reg_ack_seen_tck <= reg_ack_sync1_tck;
+                reg_valid_tck <= reg_valid_clk;
+                if(reg_valid_clk) begin
+                    reg_response_index_tck <= reg_response_index_clk;
+                    reg_response_data_tck <= reg_response_data_clk;
                 end
             end else if((tap_state == TAP_UPDATE_DR) &&
-                        (current_ir == IR_DBG_CTRL) &&
-                        dr_shift[3] &&
-                        !snapshot_busy_tck) begin
-                snapshot_req_tck <= ~snapshot_req_tck;
-                snapshot_valid_tck <= 1'b0;
+                        (current_ir == IR_DBG_REGS) &&
+                        dr_shift[0] &&
+                        !reg_busy_tck) begin
+                reg_index_tck <= dr_shift[4:1];
+                reg_req_tck <= ~reg_req_tck;
+                reg_valid_tck <= 1'b0;
             end
         end
     end
@@ -437,8 +476,8 @@ module jtag_debug #(
             execute_halt_sync1_clk <= 1'b0;
             xfer_req_sync0_clk <= 1'b0;
             xfer_req_sync1_clk <= 1'b0;
-            snapshot_req_sync0_clk <= 1'b0;
-            snapshot_req_sync1_clk <= 1'b0;
+            reg_req_sync0_clk <= 1'b0;
+            reg_req_sync1_clk <= 1'b0;
             tap_reset_req_sync0_clk <= 1'b0;
             tap_reset_req_sync1_clk <= 1'b0;
             tap_reset_ack_clk <= 1'b0;
@@ -455,8 +494,8 @@ module jtag_debug #(
             execute_halt_sync1_clk <= execute_halt_sync0_clk;
             xfer_req_sync0_clk <= xfer_req_tck;
             xfer_req_sync1_clk <= xfer_req_sync0_clk;
-            snapshot_req_sync0_clk <= snapshot_req_tck;
-            snapshot_req_sync1_clk <= snapshot_req_sync0_clk;
+            reg_req_sync0_clk <= reg_req_tck;
+            reg_req_sync1_clk <= reg_req_sync0_clk;
             tap_reset_req_sync0_clk <= tap_reset_req_tck;
             tap_reset_req_sync1_clk <= tap_reset_req_sync0_clk;
             tap_reset_ack_clk <= tap_reset_req_sync1_clk;
@@ -607,57 +646,54 @@ module jtag_debug #(
 
     always @(posedge clk) begin
         if(!rst_n) begin
-            snapshot_ack_clk <= 1'b0;
-            snapshot_state_clk <= SNAP_IDLE;
-            snapshot_index_clk <= 4'h0;
-            snapshot_valid_clk <= 1'b0;
-            snapshot_hold_clk <= 512'h0;
+            reg_ack_clk <= 1'b0;
+            reg_state_clk <= REG_IDLE;
+            reg_valid_clk <= 1'b0;
+            reg_response_index_clk <= 4'h0;
+            reg_response_data_clk <= 32'h0;
             dbg_regi_req_clk <= 1'b0;
+            dbg_regi_addr_clk <= 4'h0;
         end else if(!tap_ready_clk || tap_reset_req_sync1_clk) begin
-            snapshot_ack_clk <= snapshot_req_sync1_clk;
-            snapshot_state_clk <= SNAP_IDLE;
-            snapshot_index_clk <= 4'h0;
-            snapshot_valid_clk <= 1'b0;
+            reg_ack_clk <= reg_req_sync1_clk;
+            reg_state_clk <= REG_IDLE;
+            reg_valid_clk <= 1'b0;
             dbg_regi_req_clk <= 1'b0;
         end else begin
-            case(snapshot_state_clk)
-                SNAP_IDLE: begin
+            case(reg_state_clk)
+                REG_IDLE: begin
                     dbg_regi_req_clk <= 1'b0;
-                    if(snapshot_req_sync1_clk != snapshot_ack_clk) begin
-                        snapshot_state_clk <= SNAP_SETTLE;
+                    if(reg_req_sync1_clk != reg_ack_clk) begin
+                        reg_state_clk <= REG_SETTLE;
                     end
                 end
-                SNAP_SETTLE: begin
-                    snapshot_index_clk <= 4'h0;
-                    snapshot_valid_clk <= 1'b0;
+                REG_SETTLE: begin
+                    dbg_regi_addr_clk <= reg_index_tck;
+                    reg_valid_clk <= 1'b0;
                     if(dbg_halted) begin
                         dbg_regi_req_clk <= 1'b1;
-                        snapshot_state_clk <= SNAP_COLLECT;
+                        reg_state_clk <= REG_WAIT;
                     end else begin
                         dbg_regi_req_clk <= 1'b0;
-                        snapshot_state_clk <= SNAP_RESPOND;
+                        reg_state_clk <= REG_RESPOND;
                     end
                 end
-                SNAP_COLLECT: begin
+                REG_WAIT: begin
                     dbg_regi_req_clk <= 1'b0;
                     if(dbg_regi_vld) begin
-                        snapshot_hold_clk[snapshot_index_clk*32 +: 32] <= dbg_regi_data;
-                        if(snapshot_index_clk == 4'd15) begin
-                            snapshot_valid_clk <= 1'b1;
-                            snapshot_state_clk <= SNAP_RESPOND;
-                        end else begin
-                            snapshot_index_clk <= snapshot_index_clk + 1'b1;
-                        end
+                        reg_response_index_clk <= dbg_regi_addr_clk;
+                        reg_response_data_clk <= dbg_regi_data;
+                        reg_valid_clk <= 1'b1;
+                        reg_state_clk <= REG_RESPOND;
                     end
                 end
-                SNAP_RESPOND: begin
+                REG_RESPOND: begin
                     dbg_regi_req_clk <= 1'b0;
-                    snapshot_ack_clk <= snapshot_req_sync1_clk;
-                    snapshot_state_clk <= SNAP_IDLE;
+                    reg_ack_clk <= reg_req_sync1_clk;
+                    reg_state_clk <= REG_IDLE;
                 end
                 default: begin
                     dbg_regi_req_clk <= 1'b0;
-                    snapshot_state_clk <= SNAP_IDLE;
+                    reg_state_clk <= REG_IDLE;
                 end
             endcase
         end

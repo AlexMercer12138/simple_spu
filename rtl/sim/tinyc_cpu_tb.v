@@ -62,6 +62,7 @@ module tinyc_cpu_tb();
         .dbg_halt_req   (1'b0),
         .dbg_step_req   (1'b0),
         .dbg_regi_req   (1'b0),
+        .dbg_regi_addr  (4'h0),
         .dbg_regi_vld   (),
         .dbg_regi_data  (),
         .dbg_halted     (),

@@ -15,9 +15,9 @@ module div (
 );
 
     reg         running;
+    reg         finalizing;
     reg  [4:0]  iteration;
     reg  [31:0] divisor_reg;
-    reg  [31:0] dividend_reg;
     reg  [31:0] quotient_reg;
     reg  [32:0] partial_remainder_reg;
     reg         quotient_negative;
@@ -37,7 +37,7 @@ module div (
                              ? (~divisor + 32'd1) : divisor;
 
     assign shifted_remainder = {partial_remainder_reg[31:0],
-                                dividend_reg[31]};
+                                quotient_reg[31]};
     assign remainder_difference = {1'b0, shifted_remainder}
                                 - {2'b0, divisor_reg};
     assign subtract_divisor = ~remainder_difference[33];
@@ -51,46 +51,44 @@ module div (
     always @(posedge clk) begin
         if (!rst_n) begin
             running   <= 1'b0;
+            finalizing <= 1'b0;
             iteration <= 5'd0;
             done      <= 1'b0;
             quotient  <= 32'd0;
             remainder <= 32'd0;
-        end else if (!running) begin
-            if (start && divisor == 32'd0) begin
-                done      <= 1'b1;
-                quotient  <= 32'hffff_ffff;
-                remainder <= dividend;
-            end else begin
-                done <= 1'b0;
-
-                if (start) begin
-                    running               <= 1'b1;
-                    iteration             <= 5'd0;
-                    divisor_reg           <= divisor_magnitude;
-                    dividend_reg          <= dividend_magnitude;
-                    quotient_reg          <= 32'd0;
-                    partial_remainder_reg <= 33'd0;
-                    quotient_negative     <= signed_mode
-                                           && (dividend[31] ^ divisor[31]);
-                    remainder_negative    <= signed_mode && dividend[31];
-                end
-            end
-        end else begin
+        end else if (running) begin
             running               <= iteration == 5'd31 ? 1'b0 : 1'b1;
+            finalizing            <= iteration == 5'd31;
             iteration             <= iteration == 5'd31
                                    ? iteration : iteration + 5'd1;
-            dividend_reg          <= dividend_reg << 1;
             quotient_reg          <= quotient_next;
             partial_remainder_reg <= partial_remainder_next;
-            done                  <= iteration == 5'd31;
+            done                  <= 1'b0;
+        end else if (finalizing) begin
+            finalizing <= 1'b0;
+            done       <= 1'b1;
+            quotient   <= quotient_negative
+                        ? (~quotient_reg + 32'd1)
+                        : quotient_reg;
+            remainder  <= remainder_negative
+                        ? (~partial_remainder_reg[31:0] + 32'd1)
+                        : partial_remainder_reg[31:0];
+        end else if (start && divisor == 32'd0) begin
+            done      <= 1'b1;
+            quotient  <= 32'hffff_ffff;
+            remainder <= dividend;
+        end else begin
+            done <= 1'b0;
 
-            if (iteration == 5'd31) begin
-                quotient <= quotient_negative
-                          ? (~quotient_next + 32'd1)
-                          : quotient_next;
-                remainder <= remainder_negative
-                           ? (~partial_remainder_next[31:0] + 32'd1)
-                           : partial_remainder_next[31:0];
+            if (start) begin
+                running               <= 1'b1;
+                iteration             <= 5'd0;
+                divisor_reg           <= divisor_magnitude;
+                quotient_reg          <= dividend_magnitude;
+                partial_remainder_reg <= 33'd0;
+                quotient_negative     <= signed_mode
+                                       && (dividend[31] ^ divisor[31]);
+                remainder_negative    <= signed_mode && dividend[31];
             end
         end
     end

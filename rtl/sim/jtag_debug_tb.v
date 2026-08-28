@@ -31,6 +31,7 @@ module jtag_debug_tb;
     wire                                dbg_halt_req;
     wire                                dbg_step_req;
     wire                                dbg_regi_req;
+    wire    [3:0]                       dbg_regi_addr;
     reg                                 dbg_regi_vld = 1'b0;
     reg     [31:0]                      dbg_regi_data = 32'h0;
     reg                                 dbg_halted = 1'b0;
@@ -53,14 +54,14 @@ module jtag_debug_tb;
     integer                             dbg_request_pulses = 0;
     integer                             dbg_request_pulses_before;
     integer                             dbg_request_width_failures = 0;
-    integer                             snapshot_delay = 0;
-    integer                             snapshot_delay_count = 0;
-    integer                             snapshot_index = 0;
-    integer                             snapshot_requests = 0;
-    integer                             snapshot_requests_before;
+    integer                             register_delay = 0;
+    integer                             register_delay_count = 0;
+    integer                             register_requests = 0;
+    integer                             register_requests_before;
+    integer                             register_index;
     reg                                 sampled_tdo;
-    reg     [511:0]                     scan_in;
-    reg     [511:0]                     scan_out;
+    reg     [36:0]                      register_scan_in;
+    reg     [36:0]                      register_scan_out;
     reg     [65:0]                      small_scan_in;
     reg     [65:0]                      small_scan_out;
     reg     [4:0]                       ir_captured;
@@ -80,9 +81,12 @@ module jtag_debug_tb;
     reg     [31:0]                      response_address;
     reg     [31:0]                      response_data;
     reg     [1:0]                       response_status;
-    reg                                 snapshot_streaming = 1'b0;
-    reg                                 snapshot_hold_stream = 1'b0;
-    reg     [31:0]                      snapshot_base = 32'h1000_0000;
+    reg     [3:0]                       captured_register_index;
+    reg     [31:0]                      captured_register_data;
+    reg                                 register_pending = 1'b0;
+    reg                                 register_hold_response = 1'b0;
+    reg     [3:0]                       register_addr_hold = 4'h0;
+    reg     [31:0]                      register_base = 32'h1000_0000;
 
     always #(CLK_HALF_PERIOD) clk = ~clk;
     always #(TCK_HALF_PERIOD) begin
@@ -130,30 +134,25 @@ module jtag_debug_tb;
         if(!rst_n) begin
             dbg_regi_vld <= 1'b0;
             dbg_regi_data <= 32'h0;
-            snapshot_streaming <= 1'b0;
-            snapshot_delay_count <= 0;
-            snapshot_index <= 0;
-            snapshot_requests <= 0;
+            register_pending <= 1'b0;
+            register_delay_count <= 0;
+            register_addr_hold <= 4'h0;
+            register_requests <= 0;
         end else if(dbg_regi_req) begin
             dbg_regi_vld <= 1'b0;
-            snapshot_streaming <= 1'b1;
-            snapshot_delay_count <= snapshot_delay;
-            snapshot_index <= 0;
-            snapshot_requests <= snapshot_requests + 1;
-        end else if(snapshot_streaming && snapshot_hold_stream) begin
+            register_pending <= 1'b1;
+            register_delay_count <= register_delay;
+            register_addr_hold <= dbg_regi_addr;
+            register_requests <= register_requests + 1;
+        end else if(register_pending && register_hold_response) begin
             dbg_regi_vld <= 1'b0;
-        end else if(snapshot_streaming && (snapshot_delay_count > 0)) begin
+        end else if(register_pending && (register_delay_count > 0)) begin
             dbg_regi_vld <= 1'b0;
-            snapshot_delay_count <= snapshot_delay_count - 1;
-        end else if(snapshot_streaming) begin
+            register_delay_count <= register_delay_count - 1;
+        end else if(register_pending) begin
             dbg_regi_vld <= 1'b1;
-            dbg_regi_data <= snapshot_base + snapshot_index;
-            if(snapshot_index == 15) begin
-                snapshot_streaming <= 1'b0;
-                snapshot_index <= 0;
-            end else begin
-                snapshot_index <= snapshot_index + 1;
-            end
+            dbg_regi_data <= register_base + register_addr_hold;
+            register_pending <= 1'b0;
         end else begin
             dbg_regi_vld <= 1'b0;
         end
@@ -215,6 +214,7 @@ module jtag_debug_tb;
         .dbg_halt_req                   (dbg_halt_req           ),
         .dbg_step_req                   (dbg_step_req           ),
         .dbg_regi_req                   (dbg_regi_req           ),
+        .dbg_regi_addr                  (dbg_regi_addr          ),
         .dbg_regi_vld                   (dbg_regi_vld           ),
         .dbg_regi_data                  (dbg_regi_data          ),
         .dbg_halted                     (dbg_halted             ),
@@ -290,18 +290,18 @@ module jtag_debug_tb;
         end
     endtask
 
-    task shift_dr_regs;
-        input   [511:0] value;
-        output  [511:0] captured;
-        reg     [511:0] captured;
+    task shift_dr_register;
+        input   [36:0] value;
+        output  [36:0] captured;
+        reg     [36:0] captured;
         integer index;
         begin
-            captured = 512'h0;
+            captured = 37'h0;
             jtag_cycle(1'b1, 1'b0, sampled_tdo);
             jtag_cycle(1'b0, 1'b0, sampled_tdo);
             jtag_cycle(1'b0, 1'b0, sampled_tdo);
-            for(index = 0; index < 512; index = index + 1) begin
-                jtag_cycle(index == 511, value[index], sampled_tdo);
+            for(index = 0; index < 37; index = index + 1) begin
+                jtag_cycle(index == 36, value[index], sampled_tdo);
                 captured[index] = sampled_tdo;
             end
             jtag_cycle(1'b1, 1'b0, sampled_tdo);
@@ -386,13 +386,28 @@ module jtag_debug_tb;
         end
     endtask
 
-    task read_registers;
-        output  [511:0] value;
-        reg     [511:0] value;
+    task start_register_read;
+        input   [3:0] index;
         begin
             shift_ir(IR_DBG_REGS, ir_captured);
-            scan_in = 512'h0;
-            shift_dr_regs(scan_in, value);
+            register_scan_in = 37'h0;
+            register_scan_in[4:1] = index;
+            register_scan_in[0] = 1'b1;
+            shift_dr_register(register_scan_in, register_scan_out);
+        end
+    endtask
+
+    task capture_register_response;
+        output  [3:0] index;
+        output  [31:0] value;
+        reg     [3:0] index;
+        reg     [31:0] value;
+        begin
+            shift_ir(IR_DBG_REGS, ir_captured);
+            register_scan_in = 37'h0;
+            shift_dr_register(register_scan_in, register_scan_out);
+            index = register_scan_out[4:1];
+            value = register_scan_out[36:5];
         end
     endtask
 
@@ -570,45 +585,71 @@ module jtag_debug_tb;
         check_value("TCK stop request succeeds", {30'h0, response_status},
                     {30'h0, RESP_SUCCESS});
 
-        snapshot_delay = 0;
-        snapshot_hold_stream = 1'b1;
-        snapshot_base = 32'h1000_0000;
-        write_control(4'b1001);
+        register_delay = 0;
+        register_hold_response = 1'b1;
+        register_base = 32'h1000_0000;
+        register_requests_before = register_requests;
+        start_register_read(4'h0);
+        repeat(8) @(posedge clk);
         read_status(status_value);
-        check_value("snapshot reports busy", {31'h0, status_value[5]}, 32'h1);
-        check_value("snapshot valid waits for all registers",
-                    {31'h0, status_value[6]}, 32'h0);
-        snapshot_hold_stream = 1'b0;
+        check_value("register read reports busy", {31'h0, status_value[5]}, 32'h1);
+        check_value("register valid waits for core response",
+                     {31'h0, status_value[6]}, 32'h0);
+        register_hold_response = 1'b0;
         repeat(20) @(posedge clk);
         read_status(status_value);
-        check_value("snapshot busy clears", {31'h0, status_value[5]}, 32'h0);
-        check_value("snapshot becomes valid", {31'h0, status_value[6]}, 32'h1);
-        read_registers(scan_out);
-        check_value("register scan begins with r0", scan_out[31:0], 32'h1000_0000);
-        check_value("register scan ends with r15", scan_out[511:480], 32'h1000_000f);
+        check_value("register busy clears", {31'h0, status_value[5]}, 32'h0);
+        check_value("register response becomes valid", {31'h0, status_value[6]}, 32'h1);
+        capture_register_response(captured_register_index, captured_register_data);
+        check_value("register response keeps requested index",
+                    {28'h0, captured_register_index}, 32'h0);
+        check_value("register response returns r0 model value",
+                    captured_register_data, 32'h1000_0000);
+        check_value("register read emits one core request", register_requests,
+                    register_requests_before + 1);
 
-        snapshot_delay = 0;
-        snapshot_hold_stream = 1'b1;
-        snapshot_requests_before = snapshot_requests;
-        write_control(4'b1001);
-        write_control(4'b1001);
-        snapshot_hold_stream = 1'b0;
+        for(register_index = 1; register_index < 16;
+            register_index = register_index + 1) begin
+            register_requests_before = register_requests;
+            start_register_read(register_index[3:0]);
+            repeat(20) @(posedge clk);
+            capture_register_response(captured_register_index,
+                                      captured_register_data);
+            check_value("indexed register response index",
+                        {28'h0, captured_register_index}, register_index);
+            check_value("indexed register response data",
+                        captured_register_data,
+                        32'h1000_0000 + register_index);
+            check_value("indexed register emits one core request",
+                        register_requests, register_requests_before + 1);
+        end
+
+        register_hold_response = 1'b1;
+        register_requests_before = register_requests;
+        start_register_read(4'h5);
+        start_register_read(4'h6);
+        register_hold_response = 1'b0;
         repeat(20) @(posedge clk);
-        check_value("busy snapshot ignores second request", snapshot_requests,
-                    snapshot_requests_before + 1);
+        capture_register_response(captured_register_index, captured_register_data);
+        check_value("busy register read ignores second request", register_requests,
+                    register_requests_before + 1);
+        check_value("busy register response keeps first index",
+                    {28'h0, captured_register_index}, 32'h5);
+        check_value("busy register response keeps first data",
+                    captured_register_data, 32'h1000_0005);
 
         @(negedge clk);
         model_halt_command <= 1'b0;
         write_control(4'b0100);
         repeat(20) @(posedge clk);
-        snapshot_requests_before = snapshot_requests;
-        write_control(4'b1000);
+        register_requests_before = register_requests;
+        start_register_read(4'h7);
         repeat(20) @(posedge clk);
         read_status(status_value);
-        check_value("running snapshot has no valid data",
-                    {31'h0, status_value[6]}, 32'h0);
-        check_value("running snapshot does not request core stream",
-                    snapshot_requests, snapshot_requests_before);
+        check_value("running register read has no valid data",
+                     {31'h0, status_value[6]}, 32'h0);
+        check_value("running register read does not request core",
+                    register_requests, register_requests_before);
 
         write_control(4'b0001);
         @(negedge clk);
@@ -625,7 +666,7 @@ module jtag_debug_tb;
         check_value("TAP reset clears halt level", {31'h0, dbg_halt_req}, 32'h0);
         read_status(status_value);
         check_value("TAP reset clears transfer busy", {31'h0, status_value[3]}, 32'h0);
-        check_value("TAP reset clears snapshot busy", {31'h0, status_value[5]}, 32'h0);
+        check_value("TAP reset clears register busy", {31'h0, status_value[5]}, 32'h0);
         check_value("TAP reset clears execute busy", {31'h0, status_value[7]}, 32'h0);
         memory_hold_response = 1'b0;
 

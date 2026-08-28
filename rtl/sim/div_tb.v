@@ -85,8 +85,8 @@ module div_tb;
                     $display("FAIL div timeout: signed=%0d dividend=%h divisor=%h",
                              test_signed, test_dividend, test_divisor);
                     failures = failures + 1;
-                end else if (cycles != 32) begin
-                    $display("FAIL div latency: got=%0d expected=32", cycles);
+                end else if (cycles != 33) begin
+                    $display("FAIL div latency: got=%0d expected=33", cycles);
                     failures = failures + 1;
                 end
             end
