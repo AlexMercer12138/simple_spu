@@ -75,10 +75,20 @@ for (const command of [
 }
 
 const { SOC_COMMANDS, SOC_CONFIG_SUFFIX, SOC_EDITOR_VIEW_TYPE, SOC_VIEW_IDS } = require('../out/constants');
-const { parseWebviewMessage } = require('../out/socWebviewProtocol');
+const {
+    MAX_WEBVIEW_MESSAGE_BYTES,
+    isCurrentDocumentMessage,
+    parseWebviewMessage,
+} = require('../out/socWebviewProtocol');
 const { loadCatalog, parseSocConfig } = require('../out/soc');
 const { buildJsonReplacement } = require('../out/socJsonEdits');
 const { diagnosticRange } = require('../out/socDiagnostics');
+const {
+    applySocDocumentUpdates,
+    buildSocEditorViewModel,
+    isEditableSocPath,
+    renderEditorHtml,
+} = require('../out/socEditorProvider');
 
 assert.strictEqual(SOC_CONFIG_SUFFIX, '.merc32.json');
 assert.strictEqual(SOC_EDITOR_VIEW_TYPE, 'merc32.socConfigEditor');
@@ -102,11 +112,14 @@ assert.deepStrictEqual(SOC_COMMANDS, {
 });
 
 assert.deepStrictEqual(parseWebviewMessage({
-    type: 'setValue', path: ['cpu', 'debug'], value: true,
-}), { type: 'setValue', path: ['cpu', 'debug'], value: true });
+    type: 'setValue', documentVersion: 7, path: ['cpu', 'debug'], value: true,
+}), { type: 'setValue', documentVersion: 7, path: ['cpu', 'debug'], value: true });
 assert.deepStrictEqual(parseWebviewMessage({
-    type: 'setValue', path: ['peripherals', 0, 'name'], value: 'uart0',
-}), { type: 'setValue', path: ['peripherals', 0, 'name'], value: 'uart0' });
+    type: 'setValue', documentVersion: 7, path: ['peripherals', 0, 'name'], value: 'uart0',
+}), { type: 'setValue', documentVersion: 7, path: ['peripherals', 0, 'name'], value: 'uart0' });
+assert.deepStrictEqual(parseWebviewMessage({
+    type: 'select', documentVersion: 7, path: ['peripherals', 0],
+}), { type: 'select', documentVersion: 7, path: ['peripherals', 0] });
 
 const inheritedType = Object.create({ type: 'ready' });
 const inheritedPath = Object.create({ path: ['cpu', 'debug'] });
@@ -116,6 +129,8 @@ const invalidMessages = [
     inheritedType,
     inheritedPath,
     { type: 'select', path: 'cpu.debug' },
+    { type: 'select', path: ['cpu'] },
+    { type: 'select', documentVersion: 0, path: ['cpu'] },
     { type: 'select', path: ['cpu', {}] },
     { type: 'select', path: ['__proto__'] },
     { type: 'select', path: ['prototype'] },
@@ -123,18 +138,63 @@ const invalidMessages = [
     { type: 'select', path: ['C:\\workspace\\outside.json'] },
     { type: 'select', path: ['C:temp'] },
     { type: 'select', path: ['C:'] },
-    { type: 'setValue', path: ['cpu', 'c:Temp'], value: true },
-    { type: 'setValue', path: ['cpu', 'debug'], value: true, filePath: 'C:\\workspace\\outside.json' },
+    { type: 'setValue', path: ['cpu', 'debug'], value: true },
+    { type: 'setValue', documentVersion: 0, path: ['cpu', 'debug'], value: true },
+    { type: 'setValue', documentVersion: 1.5, path: ['cpu', 'debug'], value: true },
+    { type: 'setValue', documentVersion: 1, path: ['cpu', 'c:Temp'], value: true },
+    { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: true, filePath: 'C:\\workspace\\outside.json' },
     { type: 'ready', extra: true },
-    { type: 'removeInstance', collection: 'peripherals', index: 0.5 },
-    { type: 'addInstance', collection: 'peripherals', itemType: '../outside' },
-    { type: 'setValue', path: ['cpu', 'debug'], value: new Date() },
-    { type: 'setValue', path: ['cpu', 'debug'], value: Object.create(null) },
-    { type: 'setValue', path: ['cpu', 'debug'], value: [true, Object.create({ injected: true })] },
+    { type: 'validate', documentVersion: 1 },
+    { type: 'removeInstance', documentVersion: 1, collection: 'peripherals', index: 0.5 },
+    { type: 'addInstance', documentVersion: 1, collection: 'peripherals', itemType: '../outside' },
+    { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: new Date() },
+    { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: Object.create(null) },
+    { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: [true, Object.create({ injected: true })] },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'C:\\outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '/outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '../outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'file:///outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'rtl/cpu/core.v' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'resources/webview/socEditor.js' },
 ];
 for (const value of invalidMessages) {
     assert.strictEqual(parseWebviewMessage(value), undefined, `accepted invalid message: ${JSON.stringify(value)}`);
 }
+
+assert.strictEqual(MAX_WEBVIEW_MESSAGE_BYTES, 64 * 1024);
+const boundaryEnvelope = {
+    type: 'setValue',
+    documentVersion: 1,
+    path: ['project', 'name'],
+    value: '',
+};
+const boundaryOverhead = Buffer.byteLength(JSON.stringify(boundaryEnvelope), 'utf8');
+boundaryEnvelope.value = 'x'.repeat(MAX_WEBVIEW_MESSAGE_BYTES - boundaryOverhead);
+assert.strictEqual(Buffer.byteLength(JSON.stringify(boundaryEnvelope), 'utf8'), MAX_WEBVIEW_MESSAGE_BYTES);
+assert.ok(parseWebviewMessage(boundaryEnvelope), 'a message exactly at the 64 KiB boundary was rejected');
+boundaryEnvelope.value += 'x';
+assert.strictEqual(parseWebviewMessage(boundaryEnvelope), undefined,
+    'a message one byte above the 64 KiB boundary was accepted');
+assert.ok(parseWebviewMessage({
+    type: 'setValue',
+    documentVersion: 1,
+    path: ['project', 'name'],
+    value: 'x'.repeat(65_000),
+}), 'a message below the 64 KiB encoded boundary was rejected');
+assert.strictEqual(parseWebviewMessage({
+    type: 'setValue',
+    documentVersion: 1,
+    path: ['project', 'name'],
+    value: '\u4e2d'.repeat(22_000),
+}), undefined, 'an encoded message above 64 KiB was accepted');
+
+const currentSetValue = parseWebviewMessage({
+    type: 'setValue', documentVersion: 8, path: ['cpu', 'debug'], value: true,
+});
+assert.ok(currentSetValue);
+assert.strictEqual(isCurrentDocumentMessage(currentSetValue, 8), true);
+assert.strictEqual(isCurrentDocumentMessage(currentSetValue, 9), false);
+assert.strictEqual(isCurrentDocumentMessage({ type: 'validate' }, 9), true);
 
 function applyReplacement(source, replacement) {
     return source.slice(0, replacement.offset)
@@ -260,6 +320,187 @@ for (const dangerousPath of [
 }
 
 const catalog = loadCatalog(path.join(__dirname, '..', 'resources'));
+const parsedStandard = parseSocConfig(standardJsonLf, 'standard.merc32.json', catalog);
+assert.ok(parsedStandard.config);
+for (const editablePath of [
+    ['project', 'name'],
+    ['cpu', 'debug'],
+    ['memory', 'ilb', 'size'],
+    ['peripherals', 0, 'type'],
+    ['peripherals', 0, 'parameters', 'SYS_CLK_FREQ'],
+    ['interrupt', 'mode'],
+]) {
+    assert.strictEqual(isEditableSocPath(parsedStandard.config, catalog, editablePath), true,
+        `rejected editable path: ${JSON.stringify(editablePath)}`);
+}
+for (const unsupportedPath of [
+    [],
+    ['schemaVersion'],
+    ['project', 'unexpected'],
+    ['cpu', 'constructor'],
+    ['memory', 'ilb', 'baseAddress'],
+    ['peripherals', 0, 'module'],
+    ['peripherals', 0, 'parameters', 'UNKNOWN'],
+    ['peripherals', 1, 'name'],
+    ['externalInterfaces', 0, 'name'],
+]) {
+    assert.strictEqual(isEditableSocPath(parsedStandard.config, catalog, unsupportedPath), false,
+        `accepted unsupported path: ${JSON.stringify(unsupportedPath)}`);
+}
+
+const multiFixture = path.join(__dirname, 'fixtures', 'soc', 'multi-peripheral.merc32.json');
+const multiText = require('fs').readFileSync(multiFixture, 'utf8');
+const multiView = buildSocEditorViewModel(
+    multiText,
+    multiFixture,
+    12,
+    catalog,
+    ['peripherals', 0],
+);
+assert.strictEqual(multiView.documentVersion, 12);
+assert.ok(multiView.config);
+const parsedMultiForEditing = parseSocConfig(multiText, multiFixture, catalog);
+assert.ok(parsedMultiForEditing.config);
+assert.strictEqual(isEditableSocPath(
+    parsedMultiForEditing.config,
+    catalog,
+    ['interrupt', 'sources'],
+), true, 'controller interrupt routes cannot be added or removed');
+assert.deepStrictEqual(multiView.selectedPath, ['peripherals', 0]);
+assert.ok(multiView.catalog.modules.find((item) => item.type === 'apb_uart')
+    .parameters.some((parameter) => parameter.name === 'FIFO_DEPTH'
+        && parameter.type === 'powerOfTwo' && parameter.default === 8));
+assert.ok(multiView.addressRows.some((row) => row.name === 'uart0'
+    && row.baseAddress === '0x10000000' && row.endAddress === '0x10000fff'));
+assert.ok(multiView.interruptRows.some((row) => row.source === 'uart0.interrupt'
+    && row.id === 0 && row.trigger === 'high'));
+assert.ok(multiView.portRows.some((row) => row.name === 'uart0_uart_rx'
+    && row.direction === 'input' && row.width === 1));
+assert.ok(multiView.dependencyRows.some((row) => row.kind === 'module'
+    && row.name === 'apb_uart'));
+assert.ok(multiView.dependencyRows.some((row) => row.kind === 'rtl'
+    && /packaged files$/.test(row.detail)));
+const serializedMultiView = JSON.stringify(multiView);
+assert.ok(!serializedMultiView.includes(path.dirname(multiFixture)), 'view model leaked a host path');
+assert.ok(!serializedMultiView.includes('rtl/'), 'view model leaked a packaged asset path');
+
+const hostPathConfig = JSON.parse(standardJsonLf);
+hostPathConfig.project.outputDir = 'C:\\secret\\generated';
+hostPathConfig.memory.ilb.initFile = 'C:\\secret\\firmware.mem';
+const hostPathView = buildSocEditorViewModel(
+    `${JSON.stringify(hostPathConfig, null, 2)}\n`,
+    'host-path.merc32.json',
+    13,
+    catalog,
+    ['project'],
+);
+assert.ok(hostPathView.config, 'semantic path diagnostics should preserve editable config state');
+assert.ok(!path.win32.isAbsolute(hostPathView.config.project.outputDir),
+    'view model leaked an absolute project output path');
+assert.ok(!path.win32.isAbsolute(hostPathView.config.memory.ilb.initFile),
+    'view model leaked an absolute memory initialization path');
+
+const invalidView = buildSocEditorViewModel('{"cpu":', 'broken.merc32.json', 3, catalog, ['cpu']);
+assert.strictEqual(invalidView.config, undefined);
+assert.deepStrictEqual(invalidView.addressRows, []);
+assert.deepStrictEqual(invalidView.interruptRows, []);
+assert.deepStrictEqual(invalidView.portRows, []);
+assert.deepStrictEqual(invalidView.dependencyRows, []);
+assert.strictEqual(invalidView.readOnly, true);
+assert.ok(invalidView.diagnostics.some((item) => item.code === 'SOC_JSON_SYNTAX'
+    && item.line >= 1 && item.column >= 1));
+
+const html = renderEditorHtml({
+    cspSource: 'vscode-webview-resource:',
+    asWebviewUri(uri) {
+        return { toString: () => `vscode-webview-resource:${uri.path}` };
+    },
+}, {
+    path: '/extension',
+    with(change) {
+        return { ...this, ...change };
+    },
+}, 'NONCE');
+assert.ok(html.includes("default-src 'none'; img-src vscode-webview-resource:; "
+    + "style-src vscode-webview-resource:; font-src vscode-webview-resource:; "
+    + "script-src 'nonce-NONCE';"));
+assert.strictEqual((html.match(/<script\b/g) || []).length, 1);
+assert.strictEqual((html.match(/<script\b[^>]*\bnonce="NONCE"/g) || []).length, 1);
+assert.ok(!/\son[a-z]+\s*=/i.test(html), 'HTML contains an inline event handler');
+assert.ok(!/https?:\/\//i.test(html), 'HTML contains a remote URL');
+const resourceUris = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
+assert.deepStrictEqual(resourceUris.sort(), [
+    'vscode-webview-resource:/extension/resources/webview/socEditor.css',
+    'vscode-webview-resource:/extension/resources/webview/socEditor.js',
+]);
+
+const webviewCss = require('fs').readFileSync(
+    path.join(__dirname, '..', 'resources', 'webview', 'socEditor.css'), 'utf8');
+const webviewJs = require('fs').readFileSync(
+    path.join(__dirname, '..', 'resources', 'webview', 'socEditor.js'), 'utf8');
+assert.ok(webviewCss.includes('box-sizing: border-box'));
+assert.ok(webviewCss.includes('minmax(210px, 0.8fr) minmax(320px, 1.4fr) minmax(260px, 1fr)'));
+assert.ok(/@media\s*\(max-width:\s*760px\)/.test(webviewCss));
+assert.ok(!/border-radius:\s*(?:9|[1-9]\d+)px/.test(webviewCss));
+assert.ok(!webviewJs.includes('innerHTML'));
+assert.ok(!/\.on(?:click|change|input|submit)\s*=/.test(webviewJs));
+assert.ok(webviewJs.includes("postMessage({ type: 'ready' })"));
+
+const workspaceCalls = [];
+class FakeWorkspaceEdit {
+    constructor() {
+        this.replacements = [];
+        workspaceCalls.push(this);
+    }
+    replace(...args) {
+        this.replacements.push(args);
+    }
+}
+class FakeRange {
+    constructor(start, end) {
+        this.start = start;
+        this.end = end;
+    }
+}
+let appliedEdit;
+const fakeVscode = {
+    Range: FakeRange,
+    WorkspaceEdit: FakeWorkspaceEdit,
+    workspace: {
+        async applyEdit(edit) {
+            appliedEdit = edit;
+            return true;
+        },
+    },
+};
+const fakeDocument = {
+    uri: { toString: () => 'file:///standard.merc32.json' },
+    getText: () => standardJsonLf,
+    positionAt: (offset) => ({ offset }),
+    save: () => { throw new Error('applySocDocumentUpdates must not auto-save'); },
+};
+
+(async () => {
+    const applied = await applySocDocumentUpdates(fakeDocument, [
+        { path: ['cpu', 'debug'], value: true },
+    ], fakeVscode);
+    assert.strictEqual(applied, true);
+    assert.strictEqual(workspaceCalls.length, 1);
+    assert.strictEqual(appliedEdit.replacements.length, 1);
+    assert.strictEqual(appliedEdit.replacements[0][0], fakeDocument.uri);
+    assert.strictEqual(appliedEdit.replacements[0][1].start.offset,
+        standardJsonLf.indexOf('false'));
+    const appliedRange = appliedEdit.replacements[0][1];
+    const appliedText = standardJsonLf.slice(0, appliedRange.start.offset)
+        + appliedEdit.replacements[0][2]
+        + standardJsonLf.slice(appliedRange.end.offset);
+    assert.ok(appliedText.includes('"debug": true'));
+
+    console.log('MERC32 VSCode SoC unit contracts passed.');
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});
 const overlapSource = standardJsonLf.replace(
     '      "name": "uart0"\n    }',
     '      "name": "uart0",\n      "baseAddress": "0x10000000"\n    },\n    {\n      "type": "apb_gpio",\n      "name": "gpio0",\n      "baseAddress": "0x10000000"\n    }',
@@ -295,5 +536,3 @@ assert.ok(projectObject.startsWith('{') && projectObject.endsWith('}'));
 assert.ok(projectObject.includes('"outputDir": "generated/edit_soc"'));
 assert.ok(missingRange.offset > 0 && missingRange.length < missingSource.length,
     'missing property fell back to the entire document');
-
-console.log('MERC32 VSCode SoC unit contracts passed.');

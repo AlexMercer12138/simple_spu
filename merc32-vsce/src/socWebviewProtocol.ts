@@ -12,6 +12,16 @@ export interface SocCatalogItemPresentation {
     label: string;
     description?: string;
     multiple: boolean;
+    parameters: readonly SocCatalogParameterPresentation[];
+}
+
+export interface SocCatalogParameterPresentation {
+    name: string;
+    type: 'integer' | 'boolean' | 'string' | 'enum' | 'powerOfTwo';
+    default: JsonPrimitive;
+    minimum?: number;
+    maximum?: number;
+    values?: readonly JsonPrimitive[];
 }
 
 export interface SocCatalogPresentation {
@@ -24,6 +34,8 @@ export interface SocViewDiagnostic {
     code: string;
     message: string;
     path: SocJsonPath;
+    line: number;
+    column: number;
 }
 
 export interface SocAddressRow {
@@ -61,7 +73,9 @@ export interface SocGenerationState {
 
 /** Serializable editor data; packaged asset locations stay host-only. */
 export interface SocEditorViewModel {
+    documentVersion: number;
     config?: JsonObject;
+    readOnly: boolean;
     catalog: SocCatalogPresentation;
     diagnostics: readonly SocViewDiagnostic[];
     selectedPath?: SocJsonPath;
@@ -78,11 +92,23 @@ export type HostToWebviewMessage =
 
 export type WebviewToHostMessage =
     | { type: 'ready' }
-    | { type: 'select'; path: SocJsonPath }
-    | { type: 'setValue'; path: SocJsonPath; value: JsonValue }
-    | { type: 'addInstance'; collection: 'peripherals' | 'externalInterfaces'; itemType: string }
-    | { type: 'removeInstance'; collection: 'peripherals' | 'externalInterfaces'; index: number }
+    | { type: 'select'; documentVersion: number; path: SocJsonPath }
+    | { type: 'setValue'; documentVersion: number; path: SocJsonPath; value: JsonValue }
+    | {
+        type: 'addInstance';
+        documentVersion: number;
+        collection: 'peripherals' | 'externalInterfaces';
+        itemType: string;
+    }
+    | {
+        type: 'removeInstance';
+        documentVersion: number;
+        collection: 'peripherals' | 'externalInterfaces';
+        index: number;
+    }
     | { type: 'autoAssign' | 'validate' | 'generate' | 'reopenAsText' };
+
+export const MAX_WEBVIEW_MESSAGE_BYTES = 64 * 1024;
 
 const dangerousPropertyNames = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -143,8 +169,11 @@ function isSafePathSegment(value: unknown): value is string | number {
 }
 
 function isJsonValue(value: unknown, seen: Set<object>): value is JsonValue {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    if (value === null || typeof value === 'boolean') {
         return true;
+    }
+    if (typeof value === 'string') {
+        return !isForbiddenHostOrAssetValue(value);
     }
     if (typeof value === 'number') {
         return Number.isFinite(value);
@@ -174,6 +203,15 @@ function isJsonValue(value: unknown, seen: Set<object>): value is JsonValue {
     return true;
 }
 
+function isForbiddenHostOrAssetValue(value: string): boolean {
+    const pathSegments = value.split('/');
+    return value.startsWith('/') || value.startsWith('\\') || value.includes('\\')
+        || /^[A-Za-z]:/.test(value)
+        || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
+        || pathSegments.includes('..')
+        || /^(?:resources|rtl|catalog|schema|templates|webview)(?:\/|$)/i.test(value);
+}
+
 function isPath(value: unknown): value is SocJsonPath {
     return isPlainJsonArray(value) && value.every(isSafePathSegment);
 }
@@ -190,6 +228,10 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isPositiveSafeInteger(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
 function isMessage(value: unknown, allowedKeys: readonly string[]): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
         && hasOnlyOwnDataProperties(value, allowedKeys) && hasOwn(value, 'type')
@@ -197,8 +239,11 @@ function isMessage(value: unknown, allowedKeys: readonly string[]): value is Rec
 }
 
 export function parseWebviewMessage(value: unknown): WebviewToHostMessage | undefined {
+    if (encodedMessageSize(value) > MAX_WEBVIEW_MESSAGE_BYTES) {
+        return undefined;
+    }
     if (!isMessage(value, [
-        'type', 'path', 'value', 'collection', 'itemType', 'index',
+        'type', 'documentVersion', 'path', 'value', 'collection', 'itemType', 'index',
     ])) {
         return undefined;
     }
@@ -211,28 +256,69 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         case 'reopenAsText':
             return hasOnlyOwnDataProperties(value, ['type']) ? { type: value.type } : undefined;
         case 'select':
-            return hasOnlyOwnDataProperties(value, ['type', 'path']) && hasOwn(value, 'path') && isPath(value.path)
-                ? { type: 'select', path: value.path }
+            return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path'])
+                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
+                && hasOwn(value, 'path') && isPath(value.path)
+                ? { type: 'select', documentVersion: value.documentVersion, path: value.path }
                 : undefined;
         case 'setValue':
-            return hasOnlyOwnDataProperties(value, ['type', 'path', 'value'])
+            return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path', 'value'])
+                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
                 && hasOwn(value, 'path') && hasOwn(value, 'value') && isPath(value.path)
                 && isJsonValue(value.value, new Set<object>())
-                ? { type: 'setValue', path: value.path, value: value.value }
+                ? {
+                    type: 'setValue',
+                    documentVersion: value.documentVersion,
+                    path: value.path,
+                    value: value.value,
+                }
                 : undefined;
         case 'addInstance':
-            return hasOnlyOwnDataProperties(value, ['type', 'collection', 'itemType'])
+            return hasOnlyOwnDataProperties(value, [
+                'type', 'documentVersion', 'collection', 'itemType',
+            ])
+                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
                 && hasOwn(value, 'collection') && hasOwn(value, 'itemType')
                 && isCollection(value.collection) && isItemType(value.itemType)
-                ? { type: 'addInstance', collection: value.collection, itemType: value.itemType }
+                ? {
+                    type: 'addInstance',
+                    documentVersion: value.documentVersion,
+                    collection: value.collection,
+                    itemType: value.itemType,
+                }
                 : undefined;
         case 'removeInstance':
-            return hasOnlyOwnDataProperties(value, ['type', 'collection', 'index'])
+            return hasOnlyOwnDataProperties(value, [
+                'type', 'documentVersion', 'collection', 'index',
+            ])
+                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
                 && hasOwn(value, 'collection') && hasOwn(value, 'index')
                 && isCollection(value.collection) && isNonNegativeSafeInteger(value.index)
-                ? { type: 'removeInstance', collection: value.collection, index: value.index }
+                ? {
+                    type: 'removeInstance',
+                    documentVersion: value.documentVersion,
+                    collection: value.collection,
+                    index: value.index,
+                }
                 : undefined;
         default:
             return undefined;
+    }
+}
+
+/** Command messages are version-independent; document-derived messages must match exactly. */
+export function isCurrentDocumentMessage(
+    message: WebviewToHostMessage,
+    documentVersion: number,
+): boolean {
+    return 'documentVersion' in message ? message.documentVersion === documentVersion : true;
+}
+
+function encodedMessageSize(value: unknown): number {
+    try {
+        const encoded = JSON.stringify(value);
+        return encoded === undefined ? Number.POSITIVE_INFINITY : Buffer.byteLength(encoded, 'utf8');
+    } catch {
+        return Number.POSITIVE_INFINITY;
     }
 }
