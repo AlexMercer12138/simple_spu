@@ -10,9 +10,33 @@ export interface StagedFile {
 export interface ActivationPlan {
     outputDir: string;
     stagingDir: string;
-    replacePaths: readonly string[];
-    createOnlyPaths: readonly string[];
-    removePaths: readonly string[];
+    replacePaths: readonly ActivationTarget[];
+    createOnlyPaths: readonly ActivationTarget[];
+    removePaths: readonly ActivationTarget[];
+}
+
+export type ExpectedTargetState =
+    | { kind: 'missing' }
+    | { kind: 'regular-file'; sha256: string };
+
+export interface ActivationTarget {
+    path: string;
+    expected: ExpectedTargetState;
+}
+
+export class ActivationRecoveryError extends Error {
+    readonly activationError: unknown;
+    readonly recoveryPath: string;
+    readonly failures: readonly Error[];
+
+    constructor(activationError: unknown, failures: readonly Error[], recoveryPath: string) {
+        super(`Activation failed and rollback was incomplete. Recovery files retained at ${recoveryPath}.`);
+        this.name = 'ActivationRecoveryError';
+        this.activationError = activationError;
+        this.recoveryPath = recoveryPath;
+        this.failures = Object.freeze([...failures]);
+        Object.defineProperty(this, 'cause', { value: activationError, enumerable: false });
+    }
 }
 
 /** Converts a generator path into its canonical portable relative form. */
@@ -50,6 +74,7 @@ export function sha256File(file: string): string {
 }
 
 export function createSiblingStagingDirectory(outputDir: string): string {
+    assertPathHasNoLinks(outputDir);
     const parent = path.dirname(outputDir);
     fs.mkdirSync(parent, { recursive: true });
     return fs.mkdtempSync(path.join(parent, `.${path.basename(outputDir)}-staging-`));
@@ -74,7 +99,7 @@ export function writeStagedFiles(stagingDir: string, files: readonly StagedFile[
 export function activateStagedFiles(plan: ActivationPlan): void {
     const backupRoot = path.join(plan.stagingDir, '.activation-backup');
     const backups: { target: string; backup: string }[] = [];
-    const installed: string[] = [];
+    const installed: { target: string; sha256: string }[] = [];
     const createdDirectories: string[] = [];
 
     const createParents = (target: string): void => {
@@ -92,51 +117,121 @@ export function activateStagedFiles(plan: ActivationPlan): void {
         }
     };
 
-    const backupExisting = (relativePath: string): void => {
+    const assertExpectedState = (operation: ActivationTarget): void => {
+        const target = generatedPath(plan.outputDir, operation.path);
+        assertPathHasNoLinks(target);
+        let actual: ExpectedTargetState;
+        try {
+            const status = fs.lstatSync(target);
+            actual = status.isFile()
+                ? { kind: 'regular-file', sha256: sha256File(target) }
+                : { kind: 'missing' };
+        } catch (error) {
+            if (isMissingPathError(error)) {
+                actual = { kind: 'missing' };
+            } else {
+                throw error;
+            }
+        }
+        if (actual.kind !== operation.expected.kind
+            || (actual.kind === 'regular-file' && operation.expected.kind === 'regular-file'
+                && actual.sha256 !== operation.expected.sha256)) {
+            throw new Error(`Generated target changed during staging: ${operation.path}`);
+        }
+    };
+
+    const backupExisting = (operation: ActivationTarget): void => {
+        const relativePath = operation.path;
         const target = generatedPath(plan.outputDir, relativePath);
-        if (!fs.existsSync(target)) return;
+        assertExpectedState(operation);
+        if (operation.expected.kind === 'missing') return;
         const backup = generatedPath(backupRoot, relativePath);
         fs.mkdirSync(path.dirname(backup), { recursive: true });
         fs.renameSync(target, backup);
         backups.push({ target, backup });
     };
 
-    const install = (relativePath: string, createOnly: boolean): void => {
+    const install = (operation: ActivationTarget, createOnly: boolean): void => {
+        const relativePath = operation.path;
         const target = generatedPath(plan.outputDir, relativePath);
-        if (createOnly && fs.existsSync(target)) {
-            throw new Error(`User-owned file appeared during activation: ${relativePath}`);
-        }
-        if (!createOnly) backupExisting(relativePath);
+        if (createOnly) assertExpectedState(operation);
+        else backupExisting(operation);
         createParents(target);
-        fs.renameSync(generatedPath(plan.stagingDir, relativePath), target);
-        installed.push(target);
+        assertPathHasNoLinks(target);
+        if (fs.existsSync(target)) {
+            throw new Error(`Generated target appeared during activation: ${relativePath}`);
+        }
+        const staged = generatedPath(plan.stagingDir, relativePath);
+        assertPathHasNoLinks(staged);
+        if (!fs.lstatSync(staged).isFile()) {
+            throw new Error(`Staged target is not a regular file: ${relativePath}`);
+        }
+        const installedHash = sha256File(staged);
+        assertPathHasNoLinks(target);
+        if (fs.existsSync(target)) {
+            throw new Error(`Generated target appeared during activation: ${relativePath}`);
+        }
+        fs.renameSync(staged, target);
+        installed.push({ target, sha256: installedHash });
     };
 
     try {
-        for (const relativePath of plan.replacePaths) install(relativePath, false);
-        for (const relativePath of plan.createOnlyPaths) install(relativePath, true);
-        for (const relativePath of plan.removePaths) backupExisting(relativePath);
+        for (const operation of plan.replacePaths) install(operation, false);
+        for (const operation of plan.createOnlyPaths) install(operation, true);
+        for (const operation of plan.removePaths) backupExisting(operation);
     } catch (error) {
-        for (const target of installed.reverse()) {
-            if (fs.existsSync(target)) fs.rmSync(target, { force: true });
+        const recoveryFailures: Error[] = [];
+        for (const installedFile of installed.reverse()) {
+            try {
+                if (!fs.existsSync(installedFile.target)) continue;
+                assertPathHasNoLinks(installedFile.target);
+                if (!fs.lstatSync(installedFile.target).isFile()
+                    || sha256File(installedFile.target) !== installedFile.sha256) {
+                    throw new Error(`Installed target changed before rollback: ${installedFile.target}`);
+                }
+                fs.rmSync(installedFile.target, { force: true });
+            } catch (recoveryError) {
+                recoveryFailures.push(asError(
+                    recoveryError, `Failed to remove installed target ${installedFile.target}`));
+            }
         }
         for (const { target, backup } of backups.reverse()) {
-            if (!fs.existsSync(backup)) continue;
-            fs.mkdirSync(path.dirname(target), { recursive: true });
-            fs.renameSync(backup, target);
+            try {
+                if (!fs.existsSync(backup)) continue;
+                assertPathHasNoLinks(backup);
+                if (!fs.lstatSync(backup).isFile()) {
+                    throw new Error(`Backup is not a regular file: ${backup}`);
+                }
+                assertPathHasNoLinks(target);
+                if (fs.existsSync(target)) {
+                    throw new Error(`Target exists before backup restoration: ${target}`);
+                }
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.renameSync(backup, target);
+            } catch (recoveryError) {
+                recoveryFailures.push(asError(recoveryError, `Failed to restore backup ${backup}`));
+            }
         }
         for (const directory of createdDirectories.reverse()) {
             try {
                 if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) {
                     fs.rmdirSync(directory);
                 }
-            } catch {
-                // The original error is the actionable failure.
+            } catch (recoveryError) {
+                recoveryFailures.push(asError(recoveryError, `Failed to remove directory ${directory}`));
             }
+        }
+        if (recoveryFailures.length > 0) {
+            throw new ActivationRecoveryError(error, recoveryFailures, plan.stagingDir);
         }
         throw error;
     }
-    removeEmptyManagedDirectories(plan.outputDir, plan.removePaths);
+    removeEmptyManagedDirectories(plan.outputDir, plan.removePaths.map((operation) => operation.path));
+}
+
+function isMissingPathError(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && 'code' in error
+        && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
 }
 
 function removeEmptyManagedDirectories(outputDir: string, removedPaths: readonly string[]): void {
@@ -149,7 +244,8 @@ function removeEmptyManagedDirectories(outputDir: string, removedPaths: readonly
     }
     for (const directory of [...candidates].sort((left, right) => right.length - left.length)) {
         try {
-            if (fs.existsSync(directory) && fs.statSync(directory).isDirectory()
+            assertPathHasNoLinks(directory);
+            if (fs.existsSync(directory) && fs.lstatSync(directory).isDirectory()
                 && fs.readdirSync(directory).length === 0) {
                 fs.rmdirSync(directory);
             }
@@ -161,4 +257,43 @@ function removeEmptyManagedDirectories(outputDir: string, removedPaths: readonly
 
 export function generatedPath(root: string, relativePath: string): string {
     return path.join(root, ...normalizeGeneratedPath(relativePath).split('/'));
+}
+
+/** Rejects any existing path component whose real path redirects elsewhere. */
+export function assertPathHasNoLinks(value: string): void {
+    const resolved = path.resolve(value);
+    const parsed = path.parse(resolved);
+    let current = parsed.root;
+    const components = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+    for (const component of components) {
+        current = path.join(current, component);
+        let status: fs.Stats;
+        try {
+            status = fs.lstatSync(current);
+        } catch (error) {
+            if (isMissingPathError(error)) return;
+            throw error;
+        }
+        const canonical = fs.realpathSync.native(current);
+        if (status.isSymbolicLink() || !sameCanonicalPath(current, canonical)) {
+            throw new Error(`Linked or redirected path is not allowed: ${current}`);
+        }
+    }
+}
+
+export function assertPathContained(root: string, target: string, label: string): void {
+    const relative = path.relative(path.resolve(root), path.resolve(target));
+    if (relative === '' || (!path.isAbsolute(relative)
+        && relative !== '..' && !relative.startsWith(`..${path.sep}`))) return;
+    throw new Error(`${label} escapes its allowed root: ${target}`);
+}
+
+function sameCanonicalPath(left: string, right: string): boolean {
+    return process.platform === 'win32'
+        ? left.toLocaleLowerCase('en-US') === right.toLocaleLowerCase('en-US')
+        : left === right;
+}
+
+function asError(error: unknown, fallback: string): Error {
+    return error instanceof Error ? error : new Error(`${fallback}: ${String(error)}`);
 }

@@ -117,10 +117,17 @@ function snapshotDirectory(root, relative = '') {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })
         .sort((left, right) => left.name.localeCompare(right.name))) {
         const child = path.join(relative, entry.name);
-        if (entry.isDirectory()) {
+        const childPath = path.join(root, child);
+        const status = fs.lstatSync(childPath);
+        if (status.isSymbolicLink()) {
+            result.push({
+                path: child.replace(/\\/g, '/'),
+                symlink: fs.readlinkSync(childPath),
+            });
+        } else if (status.isDirectory()) {
             result.push(...snapshotDirectory(root, child));
         } else {
-            const content = fs.readFileSync(path.join(root, child));
+            const content = fs.readFileSync(childPath);
             result.push({
                 path: child.replace(/\\/g, '/'),
                 sha256: crypto.createHash('sha256').update(content).digest('hex'),
@@ -144,6 +151,35 @@ function expectGenerationError(run, expectedConflictReason) {
             `missing ${expectedConflictReason}: ${JSON.stringify(error.conflicts, null, 2)}`);
     }
     return error;
+}
+
+function tryCreateLink(target, link, type) {
+    try {
+        fs.symlinkSync(target, link, process.platform === 'win32' && type === 'dir' ? 'junction' : type);
+        return true;
+    } catch (error) {
+        if (['EACCES', 'EINVAL', 'ENOTSUP', 'EPERM'].includes(error.code)) return false;
+        throw error;
+    }
+}
+
+function withStagingWriteMutation(run, mutation) {
+    const originalWrite = fs.writeFileSync;
+    let mutated = false;
+    fs.writeFileSync = (file, ...args) => {
+        const result = originalWrite.call(fs, file, ...args);
+        if (!mutated && path.basename(file) === 'manifest.json'
+            && path.basename(path.dirname(file)).includes('-staging-')) {
+            mutated = true;
+            mutation(originalWrite);
+        }
+        return result;
+    };
+    try {
+        return run();
+    } finally {
+        fs.writeFileSync = originalWrite;
+    }
 }
 
 function assertGenerationOrchestration() {
@@ -204,8 +240,13 @@ function assertGenerationOrchestration() {
             fs.realpathSync.native(configFile).replace(/\\/g, '/'));
         assert.strictEqual(firstManifest.generatorVersion, '2.0.0');
         assert.strictEqual(firstManifest.resourceRevision, 'test-resource-revision');
+        assert.deepStrictEqual(firstManifest.manifestFile, {
+            hashPolicy: 'excluded-self',
+            kind: 'control/manifest',
+            path: 'manifest.json',
+        }, 'the manifest format must explicitly identify its unhashed control file');
         assert.strictEqual(firstManifest.files.some((record) => record.path === 'manifest.json'), false,
-            'manifest.json must not claim a circular self hash');
+            'manifest.json must be excluded from ordinary managed-file hash records');
         assert.deepStrictEqual(new Set(firstManifest.files.map((record) => record.path.toLowerCase())).size,
             firstManifest.files.length);
         const managedRecords = firstManifest.files.filter((record) => record.kind !== 'scaffold/user-owned');
@@ -226,6 +267,86 @@ function assertGenerationOrchestration() {
         assert.deepStrictEqual(repeat.skippedUserFiles, ['software/src/main.c']);
         assert.deepStrictEqual(snapshotDirectory(outputDir), firstInventory,
             'repeat generation must be byte-identical');
+
+        const invalidMainRecords = [
+            (manifest, mainHash) => {
+                manifest.files = manifest.files.filter((record) => record.path !== 'software/src/main.c');
+                manifest.files.push({
+                    kind: 'generated/software', logicalSource: 'legacy-generator',
+                    path: 'software/src/main.c', sha256: mainHash,
+                });
+            },
+            (manifest, mainHash) => {
+                manifest.files.push({
+                    kind: 'generated/software', logicalSource: 'malicious-duplicate',
+                    path: 'software/src/main.c', sha256: mainHash,
+                });
+            },
+            (manifest, mainHash) => {
+                manifest.files.find((record) => record.path === 'software/src/main.c').sha256 = mainHash;
+            },
+        ];
+        for (const [variant, mutateManifest] of invalidMainRecords.entries()) {
+            for (const force of [false, true]) {
+                const manifestProject = path.join(root, `invalid-main-manifest-${variant}-${force}`);
+                const manifestConfig = writeGenerationConfig(manifestProject, 'demo.merc32.json',
+                    `invalid_main_${variant}_${force}`, `generated/invalid_main_${variant}_${force}`);
+                const generated = soc.generateSoc({ configFile: manifestConfig, assetRoot: assets });
+                const mainPath = path.join(generated.outputDir, 'software', 'src', 'main.c');
+                const manifest = readManifest(generated.outputDir);
+                mutateManifest(manifest, crypto.createHash('sha256')
+                    .update(fs.readFileSync(mainPath)).digest('hex'));
+                writeFile(path.join(generated.outputDir, 'manifest.json'),
+                    `${JSON.stringify(manifest, null, 2)}\n`);
+                const beforeInvalidManifest = snapshotDirectory(generated.outputDir);
+                const invalidManifestError = expectGenerationError(() => soc.generateSoc({
+                    configFile: manifestConfig, assetRoot: assets, force,
+                }));
+                assert.ok(invalidManifestError.diagnostics.some((item) => item.code === 'SOC_MANIFEST'));
+                assert.deepStrictEqual(snapshotDirectory(generated.outputDir), beforeInvalidManifest,
+                    'invalid main.c ownership records must never authorize target mutation');
+            }
+        }
+
+        const mainDirectoryProject = path.join(root, 'main-directory-project');
+        const mainDirectoryConfig = writeGenerationConfig(mainDirectoryProject, 'demo.merc32.json',
+            'main_directory_soc', 'generated/main_directory_soc');
+        const mainDirectoryOutput = path.join(mainDirectoryProject, 'generated', 'main_directory_soc');
+        fs.mkdirSync(path.join(mainDirectoryOutput, 'software', 'src', 'main.c'), { recursive: true });
+        const mainDirectorySnapshot = snapshotDirectory(mainDirectoryOutput);
+        expectGenerationError(() => soc.generateSoc({
+            configFile: mainDirectoryConfig, assetRoot: assets,
+        }), 'modified-managed');
+        assert.deepStrictEqual(snapshotDirectory(mainDirectoryOutput), mainDirectorySnapshot,
+            'a main.c directory must be rejected before activation');
+
+        const mainLinkProject = path.join(root, 'main-link-project');
+        const mainLinkConfig = writeGenerationConfig(mainLinkProject, 'demo.merc32.json',
+            'main_link_soc', 'generated/main_link_soc');
+        const mainLinkOutput = path.join(mainLinkProject, 'generated', 'main_link_soc');
+        const externalMain = path.join(root, 'external-user-main.c');
+        writeFile(externalMain, '/* external user main */\n');
+        const linkedMain = path.join(mainLinkOutput, 'software', 'src', 'main.c');
+        fs.mkdirSync(path.dirname(linkedMain), { recursive: true });
+        let linkedMainCreated = tryCreateLink(externalMain, linkedMain, 'file');
+        if (!linkedMainCreated) {
+            const externalMainDirectory = path.join(root, 'external-user-main-directory');
+            fs.mkdirSync(externalMainDirectory);
+            linkedMainCreated = tryCreateLink(externalMainDirectory, linkedMain, 'dir');
+        }
+        if (linkedMainCreated) {
+            const mainLinkSnapshot = snapshotDirectory(mainLinkOutput);
+            try {
+                expectGenerationError(() => soc.generateSoc({
+                    configFile: mainLinkConfig, assetRoot: assets,
+                }), 'modified-managed');
+                assert.strictEqual(fs.readFileSync(externalMain, 'utf8'), '/* external user main */\n');
+                assert.deepStrictEqual(snapshotDirectory(mainLinkOutput), mainLinkSnapshot,
+                    'a linked main.c must be rejected without touching its target');
+            } finally {
+                fs.unlinkSync(linkedMain);
+            }
+        }
 
         const configTimes = Object.fromEntries(readManifest(outputDir).files
             .filter((record) => record.kind !== 'scaffold/user-owned')
@@ -339,6 +460,254 @@ function assertGenerationOrchestration() {
         assert.strictEqual(fs.existsSync(activationStaging), false);
         fs.writeFileSync(configFile, activationSource);
 
+        const recoveryProject = path.join(root, 'recovery-project');
+        const recoveryConfig = writeGenerationConfig(recoveryProject, 'demo.merc32.json',
+            'recovery_soc', 'generated/recovery_soc');
+        const recoveryResult = soc.generateSoc({ configFile: recoveryConfig, assetRoot: assets });
+        const recoveryConfigValue = JSON.parse(fs.readFileSync(recoveryConfig, 'utf8'));
+        recoveryConfigValue.cpu.debug = true;
+        recoveryConfigValue.cpu.jtagIdCode = '0x23456789';
+        fs.writeFileSync(recoveryConfig, `${JSON.stringify(recoveryConfigValue, null, 2)}\n`);
+        const recoveryStaging = path.join(path.dirname(recoveryResult.outputDir),
+            '.recovery_soc-staging-recovery');
+        const originalMkdtempForRecovery = fs.mkdtempSync;
+        const originalRenameForRecovery = fs.renameSync;
+        const originalRmForRecovery = fs.rmSync;
+        const installedTargets = [];
+        const removalAttempts = [];
+        const restorationAttempts = [];
+        let installFailureInjected = false;
+        let removalFailureInjected = false;
+        let restorationFailureInjected = false;
+        fs.mkdtempSync = (prefix) => {
+            assert.strictEqual(prefix, path.join(path.dirname(recoveryResult.outputDir),
+                '.recovery_soc-staging-'));
+            fs.mkdirSync(recoveryStaging);
+            return recoveryStaging;
+        };
+        fs.renameSync = (oldPath, newPath) => {
+            const resolvedOld = path.resolve(oldPath);
+            const isInstall = resolvedOld.startsWith(`${path.resolve(recoveryStaging)}${path.sep}`)
+                && !resolvedOld.includes(`${path.sep}.activation-backup${path.sep}`);
+            if (isInstall) {
+                if (installedTargets.length === 2 && !installFailureInjected) {
+                    installFailureInjected = true;
+                    throw new Error('injected activation failure before recovery');
+                }
+                installedTargets.push(path.resolve(newPath));
+            }
+            if (resolvedOld.includes(`${path.sep}.activation-backup${path.sep}`)) {
+                restorationAttempts.push(path.resolve(newPath));
+                if (!restorationFailureInjected) {
+                    restorationFailureInjected = true;
+                    throw new Error('injected backup restoration failure');
+                }
+            }
+            return originalRenameForRecovery.call(fs, oldPath, newPath);
+        };
+        fs.rmSync = (target, options) => {
+            const resolvedTarget = path.resolve(target);
+            if (installedTargets.includes(resolvedTarget)) {
+                removalAttempts.push(resolvedTarget);
+                if (!removalFailureInjected) {
+                    removalFailureInjected = true;
+                    throw new Error('injected installed-file cleanup failure');
+                }
+            }
+            return originalRmForRecovery.call(fs, target, options);
+        };
+        let recoveryError;
+        try {
+            recoveryError = expectGenerationError(() => soc.generateSoc({
+                configFile: recoveryConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.mkdtempSync = originalMkdtempForRecovery;
+            fs.renameSync = originalRenameForRecovery;
+            fs.rmSync = originalRmForRecovery;
+        }
+        assert.ok(recoveryError.diagnostics.some((item) => item.code === 'SOC_RECOVERY_INCOMPLETE'));
+        assert.strictEqual(recoveryError.recoveryPath, recoveryStaging);
+        assert.ok(Array.isArray(recoveryError.recoveryFailures)
+            && recoveryError.recoveryFailures.length >= 2);
+        assert.deepStrictEqual(new Set(removalAttempts), new Set(installedTargets),
+            'rollback must attempt removal of every installed target after one removal fails');
+        assert.ok(restorationAttempts.length >= 2,
+            'rollback must attempt every backup restoration after one restoration fails');
+        assert.strictEqual(fs.existsSync(recoveryStaging), true,
+            'incomplete rollback must retain its exact recovery directory');
+        assert.ok(snapshotDirectory(path.join(recoveryStaging, '.activation-backup')).length > 0,
+            'incomplete rollback must retain unresolved backup files for manual recovery');
+
+        const rollbackRaceProject = path.join(root, 'rollback-race-project');
+        const rollbackRaceConfig = writeGenerationConfig(rollbackRaceProject, 'demo.merc32.json',
+            'rollback_race_soc', 'generated/rollback_race_soc');
+        const rollbackRaceResult = soc.generateSoc({
+            configFile: rollbackRaceConfig, assetRoot: assets,
+        });
+        const rollbackRaceConfigValue = JSON.parse(fs.readFileSync(rollbackRaceConfig, 'utf8'));
+        rollbackRaceConfigValue.cpu.debug = true;
+        rollbackRaceConfigValue.cpu.jtagIdCode = '0x3456789a';
+        fs.writeFileSync(rollbackRaceConfig, `${JSON.stringify(rollbackRaceConfigValue, null, 2)}\n`);
+        const rollbackRaceStaging = path.join(path.dirname(rollbackRaceResult.outputDir),
+            '.rollback_race_soc-staging-race');
+        const originalMkdtempForRollbackRace = fs.mkdtempSync;
+        const originalRenameForRollbackRace = fs.renameSync;
+        let rollbackRaceInstallCount = 0;
+        let racedInstalledTarget;
+        fs.mkdtempSync = (prefix) => {
+            assert.strictEqual(prefix, path.join(path.dirname(rollbackRaceResult.outputDir),
+                '.rollback_race_soc-staging-'));
+            fs.mkdirSync(rollbackRaceStaging);
+            return rollbackRaceStaging;
+        };
+        fs.renameSync = (oldPath, newPath) => {
+            const resolvedOld = path.resolve(oldPath);
+            const isInstall = resolvedOld.startsWith(`${path.resolve(rollbackRaceStaging)}${path.sep}`)
+                && !resolvedOld.includes(`${path.sep}.activation-backup${path.sep}`);
+            if (isInstall) {
+                rollbackRaceInstallCount += 1;
+                if (rollbackRaceInstallCount === 2) {
+                    fs.writeFileSync(racedInstalledTarget, 'user changed installed target before rollback\n');
+                    throw new Error('injected activation failure after concurrent installed change');
+                }
+                racedInstalledTarget = path.resolve(newPath);
+            }
+            return originalRenameForRollbackRace.call(fs, oldPath, newPath);
+        };
+        let rollbackRaceError;
+        try {
+            rollbackRaceError = expectGenerationError(() => soc.generateSoc({
+                configFile: rollbackRaceConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.mkdtempSync = originalMkdtempForRollbackRace;
+            fs.renameSync = originalRenameForRollbackRace;
+        }
+        assert.ok(rollbackRaceError.diagnostics.some(
+            (item) => item.code === 'SOC_RECOVERY_INCOMPLETE'));
+        assert.strictEqual(fs.readFileSync(racedInstalledTarget, 'utf8'),
+            'user changed installed target before rollback\n',
+        'rollback must not delete a target that changed after installation');
+        assert.strictEqual(fs.existsSync(rollbackRaceStaging), true);
+        assert.ok(snapshotDirectory(path.join(rollbackRaceStaging, '.activation-backup')).length > 0,
+            'a rollback race must retain the old backup beside the live user change');
+
+        const toctouProject = path.join(root, 'toctou-project');
+        const toctouConfig = writeGenerationConfig(toctouProject, 'demo.merc32.json',
+            'toctou_soc', 'generated/toctou_soc');
+        const toctouResult = soc.generateSoc({ configFile: toctouConfig, assetRoot: assets });
+        const toctouManaged = path.join(toctouResult.outputDir, 'rtl', 'toctou_soc.v');
+        const toctouConfigValue = JSON.parse(fs.readFileSync(toctouConfig, 'utf8'));
+        toctouConfigValue.cpu.debug = true;
+        fs.writeFileSync(toctouConfig, `${JSON.stringify(toctouConfigValue, null, 2)}\n`);
+        const changedDuringStaging = 'user changed managed during staging\n';
+        expectGenerationError(() => withStagingWriteMutation(
+            () => soc.generateSoc({ configFile: toctouConfig, assetRoot: assets }),
+            (write) => write.call(fs, toctouManaged, changedDuringStaging),
+        ));
+        assert.strictEqual(fs.readFileSync(toctouManaged, 'utf8'), changedDuringStaging,
+            'a managed target changed during staging must not be overwritten');
+
+        soc.generateSoc({ configFile: toctouConfig, assetRoot: assets, force: true });
+        const toctouStale = path.join(toctouResult.outputDir, 'rtl', 'obsolete.v');
+        writeFile(toctouStale, 'obsolete generated\n');
+        const toctouStaleManifest = readManifest(toctouResult.outputDir);
+        toctouStaleManifest.files.push({
+            kind: 'generated/rtl', logicalSource: 'test:obsolete', path: 'rtl/obsolete.v',
+            sha256: crypto.createHash('sha256').update('obsolete generated\n').digest('hex'),
+        });
+        writeFile(path.join(toctouResult.outputDir, 'manifest.json'),
+            `${JSON.stringify(toctouStaleManifest, null, 2)}\n`);
+        const changedStaleDuringStaging = 'user changed stale during staging\n';
+        expectGenerationError(() => withStagingWriteMutation(
+            () => soc.generateSoc({ configFile: toctouConfig, assetRoot: assets }),
+            (write) => write.call(fs, toctouStale, changedStaleDuringStaging),
+        ));
+        assert.strictEqual(fs.readFileSync(toctouStale, 'utf8'), changedStaleDuringStaging,
+            'a stale target changed during staging must not be removed');
+
+        fs.rmSync(toctouStale);
+        writeFile(path.join(toctouResult.outputDir, 'manifest.json'),
+            `${JSON.stringify(readManifest(toctouResult.outputDir), null, 2)}\n`);
+        const toctouMissing = path.join(toctouResult.outputDir, 'rtl', 'toctou_soc.v');
+        fs.rmSync(toctouMissing);
+        const appearedDuringStaging = 'user created managed during staging\n';
+        expectGenerationError(() => withStagingWriteMutation(
+            () => soc.generateSoc({ configFile: toctouConfig, assetRoot: assets }),
+            (write) => write.call(fs, toctouMissing, appearedDuringStaging),
+        ));
+        assert.strictEqual(fs.readFileSync(toctouMissing, 'utf8'), appearedDuringStaging,
+            'a target created during staging must not be overwritten');
+
+        const mainToctouProject = path.join(root, 'main-toctou-project');
+        const mainToctouConfig = writeGenerationConfig(mainToctouProject, 'demo.merc32.json',
+            'main_toctou_soc', 'generated/main_toctou_soc');
+        const mainToctouPath = path.join(mainToctouProject, 'generated', 'main_toctou_soc',
+            'software', 'src', 'main.c');
+        expectGenerationError(() => withStagingWriteMutation(
+            () => soc.generateSoc({ configFile: mainToctouConfig, assetRoot: assets }),
+            (write) => {
+                fs.mkdirSync(path.dirname(mainToctouPath), { recursive: true });
+                write.call(fs, mainToctouPath, '/* user main appeared during staging */\n');
+            },
+        ));
+        assert.strictEqual(fs.readFileSync(mainToctouPath, 'utf8'),
+            '/* user main appeared during staging */\n',
+        'a user main appearing during staging must be preserved and abort activation');
+
+        soc.generateSoc({ configFile: toctouConfig, assetRoot: assets, force: true });
+        const lateConfigValue = JSON.parse(fs.readFileSync(toctouConfig, 'utf8'));
+        lateConfigValue.cpu.jtagIdCode = '0x76543210';
+        fs.writeFileSync(toctouConfig, `${JSON.stringify(lateConfigValue, null, 2)}\n`);
+        const rollbackBeforeLateChange = snapshotDirectory(toctouResult.outputDir);
+        const earlyActivationPath = path.join(toctouResult.outputDir, 'rtl', 'toctou_soc.v');
+        const earlyActivationContent = fs.readFileSync(earlyActivationPath);
+        const lateActivationPath = path.join(toctouResult.outputDir, 'config',
+            'toctou_soc.resolved.json');
+        const lateChange = 'user changed later target during activation\n';
+        const originalRenameForToctou = fs.renameSync;
+        let installRenames = 0;
+        fs.renameSync = (oldPath, newPath) => {
+            const isInstall = path.resolve(oldPath).includes(
+                `${path.sep}.toctou_soc-staging-`);
+            if (isInstall && !path.resolve(oldPath).includes(`${path.sep}.activation-backup${path.sep}`)) {
+                installRenames += 1;
+                if (installRenames === 1) fs.writeFileSync(lateActivationPath, lateChange);
+            }
+            return originalRenameForToctou.call(fs, oldPath, newPath);
+        };
+        try {
+            expectGenerationError(() => soc.generateSoc({
+                configFile: toctouConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.renameSync = originalRenameForToctou;
+        }
+        assert.strictEqual(fs.readFileSync(lateActivationPath, 'utf8'), lateChange,
+            'the later concurrent change must remain untouched');
+        assert.deepStrictEqual(fs.readFileSync(earlyActivationPath), earlyActivationContent,
+            'an earlier installed path must be restored after a later precondition failure');
+        const rollbackAfterLateChange = snapshotDirectory(toctouResult.outputDir)
+            .filter((entry) => entry.path !== 'config/toctou_soc.resolved.json');
+        assert.deepStrictEqual(rollbackAfterLateChange,
+            rollbackBeforeLateChange.filter((entry) => entry.path !== 'config/toctou_soc.resolved.json'),
+            'a later precondition failure must roll back every earlier activation');
+
+        soc.generateSoc({ configFile: toctouConfig, assetRoot: assets, force: true });
+        const manifestToctouConfigValue = JSON.parse(fs.readFileSync(toctouConfig, 'utf8'));
+        manifestToctouConfigValue.cpu.jtagIdCode = '0x456789ab';
+        fs.writeFileSync(toctouConfig, `${JSON.stringify(manifestToctouConfigValue, null, 2)}\n`);
+        const manifestChangedDuringStaging = 'user replaced manifest during staging\n';
+        expectGenerationError(() => withStagingWriteMutation(
+            () => soc.generateSoc({ configFile: toctouConfig, assetRoot: assets }),
+            (write) => write.call(fs, path.join(toctouResult.outputDir, 'manifest.json'),
+                manifestChangedDuringStaging),
+        ));
+        assert.strictEqual(fs.readFileSync(path.join(toctouResult.outputDir, 'manifest.json'), 'utf8'),
+            manifestChangedDuringStaging,
+            'the manifest state inspected before staging must be revalidated before replacement');
+
         const renamedConfig = writeGenerationConfig(project, 'renamed.merc32.json',
             'demo_soc', 'generated/demo_soc');
         const ownedSnapshot = snapshotDirectory(outputDir);
@@ -374,6 +743,115 @@ function assertGenerationOrchestration() {
         assert.deepStrictEqual(snapshotDirectory(outputDir), beforeMissingAsset,
             'missing dependency must fail before target mutation');
         fs.renameSync(`${missingAsset}.missing`, missingAsset);
+
+        const linkedAssets = path.join(root, 'linked-assets');
+        prepareGenerationAssets(linkedAssets);
+        const externalCpuAssets = path.join(root, 'external-cpu-assets');
+        fs.cpSync(path.join(linkedAssets, 'rtl', 'cpu'), externalCpuAssets, { recursive: true });
+        const linkedCpuAssets = path.join(linkedAssets, 'rtl', 'cpu');
+        fs.rmSync(linkedCpuAssets, { recursive: true, force: true });
+        if (tryCreateLink(externalCpuAssets, linkedCpuAssets, 'dir')) {
+            const linkedAssetProject = path.join(root, 'linked-asset-project');
+            const linkedAssetConfig = writeGenerationConfig(linkedAssetProject, 'demo.merc32.json',
+                'linked_asset_soc', 'generated/linked_asset_soc');
+            try {
+                const linkedAssetError = expectGenerationError(() => soc.generateSoc({
+                    configFile: linkedAssetConfig, assetRoot: linkedAssets,
+                }));
+                assert.ok(linkedAssetError.diagnostics.some((item) => item.code === 'SOC_ASSET'),
+                    'linked logical asset paths must report an asset provenance error');
+                assert.strictEqual(fs.existsSync(path.join(linkedAssetProject, 'generated',
+                    'linked_asset_soc')), false);
+            } finally {
+                fs.unlinkSync(linkedCpuAssets);
+            }
+        }
+
+        const linkedCatalogAssets = path.join(root, 'linked-catalog-assets');
+        prepareGenerationAssets(linkedCatalogAssets);
+        const externalCatalog = path.join(root, 'external-catalog');
+        fs.cpSync(path.join(linkedCatalogAssets, 'catalog'), externalCatalog, { recursive: true });
+        const linkedCatalog = path.join(linkedCatalogAssets, 'catalog');
+        fs.rmSync(linkedCatalog, { recursive: true, force: true });
+        if (tryCreateLink(externalCatalog, linkedCatalog, 'dir')) {
+            const linkedCatalogProject = path.join(root, 'linked-catalog-project');
+            const linkedCatalogConfig = writeGenerationConfig(linkedCatalogProject,
+                'demo.merc32.json', 'linked_catalog_soc', 'generated/linked_catalog_soc');
+            try {
+                const linkedCatalogError = expectGenerationError(() => soc.generateSoc({
+                    configFile: linkedCatalogConfig, assetRoot: linkedCatalogAssets,
+                }));
+                assert.ok(linkedCatalogError.diagnostics.some((item) => item.code === 'SOC_ASSET'));
+                assert.strictEqual(fs.existsSync(path.join(linkedCatalogProject, 'generated',
+                    'linked_catalog_soc')), false,
+                'catalog descriptors must not be read through linked asset ancestry');
+            } finally {
+                fs.unlinkSync(linkedCatalog);
+            }
+        }
+
+        const outputAncestorProject = path.join(root, 'output-ancestor-project');
+        const outputAncestorConfig = writeGenerationConfig(outputAncestorProject, 'demo.merc32.json',
+            'output_ancestor_soc', 'generated/output_ancestor_soc');
+        const externalOutputAncestor = path.join(root, 'external-output-ancestor');
+        writeFile(path.join(externalOutputAncestor, 'sentinel.txt'), 'external output sentinel\n');
+        const outputAncestorLink = path.join(outputAncestorProject, 'generated');
+        if (tryCreateLink(externalOutputAncestor, outputAncestorLink, 'dir')) {
+            try {
+                expectGenerationError(() => soc.generateSoc({
+                    configFile: outputAncestorConfig, assetRoot: assets,
+                }));
+                assert.deepStrictEqual(fs.readdirSync(externalOutputAncestor), ['sentinel.txt'],
+                    'linked output ancestry must not receive generated files');
+            } finally {
+                fs.unlinkSync(outputAncestorLink);
+            }
+        }
+
+        const managedLinkProject = path.join(root, 'managed-link-project');
+        const managedLinkConfig = writeGenerationConfig(managedLinkProject, 'demo.merc32.json',
+            'managed_link_soc', 'generated/managed_link_soc');
+        const managedLinkResult = soc.generateSoc({
+            configFile: managedLinkConfig, assetRoot: assets,
+        });
+        const managedLinkPath = path.join(managedLinkResult.outputDir, 'rtl', 'managed_link_soc.v');
+        const externalManagedTarget = path.join(root, 'external-managed-target.v');
+        fs.copyFileSync(managedLinkPath, externalManagedTarget);
+        fs.rmSync(managedLinkPath);
+        if (tryCreateLink(externalManagedTarget, managedLinkPath, 'file')) {
+            try {
+                expectGenerationError(() => soc.generateSoc({
+                    configFile: managedLinkConfig, assetRoot: assets,
+                }), 'modified-managed');
+                assert.deepStrictEqual(fs.readFileSync(externalManagedTarget),
+                    fs.readFileSync(managedLinkPath));
+            } finally {
+                fs.unlinkSync(managedLinkPath);
+            }
+        }
+
+        const stagedLinkProject = path.join(root, 'staged-link-project');
+        const stagedLinkConfig = writeGenerationConfig(stagedLinkProject, 'demo.merc32.json',
+            'staged_link_soc', 'generated/staged_link_soc');
+        const stagedLinkOutput = path.join(stagedLinkProject, 'generated', 'staged_link_soc');
+        const externalStagedRtl = path.join(root, 'external-staged-rtl');
+        writeFile(path.join(externalStagedRtl, 'sentinel.txt'), 'staged link sentinel\n');
+        let stagedRtlLinkCreated = false;
+        try {
+            expectGenerationError(() => withStagingWriteMutation(
+                () => soc.generateSoc({ configFile: stagedLinkConfig, assetRoot: assets }),
+                () => {
+                    fs.mkdirSync(stagedLinkOutput, { recursive: true });
+                    stagedRtlLinkCreated = tryCreateLink(externalStagedRtl,
+                        path.join(stagedLinkOutput, 'rtl'), 'dir');
+                    if (!stagedRtlLinkCreated) throw new Error('link creation unavailable');
+                },
+            ));
+            assert.deepStrictEqual(fs.readdirSync(externalStagedRtl), ['sentinel.txt'],
+                'a managed ancestor linked during staging must not receive generated files');
+        } finally {
+            if (stagedRtlLinkCreated) fs.unlinkSync(path.join(stagedLinkOutput, 'rtl'));
+        }
 
         const sourceText = fs.readFileSync(renamedConfig, 'utf8');
         fs.writeFileSync(renamedConfig, sourceText.replace('"debug": false', '"debug": true'));
@@ -475,6 +953,47 @@ function assertGenerationOrchestration() {
             'memory', 'ilb_firmware.mem'), 'utf8'), '11aa22bb\n');
         assert.strictEqual(fs.readFileSync(path.join(memoryResult.outputDir,
             'memory', 'dlb_firmware.mem'), 'utf8'), '33cc44dd\n');
+
+        const externalMemory = path.join(root, 'external-memory.mem');
+        writeFile(externalMemory, 'feedface\n');
+        const linkedMemoryProject = path.join(root, 'linked-memory-project');
+        const linkedMemoryFile = path.join(linkedMemoryProject, 'boot', 'firmware.mem');
+        fs.mkdirSync(path.dirname(linkedMemoryFile), { recursive: true });
+        if (tryCreateLink(externalMemory, linkedMemoryFile, 'file')) {
+            const linkedMemoryConfig = writeGenerationConfig(linkedMemoryProject,
+                'memory.merc32.json', 'linked_memory_soc', 'generated/linked_memory_soc',
+                (value) => ({
+                    ...value,
+                    memory: {
+                        ...value.memory,
+                        ilb: { type: 'internal_ram', size: '32KiB', initFile: 'boot/firmware.mem' },
+                    },
+                }));
+            expectGenerationError(() => soc.generateSoc({
+                configFile: linkedMemoryConfig, assetRoot: assets,
+            }));
+            assert.strictEqual(fs.existsSync(path.join(linkedMemoryProject, 'generated',
+                'linked_memory_soc')), false);
+            fs.unlinkSync(linkedMemoryFile);
+        }
+
+        const escapedMemoryProject = path.join(root, 'escaped-memory-project');
+        writeFile(path.join(root, 'escaped-memory.mem'), 'decafbad\n');
+        const escapedMemoryConfig = writeGenerationConfig(escapedMemoryProject,
+            'memory.merc32.json', 'escaped_memory_soc', 'generated/escaped_memory_soc',
+            (value) => ({
+                ...value,
+                memory: {
+                    ...value.memory,
+                    ilb: { type: 'internal_ram', size: '32KiB', initFile: '../escaped-memory.mem' },
+                },
+            }));
+        expectGenerationError(() => soc.generateSoc({
+            configFile: escapedMemoryConfig, assetRoot: assets,
+        }));
+        assert.strictEqual(fs.existsSync(path.join(escapedMemoryProject, 'generated',
+            'escaped_memory_soc')), false,
+        'memory-init provenance must remain within the canonical configuration directory');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

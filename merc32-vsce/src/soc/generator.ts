@@ -3,6 +3,10 @@ import * as path from 'path';
 
 import {
     activateStagedFiles,
+    ActivationRecoveryError,
+    ActivationTarget,
+    assertPathContained,
+    assertPathHasNoLinks,
     assertNoCaseInsensitivePathCollisions,
     createSiblingStagingDirectory,
     generatedPath,
@@ -50,17 +54,24 @@ export interface SocFileConflict {
 export class SocGenerationError extends Error {
     readonly diagnostics: readonly SocDiagnostic[];
     readonly conflicts: readonly SocFileConflict[];
+    readonly recoveryPath?: string;
+    readonly recoveryFailures?: readonly Error[];
 
     constructor(
         message: string,
         diagnostics: readonly SocDiagnostic[] = [],
         conflicts: readonly SocFileConflict[] = [],
         cause?: unknown,
+        recovery?: { path: string; failures: readonly Error[] },
     ) {
         super(message);
         this.name = 'SocGenerationError';
         this.diagnostics = Object.freeze([...diagnostics]);
         this.conflicts = Object.freeze([...conflicts]);
+        if (recovery !== undefined) {
+            this.recoveryPath = recovery.path;
+            this.recoveryFailures = Object.freeze([...recovery.failures]);
+        }
         if (cause !== undefined) {
             Object.defineProperty(this, 'cause', { value: cause, enumerable: false });
         }
@@ -92,6 +103,11 @@ type ManifestFileRecord = ManifestManagedRecord | ManifestUserRecord;
 interface SocManifest {
     files: readonly ManifestFileRecord[];
     generatorVersion: string;
+    manifestFile: {
+        hashPolicy: 'excluded-self';
+        kind: 'control/manifest';
+        path: 'manifest.json';
+    };
     manifestVersion: 1;
     projectName: string;
     resourceRevision: string;
@@ -108,15 +124,30 @@ interface PreparedGeneration {
     warnings: readonly SocDiagnostic[];
 }
 
+type InspectedTargetState = ActivationTarget['expected'];
+
+interface TargetInspection {
+    conflicts: SocFileConflict[];
+    replacePaths: ActivationTarget[];
+    stalePaths: ActivationTarget[];
+}
+
+interface ExistingManifest {
+    manifest: SocManifest;
+    state: InspectedTargetState;
+}
+
 const MAIN_PATH = 'software/src/main.c' as const;
 const MANIFEST_PATH = 'manifest.json';
 
 /** Generates a complete SoC without depending on the VSCode API. */
 export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
     let stagingDir: string | undefined;
+    let preserveStaging = false;
     try {
         const prepared = prepareGeneration(options);
-        const previous = readExistingManifest(prepared.outputDir);
+        const previousManifest = readExistingManifest(prepared.outputDir);
+        const previous = previousManifest?.manifest;
         const ownershipChanged = previous !== undefined
             && (!sameCanonicalPath(previous.sourceConfig, prepared.manifest.sourceConfig)
                 || previous.projectName !== prepared.manifest.projectName);
@@ -139,6 +170,8 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             throw new SocGenerationError('Generated files conflict with the existing output.', [],
                 inspection.conflicts);
         }
+        const mainState = inspectRegularTarget(generatedPath(prepared.outputDir, MAIN_PATH));
+        const mainExists = mainState.kind === 'regular-file';
 
         stagingDir = createSiblingStagingDirectory(prepared.outputDir);
         const stagedFiles: StagedFile[] = prepared.generatedFiles.map((file) => ({
@@ -149,19 +182,18 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
         stagedFiles.push({ path: MANIFEST_PATH, content: prepared.manifestText });
         writeStagedFiles(stagingDir, stagedFiles);
 
-        const mainExists = fs.existsSync(generatedPath(prepared.outputDir, MAIN_PATH));
         const manifestFile = generatedPath(prepared.outputDir, MANIFEST_PATH);
-        const replaceManifest = !fs.existsSync(manifestFile)
-            || !fs.statSync(manifestFile).isFile()
+        const manifestState = previousManifest?.state ?? { kind: 'missing' };
+        const replaceManifest = manifestState.kind === 'missing'
             || !fs.readFileSync(manifestFile).equals(prepared.manifestText);
         activateStagedFiles({
             outputDir: prepared.outputDir,
             stagingDir,
             replacePaths: [
                 ...inspection.replacePaths,
-                ...(replaceManifest ? [MANIFEST_PATH] : []),
+                ...(replaceManifest ? [{ path: MANIFEST_PATH, expected: manifestState }] : []),
             ],
-            createOnlyPaths: mainExists ? [] : [MAIN_PATH],
+            createOnlyPaths: mainExists ? [] : [{ path: MAIN_PATH, expected: mainState }],
             removePaths: inspection.stalePaths,
         });
 
@@ -173,10 +205,14 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             skippedUserFiles: Object.freeze(mainExists ? [MAIN_PATH] : []),
         });
     } catch (error) {
+        if (error instanceof ActivationRecoveryError) {
+            preserveStaging = true;
+            throw recoveryFailure(error);
+        }
         if (error instanceof SocGenerationError) throw error;
         throw generationFailure(error);
     } finally {
-        if (stagingDir !== undefined) {
+        if (stagingDir !== undefined && !preserveStaging) {
             fs.rmSync(stagingDir, { recursive: true, force: true });
         }
     }
@@ -187,6 +223,7 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
     const assetRoot = canonicalExistingDirectory(options.assetRoot, 'asset root');
     let catalog;
     try {
+        assertAssetTreeHasNoLinks(assetRoot);
         catalog = loadCatalog(assetRoot);
     } catch (error) {
         throw diagnosticFailure('SOC_ASSET', error);
@@ -205,7 +242,8 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
     const resourceRevision = readResourceRevision(assetRoot);
     const readmeTemplate = requireAssetFile(assetRoot, 'templates/README.md.tpl').toString('utf8');
     const mainTemplate = requireAssetFile(assetRoot, 'templates/main.c.tpl').toString('utf8');
-    const generatedFiles = renderGeneratedFiles(plan, assetRoot, readmeTemplate, portablePath(configFile));
+    const generatedFiles = renderGeneratedFiles(
+        plan, assetRoot, path.dirname(configFile), readmeTemplate, portablePath(configFile));
     const mainFile = generatedFile(
         MAIN_PATH,
         renderStarterMain(plan, mainTemplate),
@@ -243,6 +281,11 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
                 };
             })),
         generatorVersion: readGeneratorVersion(),
+        manifestFile: {
+            hashPolicy: 'excluded-self',
+            kind: 'control/manifest',
+            path: MANIFEST_PATH,
+        },
         manifestVersion: 1,
         projectName: plan.projectName,
         resourceRevision,
@@ -262,6 +305,7 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
 function renderGeneratedFiles(
     plan: SocPlan,
     assetRoot: string,
+    sourceRoot: string,
     readmeTemplate: string,
     sourceIdentity: string,
 ): GeneratedFile[] {
@@ -288,7 +332,8 @@ function renderGeneratedFiles(
     for (const [slot, memory] of [['ilb', plan.memory.ilb], ['dlb', plan.memory.dlb]] as const) {
         if (memory.initFile === undefined) continue;
         result.push(generatedFile(`memory/${memory.initFile.outputName}`,
-            readRequiredFile(memory.initFile.source, `${slot} memory initialization file`),
+            readRequiredFile(memory.initFile.source, sourceRoot,
+                `${slot} memory initialization file`),
             `config:memory.${slot}.initFile`, 'source/memory-init'));
     }
     result.push(
@@ -313,10 +358,10 @@ function inspectTarget(
     desiredManaged: ReadonlyMap<string, GeneratedFile>,
     adopting: boolean,
     force: boolean,
-): { conflicts: SocFileConflict[]; replacePaths: string[]; stalePaths: string[] } {
+): TargetInspection {
     const conflicts: SocFileConflict[] = [];
-    const replacePaths = new Set<string>();
-    const stalePaths: string[] = [];
+    const replacePaths = new Map<string, InspectedTargetState>();
+    const stalePaths = new Map<string, InspectedTargetState>();
     const previousManaged = new Map<string, ManifestManagedRecord>();
     if (previous !== undefined) {
         for (const record of previous.files) {
@@ -342,30 +387,40 @@ function inspectTarget(
     for (const desiredPath of desiredPathsAndParents) {
         const existing = existingByCase.get(desiredPath.toLocaleLowerCase('en-US'));
         if (existing !== undefined && (existing.path !== desiredPath
+            || existing.linked
             || (desiredDirectories.has(desiredPath) && !existing.directory))) {
             conflicts.push({ path: existing.path, reason: 'modified-managed' });
         }
+    }
+    const mainTarget = generatedPath(outputDir, MAIN_PATH);
+    try {
+        if (!fs.lstatSync(mainTarget).isFile()) {
+            conflicts.push({ path: MAIN_PATH, reason: 'modified-managed' });
+        }
+    } catch (error) {
+        if (!isMissingPathError(error)) throw error;
     }
 
     for (const [relativePath, oldRecord] of previousManaged) {
         const target = generatedPath(outputDir, relativePath);
         const desired = desiredManaged.get(relativePath);
         if (!fs.existsSync(target)) {
-            if (desired !== undefined) replacePaths.add(relativePath);
+            if (desired !== undefined) replacePaths.set(relativePath, { kind: 'missing' });
             continue;
         }
-        if (!fs.statSync(target).isFile()) {
+        if (!fs.lstatSync(target).isFile()) {
             conflicts.push({
                 path: relativePath,
                 reason: desiredManaged.has(relativePath) ? 'modified-managed' : 'modified-stale',
             });
             continue;
         }
-        if (sha256File(target) === oldRecord.sha256) {
+        const inspectedHash = sha256File(target);
+        if (inspectedHash === oldRecord.sha256) {
             if (desired === undefined) {
-                stalePaths.push(relativePath);
+                stalePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
             } else if (oldRecord.sha256 !== sha256(desired.content)) {
-                replacePaths.add(relativePath);
+                replacePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
             }
             continue;
         }
@@ -373,7 +428,7 @@ function inspectTarget(
         if (reason === 'modified-stale' || adopting || !force) {
             conflicts.push({ path: relativePath, reason });
         } else {
-            replacePaths.add(relativePath);
+            replacePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
         }
     }
 
@@ -385,22 +440,40 @@ function inspectTarget(
     for (const relativePath of desiredManaged.keys()) {
         if (!previousManaged.has(relativePath)
             && !fs.existsSync(generatedPath(outputDir, relativePath))) {
-            replacePaths.add(relativePath);
+            replacePaths.set(relativePath, { kind: 'missing' });
         }
     }
     return {
         conflicts: deduplicateConflicts(conflicts),
-        replacePaths: [...desiredManaged.keys()].filter((candidate) => replacePaths.has(candidate)),
-        stalePaths: [...new Set(stalePaths)].sort(),
+        replacePaths: [...desiredManaged.keys()].filter((candidate) => replacePaths.has(candidate))
+            .map((candidate) => ({ path: candidate, expected: replacePaths.get(candidate)! })),
+        stalePaths: [...stalePaths.keys()].sort()
+            .map((candidate) => ({ path: candidate, expected: stalePaths.get(candidate)! })),
     };
 }
 
-function readExistingManifest(outputDir: string): SocManifest | undefined {
+function inspectRegularTarget(target: string): InspectedTargetState {
+    try {
+        const status = fs.lstatSync(target);
+        if (!status.isFile()) throw new Error(`Generated target is not a regular file: ${target}`);
+        return { kind: 'regular-file', sha256: sha256File(target) };
+    } catch (error) {
+        if (isMissingPathError(error)) return { kind: 'missing' };
+        throw error;
+    }
+}
+
+function readExistingManifest(outputDir: string): ExistingManifest | undefined {
     const manifestFile = generatedPath(outputDir, MANIFEST_PATH);
     if (!fs.existsSync(manifestFile)) return undefined;
     try {
-        const value = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as unknown;
-        return validateManifest(value);
+        assertPathHasNoLinks(manifestFile);
+        const content = fs.readFileSync(manifestFile);
+        const value = JSON.parse(content.toString('utf8')) as unknown;
+        return {
+            manifest: validateManifest(value),
+            state: { kind: 'regular-file', sha256: sha256(content) },
+        };
     } catch (error) {
         throw diagnosticFailure('SOC_MANIFEST', error);
     }
@@ -412,6 +485,10 @@ function validateManifest(value: unknown): SocManifest {
         || typeof value.sourceConfig !== 'string'
         || typeof value.generatorVersion !== 'string'
         || typeof value.resourceRevision !== 'string'
+        || !isObject(value.manifestFile)
+        || value.manifestFile.hashPolicy !== 'excluded-self'
+        || value.manifestFile.kind !== 'control/manifest'
+        || value.manifestFile.path !== MANIFEST_PATH
         || !Array.isArray(value.files)) {
         throw new Error('Existing manifest has an unsupported shape.');
     }
@@ -431,7 +508,7 @@ function validateManifest(value: unknown): SocManifest {
                 path: MAIN_PATH,
             };
         }
-        if (recordPath === MANIFEST_PATH || !isSha256(record.sha256)) {
+        if (recordPath === MAIN_PATH || recordPath === MANIFEST_PATH || !isSha256(record.sha256)) {
             throw new Error('Existing managed file record is invalid.');
         }
         return {
@@ -442,9 +519,17 @@ function validateManifest(value: unknown): SocManifest {
         };
     });
     assertNoCaseInsensitivePathCollisions(records.map((record) => record.path));
+    if (records.filter((record) => record.kind === 'scaffold/user-owned').length !== 1) {
+        throw new Error('Existing manifest must contain exactly one user-owned main.c record.');
+    }
     return {
         files: records,
         generatorVersion: value.generatorVersion,
+        manifestFile: {
+            hashPolicy: 'excluded-self',
+            kind: 'control/manifest',
+            path: MANIFEST_PATH,
+        },
         manifestVersion: 1,
         projectName: value.projectName,
         resourceRevision: value.resourceRevision,
@@ -452,16 +537,24 @@ function validateManifest(value: unknown): SocManifest {
     };
 }
 
-function listOutputEntries(root: string, relative = ''): { path: string; directory: boolean }[] {
+function listOutputEntries(
+    root: string,
+    relative = '',
+): { path: string; directory: boolean; linked: boolean }[] {
     if (!fs.existsSync(root)) return [];
     const directory = path.join(root, relative);
-    if (!fs.statSync(directory).isDirectory()) {
-        return [{ path: normalizeGeneratedPath(relative), directory: false }];
+    const status = fs.lstatSync(directory);
+    if (!status.isDirectory() || status.isSymbolicLink()) {
+        return [{ path: normalizeGeneratedPath(relative), directory: false, linked: status.isSymbolicLink() }];
     }
-    const result: { path: string; directory: boolean }[] = [];
+    const result: { path: string; directory: boolean; linked: boolean }[] = [];
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         const child = normalizeGeneratedPath(relative === '' ? entry.name : `${relative}/${entry.name}`);
-        result.push({ path: child, directory: entry.isDirectory() });
+        result.push({
+            path: child,
+            directory: entry.isDirectory(),
+            linked: entry.isSymbolicLink(),
+        });
         if (entry.isDirectory()) result.push(...listOutputEntries(root, child));
     }
     return result;
@@ -482,17 +575,36 @@ function generatedFile(
 }
 
 function requireAssetFile(assetRoot: string, logicalPath: string): Buffer {
-    const normalized = normalizeGeneratedPath(logicalPath);
-    let current = assetRoot;
-    for (const component of normalized.split('/')) {
-        if (!fs.existsSync(current) || !fs.statSync(current).isDirectory()
-            || !fs.readdirSync(current).includes(component)) {
-            throw new Error(`Missing asset or case mismatch: ${normalized}`);
+    try {
+        const normalized = normalizeGeneratedPath(logicalPath);
+        let current = assetRoot;
+        for (const component of normalized.split('/')) {
+            assertPathHasNoLinks(current);
+            if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()
+                || !fs.readdirSync(current).includes(component)) {
+                throw new Error(`Missing asset or case mismatch: ${normalized}`);
+            }
+            current = path.join(current, component);
         }
-        current = path.join(current, component);
+        assertPathContained(assetRoot, current, 'Asset path');
+        assertPathHasNoLinks(current);
+        if (!fs.lstatSync(current).isFile()) throw new Error(`Asset is not a file: ${normalized}`);
+        return fs.readFileSync(current);
+    } catch (error) {
+        if (error instanceof SocGenerationError) throw error;
+        throw diagnosticFailure('SOC_ASSET', error);
     }
-    if (!fs.statSync(current).isFile()) throw new Error(`Asset is not a file: ${normalized}`);
-    return fs.readFileSync(current);
+}
+
+function assertAssetTreeHasNoLinks(root: string, relative = ''): void {
+    const directory = relative === '' ? root : generatedPath(root, relative);
+    assertPathHasNoLinks(directory);
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const child = relative === '' ? entry.name : `${relative}/${entry.name}`;
+        const childPath = generatedPath(root, child);
+        assertPathHasNoLinks(childPath);
+        if (fs.lstatSync(childPath).isDirectory()) assertAssetTreeHasNoLinks(root, child);
+    }
 }
 
 function readResourceRevision(assetRoot: string): string {
@@ -523,7 +635,15 @@ function readGeneratorVersion(): string {
 
 function canonicalExistingFile(value: string, label: string): string {
     const resolved = path.resolve(value);
-    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    if (!fs.existsSync(resolved)) {
+        throw diagnosticFailure('SOC_INPUT', new Error(`Missing ${label}: ${resolved}`));
+    }
+    try {
+        assertPathHasNoLinks(resolved);
+    } catch (error) {
+        throw diagnosticFailure('SOC_INPUT', error);
+    }
+    if (!fs.lstatSync(resolved).isFile()) {
         throw diagnosticFailure('SOC_INPUT', new Error(`Missing ${label}: ${resolved}`));
     }
     return fs.realpathSync.native(resolved);
@@ -531,14 +651,24 @@ function canonicalExistingFile(value: string, label: string): string {
 
 function canonicalExistingDirectory(value: string, label: string): string {
     const resolved = path.resolve(value);
-    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    if (!fs.existsSync(resolved)) {
+        throw diagnosticFailure('SOC_ASSET', new Error(`Missing ${label}: ${resolved}`));
+    }
+    try {
+        assertPathHasNoLinks(resolved);
+    } catch (error) {
+        throw diagnosticFailure('SOC_ASSET', error);
+    }
+    if (!fs.lstatSync(resolved).isDirectory()) {
         throw diagnosticFailure('SOC_ASSET', new Error(`Missing ${label}: ${resolved}`));
     }
     return fs.realpathSync.native(resolved);
 }
 
-function readRequiredFile(file: string, label: string): Buffer {
-    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+function readRequiredFile(file: string, allowedRoot: string, label: string): Buffer {
+    assertPathContained(allowedRoot, file, label);
+    assertPathHasNoLinks(file);
+    if (!fs.existsSync(file) || !fs.lstatSync(file).isFile()) {
         throw new Error(`Missing ${label}: ${file}`);
     }
     return fs.readFileSync(file);
@@ -566,6 +696,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isMissingPathError(error: unknown): boolean {
+    return isObject(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
+}
+
 function deduplicateConflicts(conflicts: readonly SocFileConflict[]): SocFileConflict[] {
     const seen = new Set<string>();
     return conflicts.filter((conflict) => {
@@ -588,4 +722,15 @@ function diagnosticFailure(code: string, error: unknown): SocGenerationError {
 
 function generationFailure(error: unknown): SocGenerationError {
     return diagnosticFailure('SOC_GENERATION', error);
+}
+
+function recoveryFailure(error: ActivationRecoveryError): SocGenerationError {
+    const message = `${error.message} Recovery failures: ${error.failures
+        .map((failure) => failure.message).join('; ')}`;
+    return new SocGenerationError(message, [{
+        severity: 'error',
+        code: 'SOC_RECOVERY_INCOMPLETE',
+        path: [],
+        message,
+    }], [], error, { path: error.recoveryPath, failures: error.failures });
 }
