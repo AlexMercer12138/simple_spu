@@ -45,6 +45,14 @@ module tinyc_i2c_tb();
     reg  [31:0] dlb_rdata = 32'd0;
     reg         dlb_ack = 1'b0;
 
+    wire        plb_rden;
+    wire        plb_wren;
+    wire [31:0] plb_addr;
+    wire [3:0]  plb_strb;
+    wire [31:0] plb_wdata;
+    wire [31:0] plb_rdata;
+    wire        plb_ack;
+
     wire        cpu_psel;
     wire        cpu_penable;
     wire [31:0] cpu_paddr;
@@ -129,6 +137,28 @@ module tinyc_i2c_tb();
         .ilb_rdata      (ilb_rdata),
         .ilb_ack        (ilb_ack),
 
+        .plb_rden       (plb_rden),
+        .plb_wren       (plb_wren),
+        .plb_addr       (plb_addr),
+        .plb_strb       (plb_strb),
+        .plb_wdata      (plb_wdata),
+        .plb_rdata      (plb_rdata),
+        .plb_ack        (plb_ack));
+
+    lb2apb #(
+        .DATA_WIDTH     (32),
+        .LB_ADDR_WIDTH  (32),
+        .APB_ADDR_WIDTH (32))
+    test_lb2apb (
+        .clk            (clk),
+        .rst_n          (cpu_rst_n),
+        .lb_rden        (plb_rden),
+        .lb_wren        (plb_wren),
+        .lb_strb        (plb_strb),
+        .lb_wdata       (plb_wdata),
+        .lb_addr        (plb_addr),
+        .lb_rdata       (plb_rdata),
+        .lb_valid       (plb_ack),
         .m_apb_psel     (cpu_psel),
         .m_apb_penable  (cpu_penable),
         .m_apb_paddr    (cpu_paddr),

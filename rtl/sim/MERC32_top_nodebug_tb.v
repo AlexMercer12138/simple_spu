@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module merc32_top_nodebug_tb;
+module MERC32_top_nodebug_tb;
 
     localparam  CLK_HALF_PERIOD         = 5;
     localparam  TCK_HALF_PERIOD         = 17;
@@ -29,14 +29,11 @@ module merc32_top_nodebug_tb;
     reg     [31:0]                      ilb_rdata = 32'h0;
     reg                                 ilb_ack = 1'b0;
 
-    wire                                m_apb_psel;
-    wire                                m_apb_penable;
-    wire    [31:0]                      m_apb_paddr;
-    wire                                m_apb_pwrite;
-    wire    [3:0]                       m_apb_pstrb;
-    wire    [31:0]                      m_apb_pwdata;
-    reg     [31:0]                      m_apb_prdata = 32'h0;
-    reg                                 m_apb_pready = 1'b1;
+    wire                                plb_rden;
+    wire                                plb_wren;
+    wire    [31:0]                      plb_addr;
+    wire    [3:0]                       plb_strb;
+    wire    [31:0]                      plb_wdata;
 
     reg     [31:0]                      instruction_memory [0:255];
     integer                             fetches = 0;
@@ -97,14 +94,13 @@ module merc32_top_nodebug_tb;
         .ilb_wdata                      (ilb_wdata              ),
         .ilb_rdata                      (ilb_rdata              ),
         .ilb_ack                        (ilb_ack                ),
-        .m_apb_psel                     (m_apb_psel             ),
-        .m_apb_penable                  (m_apb_penable          ),
-        .m_apb_paddr                    (m_apb_paddr            ),
-        .m_apb_pwrite                   (m_apb_pwrite           ),
-        .m_apb_pstrb                    (m_apb_pstrb            ),
-        .m_apb_pwdata                   (m_apb_pwdata           ),
-        .m_apb_prdata                   (m_apb_prdata           ),
-        .m_apb_pready                   (m_apb_pready           ));
+        .plb_rden                       (plb_rden               ),
+        .plb_wren                       (plb_wren               ),
+        .plb_addr                       (plb_addr               ),
+        .plb_strb                       (plb_strb               ),
+        .plb_wdata                      (plb_wdata              ),
+        .plb_rdata                      (32'h0                  ),
+        .plb_ack                        (1'b0                   ));
 
     initial begin
         // $dumpfile("MERC32_top_nodebug_tb.vcd");

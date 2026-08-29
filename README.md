@@ -69,25 +69,37 @@ MERC32/
 | DLB | `0x08000000` - `0x0FFFFFFF` |
 | PLB | `0x10000000` - `0xFFFFFFFF` |
 
-**标准总线接口**
+**Local Bus 接口**
 
-本地数据空间总线和指令空间总线，用于连接 spram.v 或者 fpga 的 ram IP 核：
+`MERC32_top` 固定提供三组 Local Bus。ILB 和 DLB 可直接连接 `spram.v`
+或 FPGA RAM IP；PLB 用于连接外设。协议桥由生成的 SoC 在 CPU 包装器之外实例化。
 
-| 信号 | 方向 | 描述 |
-|------|------|------|
-| `dlb_*` | Master | 数据空间总线 |
-| `ilb_*` | Master | 指令空间总线 |
+| ILB 信号 | 方向 | 位宽 | 描述 |
+|----------|------|------|------|
+| `ilb_rden` / `ilb_wren` | Output | 1 | 读/写请求 |
+| `ilb_addr` | Output | `ILB_ADDR_WIDTH` | 指令存储器字地址 |
+| `ilb_strb` | Output | 4 | 字节写使能 |
+| `ilb_wdata` | Output | 32 | 写数据 |
+| `ilb_rdata` | Input | 32 | 读数据 |
+| `ilb_ack` | Input | 1 | 请求完成应答 |
 
-还有一个外设总线，通过宏选择总线接口（优先级从高到低）：
+| DLB 信号 | 方向 | 位宽 | 描述 |
+|----------|------|------|------|
+| `dlb_rden` / `dlb_wren` | Output | 1 | 读/写请求 |
+| `dlb_addr` | Output | `DLB_ADDR_WIDTH` | 数据存储器字地址 |
+| `dlb_strb` | Output | 4 | 字节写使能 |
+| `dlb_wdata` | Output | 32 | 写数据 |
+| `dlb_rdata` | Input | 32 | 读数据 |
+| `dlb_ack` | Input | 1 | 请求完成应答 |
 
-| 宏定义 | 总线类型 | 说明 |
-|--------|---------|------|
-| `IF_AXI_LITE` | AXI4-Lite | AMBA标准总线，ARM/SoC常用 |
-| `IF_APB` | APB | AMBA外设总线 |
-| `IF_WBC` | Wishbone | 开源总线标准 |
-| `IF_AVALON` | Avalon-MM | Intel FPGA总线接口 |
-| `IF_DRP` | DRP | Xilinx动态重配置端口 |
-| 默认 | Local Bus | 本地总线直连 |
+| PLB 信号 | 方向 | 位宽 | 描述 |
+|----------|------|------|------|
+| `plb_rden` / `plb_wren` | Output | 1 | 读/写请求 |
+| `plb_addr` | Output | 32 | 外设字节地址 |
+| `plb_strb` | Output | 4 | 字节写使能 |
+| `plb_wdata` | Output | 32 | 写数据 |
+| `plb_rdata` | Input | 32 | 读数据 |
+| `plb_ack` | Input | 1 | 请求完成应答 |
 
 ---
 
