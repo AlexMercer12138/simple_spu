@@ -444,11 +444,15 @@ function inspectTarget(
         const inspectedHash = sha256File(target);
         if (inspectedHash === oldRecord.sha256) {
             if (desired === undefined) {
-                stalePaths.set(relativePath, {
-                    kind: 'regular-file',
-                    sha256: inspectedHash,
-                    identity: identityOf(status),
-                });
+                if (oldRecord.kind === 'source/memory-init') {
+                    conflicts.push({ path: relativePath, reason: 'modified-stale' });
+                } else {
+                    stalePaths.set(relativePath, {
+                        kind: 'regular-file',
+                        sha256: inspectedHash,
+                        identity: identityOf(status),
+                    });
+                }
             } else if (oldRecord.sha256 !== sha256(desired.content)) {
                 replacePaths.set(relativePath, {
                     kind: 'regular-file',

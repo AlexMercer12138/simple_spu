@@ -332,6 +332,35 @@ function assertGenerationOrchestration() {
         assert.strictEqual(fs.readFileSync(forgedVictim, 'utf8'), 'unmanaged ownership victim\n',
             'a forged manifest record must not authorize deletion of an unmanaged file');
 
+        const forgedMemoryProject = path.join(root, 'forged-memory-project');
+        const forgedMemoryConfig = writeGenerationConfig(forgedMemoryProject,
+            'demo.merc32.json', 'forged_memory_soc', 'generated/forged_memory_soc');
+        const forgedMemoryResult = soc.generateSoc({
+            configFile: forgedMemoryConfig, assetRoot: assets,
+        });
+        const forgedMemoryPath = 'memory/ilb_victim.mem';
+        const forgedMemoryVictim = path.join(
+            forgedMemoryResult.outputDir, ...forgedMemoryPath.split('/'));
+        const forgedMemoryContent = 'unmanaged memory ownership victim\n';
+        writeFile(forgedMemoryVictim, forgedMemoryContent);
+        const forgedMemoryManifest = readManifest(forgedMemoryResult.outputDir);
+        forgedMemoryManifest.files.push({
+            kind: 'source/memory-init',
+            logicalSource: 'config:memory.ilb.initFile',
+            path: forgedMemoryPath,
+            sha256: crypto.createHash('sha256').update(forgedMemoryContent).digest('hex'),
+        });
+        forgedMemoryManifest.files.sort((left, right) => left.path.localeCompare(right.path));
+        writeFile(path.join(forgedMemoryResult.outputDir, 'manifest.json'),
+            `${JSON.stringify(forgedMemoryManifest, null, 2)}\n`);
+        for (const force of [false, true]) {
+            expectGenerationError(() => soc.generateSoc({
+                configFile: forgedMemoryConfig, assetRoot: assets, force,
+            }), 'modified-stale');
+            assert.strictEqual(fs.readFileSync(forgedMemoryVictim, 'utf8'), forgedMemoryContent,
+                'an unprovable stale memory record must never authorize automatic deletion');
+        }
+
         const mainDirectoryProject = path.join(root, 'main-directory-project');
         const mainDirectoryConfig = writeGenerationConfig(mainDirectoryProject, 'demo.merc32.json',
             'main_directory_soc', 'generated/main_directory_soc');
@@ -522,22 +551,29 @@ function assertGenerationOrchestration() {
                 }
                 return originalLinkForRecovery.call(fs, oldPath, newPath);
             }
-            if (installedTargets.length === 2 && !installFailureInjected) {
+            const isInstall = resolvedOld.startsWith(`${path.resolve(recoveryStaging)}${path.sep}`)
+                && !resolvedOld.includes(`${path.sep}.activation-backup${path.sep}`)
+                && !resolvedOld.includes(`${path.sep}.activation-quarantine${path.sep}`);
+            if (isInstall && installedTargets.length === 2 && !installFailureInjected) {
                 installFailureInjected = true;
                 throw new Error('injected activation failure before recovery');
             }
-            installedTargets.push(path.resolve(newPath));
+            if (isInstall) installedTargets.push(path.resolve(newPath));
             return originalLinkForRecovery.call(fs, oldPath, newPath);
         };
-        fs.rmSync = (target, options) => {
-            const resolvedTarget = path.resolve(target);
-            if (installedTargets.includes(resolvedTarget)) {
-                removalAttempts.push(resolvedTarget);
+        fs.renameSync = (oldPath, newPath) => {
+            const resolvedNew = path.resolve(newPath);
+            if (resolvedNew.includes(`${path.sep}.activation-quarantine${path.sep}`)
+                && path.basename(resolvedNew).includes('rollback-installed-capture')) {
+                removalAttempts.push(path.resolve(oldPath));
                 if (!removalFailureInjected) {
                     removalFailureInjected = true;
                     throw new Error('injected installed-file cleanup failure');
                 }
             }
+            return originalRenameForRecovery.call(fs, oldPath, newPath);
+        };
+        fs.rmSync = (target, options) => {
             return originalRmForRecovery.call(fs, target, options);
         };
         let recoveryError;
@@ -660,6 +696,76 @@ function assertGenerationOrchestration() {
         assert.deepStrictEqual(fs.readFileSync(rollbackIdentityInstalled), rollbackIdentityBytes,
             'rollback must preserve a different object even when its bytes match the install');
 
+        // Catches validate-then-delete cleanup removing a replacement created inside the syscall.
+        const rollbackCleanupProject = path.join(root, 'rollback-cleanup-project');
+        const rollbackCleanupConfig = writeGenerationConfig(rollbackCleanupProject,
+            'demo.merc32.json', 'rollback_cleanup_soc', 'generated/rollback_cleanup_soc');
+        const rollbackCleanupResult = soc.generateSoc({
+            configFile: rollbackCleanupConfig, assetRoot: assets,
+        });
+        const rollbackCleanupValue = JSON.parse(fs.readFileSync(rollbackCleanupConfig, 'utf8'));
+        rollbackCleanupValue.cpu.jtagIdCode = '0x91827364';
+        fs.writeFileSync(rollbackCleanupConfig,
+            `${JSON.stringify(rollbackCleanupValue, null, 2)}\n`);
+        const originalLinkForRollbackCleanup = fs.linkSync;
+        const originalRenameForRollbackCleanup = fs.renameSync;
+        const originalRmForRollbackCleanup = fs.rmSync;
+        const rollbackCleanupEdit = 'user replacement inside rollback cleanup syscall\n';
+        let rollbackCleanupInstalled;
+        let rollbackCleanupInstallCount = 0;
+        let rollbackCleanupInjected = false;
+        const injectRollbackCleanup = (target) => {
+            if (!rollbackCleanupInjected && rollbackCleanupInstalled !== undefined
+                && path.resolve(target) === rollbackCleanupInstalled) {
+                rollbackCleanupInjected = true;
+                fs.unlinkSync(target);
+                writeFile(target, rollbackCleanupEdit);
+            }
+        };
+        fs.linkSync = (oldPath, newPath) => {
+            const resolvedOld = path.resolve(oldPath);
+            const isInstall = resolvedOld.includes(`${path.sep}.rollback_cleanup_soc-staging-`)
+                && !resolvedOld.includes(`${path.sep}.activation-backup${path.sep}`);
+            if (isInstall) {
+                rollbackCleanupInstallCount += 1;
+                if (rollbackCleanupInstallCount === 2) {
+                    throw new Error('injected activation failure before rollback cleanup');
+                }
+            }
+            const result = originalLinkForRollbackCleanup.call(fs, oldPath, newPath);
+            if (isInstall && rollbackCleanupInstalled === undefined) {
+                rollbackCleanupInstalled = path.resolve(newPath);
+            }
+            return result;
+        };
+        fs.renameSync = (oldPath, newPath) => {
+            if (path.resolve(newPath).includes(`${path.sep}.activation-quarantine${path.sep}`)
+                && path.basename(newPath).includes('rollback-installed-capture')) {
+                injectRollbackCleanup(oldPath);
+            }
+            return originalRenameForRollbackCleanup.call(fs, oldPath, newPath);
+        };
+        fs.rmSync = (target, options) => {
+            injectRollbackCleanup(target);
+            return originalRmForRollbackCleanup.call(fs, target, options);
+        };
+        let rollbackCleanupError;
+        try {
+            rollbackCleanupError = expectGenerationError(() => soc.generateSoc({
+                configFile: rollbackCleanupConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.linkSync = originalLinkForRollbackCleanup;
+            fs.renameSync = originalRenameForRollbackCleanup;
+            fs.rmSync = originalRmForRollbackCleanup;
+        }
+        assert.strictEqual(rollbackCleanupInjected, true);
+        assert.ok(rollbackCleanupError.diagnostics.some(
+            (item) => item.code === 'SOC_RECOVERY_INCOMPLETE'),
+        JSON.stringify(rollbackCleanupError.diagnostics, null, 2));
+        assert.strictEqual(fs.readFileSync(rollbackCleanupInstalled, 'utf8'), rollbackCleanupEdit,
+            'a user replacement created inside rollback cleanup must survive');
+
         const captureRaceProject = path.join(root, 'capture-race-project');
         const captureRaceConfig = writeGenerationConfig(captureRaceProject, 'demo.merc32.json',
             'capture_race_soc', 'generated/capture_race_soc');
@@ -671,27 +777,86 @@ function assertGenerationOrchestration() {
         const captureRaceConfigValue = JSON.parse(fs.readFileSync(captureRaceConfig, 'utf8'));
         captureRaceConfigValue.cpu.debug = true;
         fs.writeFileSync(captureRaceConfig, `${JSON.stringify(captureRaceConfigValue, null, 2)}\n`);
-        const originalRenameForCaptureRace = fs.renameSync;
+        const originalLinkForCaptureRace = fs.linkSync;
         const captureRaceEdit = 'user edit inside target capture syscall\n';
         let captureRaceInjected = false;
-        fs.renameSync = (oldPath, newPath) => {
+        fs.linkSync = (oldPath, newPath) => {
             if (!captureRaceInjected && path.resolve(oldPath) === path.resolve(captureRaceTarget)
                 && path.resolve(newPath).includes(`${path.sep}.activation-backup${path.sep}`)) {
                 captureRaceInjected = true;
                 fs.writeFileSync(captureRaceTarget, captureRaceEdit);
             }
-            return originalRenameForCaptureRace.call(fs, oldPath, newPath);
+            return originalLinkForCaptureRace.call(fs, oldPath, newPath);
         };
         try {
             expectGenerationError(() => soc.generateSoc({
                 configFile: captureRaceConfig, assetRoot: assets,
             }));
         } finally {
-            fs.renameSync = originalRenameForCaptureRace;
+            fs.linkSync = originalLinkForCaptureRace;
         }
         assert.strictEqual(captureRaceInjected, true);
         assert.strictEqual(fs.readFileSync(captureRaceTarget, 'utf8'), captureRaceEdit,
             'a target changed inside capture must be restored and generation must abort');
+
+        // Catches capture following a parent changed to a junction inside the final syscall.
+        const captureJunctionProject = path.join(root, 'capture-junction-project');
+        const captureJunctionConfig = writeGenerationConfig(captureJunctionProject,
+            'demo.merc32.json', 'capture_junction_soc', 'generated/capture_junction_soc');
+        const captureJunctionResult = soc.generateSoc({
+            configFile: captureJunctionConfig, assetRoot: assets,
+        });
+        const captureJunctionValue = JSON.parse(fs.readFileSync(captureJunctionConfig, 'utf8'));
+        captureJunctionValue.cpu.jtagIdCode = '0x81726354';
+        fs.writeFileSync(captureJunctionConfig,
+            `${JSON.stringify(captureJunctionValue, null, 2)}\n`);
+        const captureJunctionParent = path.join(captureJunctionResult.outputDir, 'rtl');
+        const captureJunctionDisplaced = path.join(
+            captureJunctionResult.outputDir, 'rtl-displaced');
+        const captureJunctionExternal = path.join(root, 'capture-junction-external');
+        const captureJunctionVictim = path.join(captureJunctionExternal, 'capture_junction_soc.v');
+        const captureJunctionVictimContent = 'external victim inside capture junction\n';
+        writeFile(captureJunctionVictim, captureJunctionVictimContent);
+        const captureJunctionProbe = path.join(root, 'capture-junction-probe');
+        let captureJunctionSupported;
+        captureJunctionSupported = tryCreateLink(
+            captureJunctionExternal, captureJunctionProbe, 'dir');
+        if (captureJunctionSupported) fs.unlinkSync(captureJunctionProbe);
+        const originalLinkForCaptureJunction = fs.linkSync;
+        let captureJunctionInjected = false;
+        fs.linkSync = (oldPath, newPath) => {
+            if (!captureJunctionInjected
+                && path.resolve(oldPath) === path.resolve(path.join(
+                    captureJunctionParent, 'capture_junction_soc.v'))
+                && path.resolve(newPath).includes(`${path.sep}.activation-backup${path.sep}`)) {
+                fs.renameSync(captureJunctionParent, captureJunctionDisplaced);
+                assert.strictEqual(tryCreateLink(
+                    captureJunctionExternal, captureJunctionParent, 'dir'), true);
+                captureJunctionInjected = true;
+            }
+            return originalLinkForCaptureJunction.call(fs, oldPath, newPath);
+        };
+        let captureJunctionError;
+        try {
+            if (process.platform === 'win32') {
+                captureJunctionError = expectGenerationError(() => soc.generateSoc({
+                    configFile: captureJunctionConfig, assetRoot: assets,
+                }));
+            }
+        } finally {
+            fs.linkSync = originalLinkForCaptureJunction;
+            if (captureJunctionInjected) {
+                if (fs.existsSync(captureJunctionParent)) fs.unlinkSync(captureJunctionParent);
+                fs.renameSync(captureJunctionDisplaced, captureJunctionParent);
+            }
+        }
+        if (process.platform === 'win32' && captureJunctionSupported) {
+            assert.strictEqual(captureJunctionInjected, true);
+            assert.ok(captureJunctionError instanceof soc.SocGenerationError);
+            assert.strictEqual(fs.readFileSync(captureJunctionVictim, 'utf8'),
+                captureJunctionVictimContent,
+            'a parent junction swap inside capture must not remove the external victim');
+        }
 
         const exclusiveInstallProject = path.join(root, 'exclusive-install-project');
         const exclusiveInstallConfig = writeGenerationConfig(exclusiveInstallProject,
@@ -855,6 +1020,39 @@ function assertGenerationOrchestration() {
         assert.ok(stagedTamperError.diagnostics.some((item) => item.code === 'SOC_GENERATION'));
         assert.deepStrictEqual(snapshotDirectory(stagedTamperOutput), [],
             'post-write staging tamper must abort without publishing inconsistent output');
+
+        // Catches a staged hard-link alias mutation during alias unlink.
+        const stagedAliasProject = path.join(root, 'staged-alias-project');
+        const stagedAliasConfig = writeGenerationConfig(stagedAliasProject,
+            'demo.merc32.json', 'staged_alias_soc', 'generated/staged_alias_soc');
+        const stagedAliasOutput = path.join(stagedAliasProject, 'generated', 'staged_alias_soc');
+        const stagedAliasTarget = path.join(stagedAliasOutput, 'rtl', 'staged_alias_soc.v');
+        const originalUnlinkForStagedAlias = fs.unlinkSync;
+        const stagedAliasTamper = 'hardlink bytes changed inside staged alias unlink\n';
+        let stagedAliasInjected = false;
+        fs.unlinkSync = (target) => {
+            if (!stagedAliasInjected
+                && path.resolve(target).includes(`${path.sep}.staged_alias_soc-staging-`)
+                && path.basename(target) === 'staged_alias_soc.v') {
+                stagedAliasInjected = true;
+                fs.writeFileSync(target, stagedAliasTamper);
+            }
+            return originalUnlinkForStagedAlias.call(fs, target);
+        };
+        let stagedAliasError;
+        try {
+            stagedAliasError = expectGenerationError(() => soc.generateSoc({
+                configFile: stagedAliasConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.unlinkSync = originalUnlinkForStagedAlias;
+        }
+        assert.strictEqual(stagedAliasInjected, true);
+        assert.ok(stagedAliasError.diagnostics.some((item) => [
+            'SOC_GENERATION', 'SOC_RECOVERY_INCOMPLETE',
+        ].includes(item.code)), JSON.stringify(stagedAliasError.diagnostics, null, 2));
+        assert.strictEqual(fs.existsSync(stagedAliasTarget), false,
+            'post-unlink live verification must roll back a staged hardlink alias mutation');
 
         for (const mainRaceKind of ['content', 'directory', 'link']) {
             const mainRaceProject = path.join(root, `late-main-${mainRaceKind}-project`);
