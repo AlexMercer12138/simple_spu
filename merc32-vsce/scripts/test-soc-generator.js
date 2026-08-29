@@ -4,6 +4,8 @@ const os = require('os');
 const path = require('path');
 
 const soc = require('../out/soc');
+const { compileCFile } = require('../out/cCompiler');
+const { SimpleCPUAssembler } = require('../out/assembler');
 
 assert.strictEqual(typeof soc.renderSocTop, 'function',
     'renderSocTop must be exported from the SoC package');
@@ -11,6 +13,16 @@ assert.strictEqual(typeof soc.renderPlbRouter, 'function',
     'renderPlbRouter must be exported from the SoC package');
 assert.strictEqual(typeof soc.renderApbInterconnect, 'function',
     'renderApbInterconnect must be exported from the SoC package');
+assert.strictEqual(typeof soc.renderResolvedConfig, 'function',
+    'renderResolvedConfig must be exported from the SoC package');
+assert.strictEqual(typeof soc.renderAddressMap, 'function',
+    'renderAddressMap must be exported from the SoC package');
+assert.strictEqual(typeof soc.renderSocHeader, 'function',
+    'renderSocHeader must be exported from the SoC package');
+assert.strictEqual(typeof soc.renderGeneratedReadme, 'function',
+    'renderGeneratedReadme must be exported from the SoC package');
+assert.strictEqual(typeof soc.renderStarterMain, 'function',
+    'renderStarterMain must be exported from the SoC package');
 
 const repositoryRoot = path.resolve(__dirname, '..', '..');
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
@@ -40,6 +52,70 @@ try {
     const multi = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'multi-peripheral.merc32.json'), 'utf8'));
     const controllerPlan = planFixture(multi, 'multi-peripheral.merc32.json');
+    const resolvedConfig = soc.renderResolvedConfig(controllerPlan);
+    const addressMap = soc.renderAddressMap(controllerPlan);
+    const header = soc.renderSocHeader(controllerPlan);
+    const readme = soc.renderGeneratedReadme(controllerPlan);
+    const starterMain = soc.renderStarterMain(controllerPlan);
+
+    assert.strictEqual(resolvedConfig, soc.renderResolvedConfig(controllerPlan));
+    assert.match(resolvedConfig, /^\{\n  "/);
+    assert.ok(resolvedConfig.endsWith('\n'));
+    assert.match(resolvedConfig, /"baseAddress": "0x10000000"/);
+    assert.match(resolvedConfig, /"endAddress": "0x10000fff"/);
+    assert.match(resolvedConfig, /"jtagIdCode": "0x4d320001"/);
+
+    assert.strictEqual(addressMap, soc.renderAddressMap(controllerPlan));
+    assert.match(addressMap, /^\{\n  "/);
+    assert.ok(addressMap.endsWith('\n'));
+    assert.match(addressMap, /"baseAddress": "0x10000000"/);
+    assert.match(addressMap, /"endAddress": "0x20ffffff"/);
+    assert.doesNotMatch(addressMap, /(?:^|\n)# /);
+
+    assert.match(header, /^#ifndef DEMO_SOC_H\n#define DEMO_SOC_H\n/m);
+    assert.match(header, /#define DEMO_SOC_ILB_SIZE 32768/);
+    assert.match(header, /#define DEMO_SOC_DLB_BASE 0x08000000/);
+    assert.match(header, /#define DEMO_SOC_UART0_BASE 0x10000000/);
+    assert.match(header, /#define DEMO_SOC_UART0_IRQ 0/);
+    assert.match(header, /#define MERC32_IRQ_TRIGGER_HIGH 0/);
+    assert.match(header, /#define MERC32_IRQ_TRIGGER_LOW 1/);
+    assert.match(header, /#define MERC32_IRQ_TRIGGER_RISING 2/);
+    assert.match(header, /#define MERC32_IRQ_TRIGGER_FALLING 3/);
+    assert.match(header, /#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH/);
+    assert.match(header, /#endif\n$/);
+    assert.doesNotMatch(header, /#define\s+\w+\s*\(/);
+
+    assert.match(readme, /# demo_soc/);
+    assert.match(readme, /Top module: `demo_soc`/);
+    assert.match(readme, /## Generated files/);
+    assert.match(readme, /Generation identity/);
+    assert.doesNotMatch(readme, /successfully generated/i);
+
+    assert.strictEqual(starterMain, [
+        '#include "../include/demo_soc.h"',
+        '',
+        'int main(void) {',
+        '    while (1) {',
+        '    }',
+        '    return 0;',
+        '}',
+        '',
+    ].join('\n'));
+    const softwareRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-software-emitter-'));
+    try {
+        const headerFile = path.join(softwareRoot, 'include', 'demo_soc.h');
+        const mainFile = path.join(softwareRoot, 'src', 'main.c');
+        fs.mkdirSync(path.dirname(headerFile), { recursive: true });
+        fs.mkdirSync(path.dirname(mainFile), { recursive: true });
+        fs.writeFileSync(headerFile, header);
+        fs.writeFileSync(mainFile, starterMain);
+        const result = compileCFile(mainFile, { moduleName: 'generated_main' });
+        assert.ok(new SimpleCPUAssembler().assemble(result.assembly, {
+            sourceFileName: 'generated_main.asm',
+        }).machineCodes.length > 0);
+    } finally {
+        fs.rmSync(softwareRoot, { recursive: true, force: true });
+    }
     const top = soc.renderSocTop(controllerPlan);
     const router = soc.renderPlbRouter(controllerPlan);
     const apb = soc.renderApbInterconnect(controllerPlan);
@@ -85,6 +161,16 @@ try {
 
     const minimal = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'minimal.merc32.json'), 'utf8'));
+    const headerCollision = clone(minimal);
+    headerCollision.peripherals = [{
+        type: 'apb_uart', name: 'ilb', baseAddress: '0x10000000',
+    }];
+    const headerCollisionParsed = soc.parseSocConfig(
+        `${JSON.stringify(headerCollision, null, 2)}\n`,
+        path.join(fixtureDirectory, 'header-collision.merc32.json'), catalog);
+    assert.ok(headerCollisionParsed.config);
+    assert.match(JSON.stringify(headerCollisionParsed.diagnostics), /SOC_MACRO_COLLISION/);
+    assert.strictEqual(soc.planSoc(headerCollisionParsed.config, catalog).plan, undefined);
     const noneTop = soc.renderSocTop(planFixture(minimal, 'minimal.merc32.json'));
     assert.match(noneTop, /\.interrupt\s*\(1'b0\)/);
     assert.strictEqual(soc.renderApbInterconnect(

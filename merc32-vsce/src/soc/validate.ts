@@ -82,6 +82,7 @@ export function validateSocConfig(
 
     const names = new Map<string, readonly (string | number)[]>();
     const macros = new Map<string, readonly (string | number)[]>();
+    const headerMacros = new Map<string, readonly (string | number)[]>();
     const topPorts = new Map<string, readonly (string | number)[]>();
     const peripheralRecords: PeripheralRecord[] = [];
     const peripheralByName = new Map<string, PeripheralRecord>();
@@ -124,10 +125,29 @@ export function validateSocConfig(
         }
     };
 
+    const recordHeaderMacro = (
+        name: string,
+        sourcePath: readonly (string | number)[],
+    ): void => {
+        if (headerMacros.has(name)) {
+            add('SOC_MACRO_COLLISION', sourcePath,
+                `Generated C macro ${name} collides with another generated macro name.`);
+        } else {
+            headerMacros.set(name, sourcePath);
+        }
+    };
+    if (projectNameValid) {
+        reserveGeneratedHeaderMacros(config, recordHeaderMacro);
+    }
+
     for (let index = 0; index < (config.peripherals?.length ?? 0); index += 1) {
         const peripheral = config.peripherals[index];
         const rootPath: readonly (string | number)[] = ['peripherals', index];
         recordInstanceName(peripheral.name, [...rootPath, 'name'], 'peripheral name');
+        if (projectNameValid && typeof peripheral.name === 'string') {
+            recordEndpointHeaderMacros(config.project.name, peripheral.name,
+                [...rootPath, 'name'], recordHeaderMacro);
+        }
         const descriptor = catalog.modules.get(peripheral.type);
         if (!descriptor) {
             add('SOC_MODULE_TYPE', [...rootPath, 'type'],
@@ -185,6 +205,10 @@ export function validateSocConfig(
         const endpoint = config.externalInterfaces[index];
         const rootPath: readonly (string | number)[] = ['externalInterfaces', index];
         recordInstanceName(endpoint.name, [...rootPath, 'name'], 'external interface name');
+        if (projectNameValid && typeof endpoint.name === 'string') {
+            recordEndpointHeaderMacros(config.project.name, endpoint.name,
+                [...rootPath, 'name'], recordHeaderMacro);
+        }
         const protocol = catalog.protocols.get(endpoint.type);
         if (!protocol) {
             add('SOC_PROTOCOL_TYPE', [...rootPath, 'type'],
@@ -243,6 +267,8 @@ export function validateSocConfig(
         peripheralByName,
         intcIndices,
         recordTopPort,
+        recordHeaderMacro,
+        projectNameValid,
         add,
     );
     validateGeneratedVerilogSymbols(config, catalog, add);
@@ -273,6 +299,39 @@ function validateGeneratedModuleNames(
         add('SOC_VERILOG_MODULE_COLLISION', ['project', 'name'],
             `Generated module name ${collision} collides with a packaged RTL module.`);
     }
+}
+
+function reserveGeneratedHeaderMacros(
+    config: SocSourceConfig,
+    record: (name: string, sourcePath: readonly (string | number)[]) => void,
+): void {
+    const project = config.project.name.toUpperCase();
+    const projectPath: readonly (string | number)[] = ['project', 'name'];
+    record(`${project}_H`, projectPath);
+    for (const memory of ['ILB', 'DLB']) {
+        for (const suffix of ['BASE', 'SIZE', 'END']) {
+            record(`${project}_${memory}_${suffix}`, projectPath);
+        }
+        record(`${project}_FEATURE_${memory}_INTERNAL_RAM`, projectPath);
+        record(`${project}_FEATURE_${memory}_EXTERNAL_LOCAL_BUS`, projectPath);
+    }
+    record(`${project}_FEATURE_DEBUG`, projectPath);
+    for (const trigger of ['HIGH', 'LOW', 'RISING', 'FALLING']) {
+        record(`MERC32_IRQ_TRIGGER_${trigger}`, projectPath);
+    }
+}
+
+function recordEndpointHeaderMacros(
+    projectName: string,
+    instanceName: string,
+    sourcePath: readonly (string | number)[],
+    record: (name: string, sourcePath: readonly (string | number)[]) => void,
+): void {
+    const prefix = `${projectName.toUpperCase()}_${instanceName.toUpperCase()}`;
+    for (const suffix of ['BASE', 'SIZE', 'END']) {
+        record(`${prefix}_${suffix}`, sourcePath);
+    }
+    record(`${projectName.toUpperCase()}_FEATURE_${instanceName.toUpperCase()}`, sourcePath);
 }
 
 function validateGeneratedVerilogSymbols(
@@ -603,6 +662,8 @@ function validateInterrupts(
     peripheralByName: ReadonlyMap<string, PeripheralRecord>,
     intcIndices: readonly number[],
     recordTopPort: (name: string, path: readonly (string | number)[]) => void,
+    recordHeaderMacro: (name: string, path: readonly (string | number)[]) => void,
+    projectNameValid: boolean,
     add: DiagnosticAdder,
 ): void {
     const usedSources = new Set<string>();
@@ -694,6 +755,15 @@ function validateInterrupts(
             if (!IRQ_TRIGGERS.has(source.trigger)) {
                 add('SOC_IRQ_TRIGGER', [...rootPath, 'trigger'],
                     'Interrupt trigger must be high, low, rising, or falling.');
+            }
+            if (projectNameValid && sourceValid && Number.isSafeInteger(source.id)
+                && source.id >= 0 && source.id <= 31 && IRQ_TRIGGERS.has(source.trigger)) {
+                const instance = source.source.startsWith('external.')
+                    ? `external_${source.source.slice('external.'.length)}`
+                    : source.source.replace(/\.interrupt$/, '');
+                const prefix = `${config.project.name.toUpperCase()}_${instance.toUpperCase()}`;
+                recordHeaderMacro(`${prefix}_IRQ`, [...rootPath, 'source']);
+                recordHeaderMacro(`${prefix}_IRQ_TRIGGER`, [...rootPath, 'source']);
             }
         }
     } else if (interrupt.mode !== 'none') {
