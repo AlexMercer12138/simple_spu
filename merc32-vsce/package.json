@@ -197,7 +197,9 @@
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
-    "test:soc": "npm run test:soc:config && npm run test:vsix:deps",
+    "test:soc:generator": "npm run compile && node scripts/test-soc-generator.js",
+    "test:soc:rtl": "npm run compile && node scripts/test-soc-rtl.js",
+    "test:soc": "npm run test:soc:config && npm run test:soc:generator && npm run test:soc:rtl && npm run test:vsix:deps",
     "test:vsix:deps": "node scripts/test-vsix-runtime-deps.js",
     "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"

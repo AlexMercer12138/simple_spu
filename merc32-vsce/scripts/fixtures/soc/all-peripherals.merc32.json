@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "all_peripherals_soc",
+    "outputDir": "generated/all_peripherals_soc"
+  },
+  "cpu": {
+    "debug": true,
+    "jtagIdCode": "0x4d320001"
+  },
+  "memory": {
+    "ilb": {
+      "type": "internal_ram",
+      "size": "32KiB"
+    },
+    "dlb": {
+      "type": "internal_ram",
+      "size": "64KiB"
+    }
+  },
+  "peripherals": [
+    { "type": "apb_can", "name": "can0", "baseAddress": "0x10000000" },
+    { "type": "apb_gpio", "name": "gpio0", "baseAddress": "0x10001000" },
+    { "type": "apb_i2c", "name": "i2c0", "baseAddress": "0x10002000" },
+    { "type": "apb_intc", "name": "intc0", "baseAddress": "0x10003000" },
+    { "type": "apb_qspi", "name": "qspi0", "baseAddress": "0x10004000" },
+    { "type": "apb_sdio", "name": "sdio0", "baseAddress": "0x10005000" },
+    { "type": "apb_timer", "name": "timer0", "baseAddress": "0x10006000" },
+    { "type": "apb_uart", "name": "uart0", "baseAddress": "0x10007000" }
+  ],
+  "externalInterfaces": [
+    {
+      "type": "local_bus",
+      "name": "lb0",
+      "baseAddress": "0x20000000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    },
+    {
+      "type": "apb",
+      "name": "apb0",
+      "baseAddress": "0x20001000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    },
+    {
+      "type": "axi4_lite",
+      "name": "axi0",
+      "baseAddress": "0x21000000",
+      "windowSize": "16MiB",
+      "addressWidth": 32
+    },
+    {
+      "type": "wishbone",
+      "name": "wb0",
+      "baseAddress": "0x22000000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    },
+    {
+      "type": "avalon",
+      "name": "av0",
+      "baseAddress": "0x22001000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    },
+    {
+      "type": "drp",
+      "name": "drp0",
+      "baseAddress": "0x22002000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    }
+  ],
+  "interrupt": {
+    "mode": "controller",
+    "controller": "intc0",
+    "sources": [
+      { "source": "can0.interrupt", "id": 0, "trigger": "high" },
+      { "source": "gpio0.interrupt", "id": 1, "trigger": "low" },
+      { "source": "i2c0.interrupt", "id": 2, "trigger": "rising" },
+      { "source": "qspi0.interrupt", "id": 3, "trigger": "falling" },
+      { "source": "sdio0.interrupt", "id": 4, "trigger": "high" },
+      { "source": "timer0.interrupt", "id": 5, "trigger": "rising" },
+      { "source": "uart0.interrupt", "id": 6, "trigger": "falling" },
+      { "source": "external.wake", "id": 7, "trigger": "high" }
+    ]
+  }
+}
