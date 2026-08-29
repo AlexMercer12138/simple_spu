@@ -109,6 +109,14 @@ function assertGuardedApisRestored(snapshot) {
 function denyRepositoryRtlAfterPreparation() {
     const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
     const originals = [];
+    const canonicalizeWindowsExtendedLengthPath = (value) => {
+        if (process.platform !== 'win32') return value;
+        if (/^\\\\\?\\[a-z]:\\/i.test(value)) return value.slice(4);
+        if (/^\\\\\?\\unc\\[^\\]+\\[^\\]+(?:\\|$)/i.test(value)) {
+            return `\\\\${value.slice(8)}`;
+        }
+        return value;
+    };
     const normalizePathLike = (value, operation) => {
         let decoded;
         if (typeof value === 'string') {
@@ -125,7 +133,7 @@ function denyRepositoryRtlAfterPreparation() {
             return undefined;
         }
         try {
-            return path.resolve(decoded).toLowerCase();
+            return canonicalizeWindowsExtendedLengthPath(path.resolve(decoded)).toLowerCase();
         } catch {
             return undefined;
         }
@@ -230,6 +238,19 @@ async function assertRepositoryRtlDenialCoverage() {
         () => fs.readFileSync(pathToFileURL(target)));
     expectSynchronousDenial('fs.readFileSync(Buffer)',
         () => fs.readFileSync(Buffer.from(target)));
+    if (process.platform === 'win32') {
+        const extendedTarget = path.toNamespacedPath(target);
+        const extendedTargetWithForwardSeparators = extendedTarget.slice(0, 4)
+            + extendedTarget.slice(4).replaceAll(path.sep, '/');
+        expectSynchronousDenial('fs.readFileSync(extended-length string)',
+            () => fs.readFileSync(extendedTarget));
+        expectSynchronousDenial('fs.readFileSync(extended-length Buffer)',
+            () => fs.readFileSync(Buffer.from(extendedTarget)));
+        expectSynchronousDenial('fs.readFileSync(extended-length string, forward separators)',
+            () => fs.readFileSync(extendedTargetWithForwardSeparators));
+        expectSynchronousDenial('fs.readFileSync(extended-length Buffer, forward separators)',
+            () => fs.readFileSync(Buffer.from(extendedTargetWithForwardSeparators)));
+    }
     expectSynchronousDenial('fs.linkSync(repository RTL source)',
         () => fs.linkSync(target, path.join(temporaryRoot, 'denied-source-link')));
     expectSynchronousDenial('fs.linkSync(repository RTL destination)',
