@@ -80,7 +80,7 @@ try {
             sizeBytes: 65536, type: 'external_local_bus', wordAddressWidth: 14,
         },
         ilb: {
-            baseAddress: '0x00000000', endAddress: '0x00007fff', initFile: 'firmware.mem',
+            baseAddress: '0x00000000', endAddress: '0x00007fff', initFile: 'ilb_firmware.mem',
             sizeBytes: 32768, type: 'internal_ram', wordAddressWidth: 13,
         },
     });
@@ -136,7 +136,7 @@ try {
         'rtl/apb_gpio/apb_gpio.v', 'rtl/apb_intc/apb_intc.v', 'rtl/apb_uart/apb_uart.v',
         'rtl/bridge/lb2apb.v', 'rtl/bridge/lb2axi_lite.v', 'rtl/cpu/MERC32_top.v',
         'rtl/cpu/core.v', 'rtl/debug/jtag_debug.v', 'rtl/misc/div.v', 'rtl/misc/mul.v',
-        'rtl/misc/spram.v', 'rtl/files.f', 'memory/firmware.mem',
+        'rtl/misc/spram.v', 'rtl/files.f', 'memory/ilb_firmware.mem',
         'software/include/demo_soc.h', 'software/src/main.c',
         'config/demo_soc.resolved.json', 'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
     ];
@@ -226,6 +226,21 @@ try {
         'rtl/files.f', 'software/include/minimal_soc.h', 'software/src/main.c',
         'config/minimal_soc.resolved.json', 'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
     ]);
+    const memoryInitInventory = clone(minimal);
+    memoryInitInventory.memory.ilb = {
+        type: 'internal_ram', size: '32KiB', initFile: 'boot/firmware.mem',
+    };
+    memoryInitInventory.memory.dlb = {
+        type: 'internal_ram', size: '64KiB', initFile: 'data/firmware.mem',
+    };
+    const memoryInitPlan = planFixture(memoryInitInventory, 'memory-init-inventory.merc32.json');
+    assert.deepStrictEqual(soc.expectedGeneratedFiles(memoryInitPlan).filter((file) => file.startsWith('memory/')), [
+        'memory/ilb_firmware.mem', 'memory/dlb_firmware.mem',
+    ]);
+    assert.match(soc.renderResolvedConfig(memoryInitPlan), /"initFile": "ilb_firmware\.mem"/);
+    assert.match(soc.renderResolvedConfig(memoryInitPlan), /"initFile": "dlb_firmware\.mem"/);
+    assert.match(soc.renderGeneratedReadme(memoryInitPlan), /- `memory\/ilb_firmware\.mem`/);
+    assert.match(soc.renderGeneratedReadme(memoryInitPlan), /- `memory\/dlb_firmware\.mem`/);
     const inactiveFeatureCollision = clone(minimal);
     inactiveFeatureCollision.memory.ilb.type = 'internal_ram';
     inactiveFeatureCollision.externalInterfaces = [{

@@ -702,7 +702,7 @@ assert.deepStrictEqual(plan.memory.ilb, {
     wordAddressWidth: 13,
     initFile: {
         source: path.join(fixtureDirectory, 'firmware.mem'),
-        outputName: 'firmware.mem',
+        outputName: 'ilb_firmware.mem',
     },
 });
 assert.deepStrictEqual(plan.memory.dlb, {
@@ -786,5 +786,42 @@ assert.ok(assignedPlan);
 assert.strictEqual(assignedPlan.sourceFile, multiFixtureFile);
 assert.strictEqual(assignedPlan.memory.ilb.initFile.source,
     path.join(fixtureDirectory, 'firmware.mem'));
+
+const sameBasenameInitFiles = clone(minimal);
+sameBasenameInitFiles.memory.ilb = {
+    type: 'internal_ram', size: '32KiB', initFile: 'boot/firmware.mem',
+};
+sameBasenameInitFiles.memory.dlb = {
+    type: 'internal_ram', size: '64KiB', initFile: 'data/firmware.mem',
+};
+const sameBasenamePlan = planSoc(sameBasenameInitFiles, catalog).plan;
+assert.ok(sameBasenamePlan);
+assert.deepStrictEqual(
+    [sameBasenamePlan.memory.ilb.initFile.outputName, sameBasenamePlan.memory.dlb.initFile.outputName],
+    ['ilb_firmware.mem', 'dlb_firmware.mem'],
+);
+assert.notStrictEqual(
+    sameBasenamePlan.memory.ilb.initFile.outputName.toLowerCase(),
+    sameBasenamePlan.memory.dlb.initFile.outputName.toLowerCase(),
+);
+assert.deepStrictEqual(
+    planSoc(sameBasenameInitFiles, catalog).plan.memory,
+    sameBasenamePlan.memory,
+    'memory output names must be deterministic across repeat planning',
+);
+
+const caseOnlyInitFiles = clone(sameBasenameInitFiles);
+caseOnlyInitFiles.memory.ilb.initFile = 'boot/Firmware.mem';
+caseOnlyInitFiles.memory.dlb.initFile = 'data/firmware.mem';
+const caseOnlyPlan = planSoc(caseOnlyInitFiles, catalog).plan;
+assert.ok(caseOnlyPlan);
+assert.deepStrictEqual(
+    [caseOnlyPlan.memory.ilb.initFile.outputName, caseOnlyPlan.memory.dlb.initFile.outputName],
+    ['ilb_Firmware.mem', 'dlb_firmware.mem'],
+);
+assert.notStrictEqual(
+    caseOnlyPlan.memory.ilb.initFile.outputName.toLowerCase(),
+    caseOnlyPlan.memory.dlb.initFile.outputName.toLowerCase(),
+);
 
 console.log('MERC32 SoC configuration tests passed.');

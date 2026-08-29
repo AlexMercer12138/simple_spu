@@ -50,8 +50,8 @@ export function planSoc(config: SocSourceConfig, catalog: ModuleCatalog): SocPla
     const endpoints = [...peripherals, ...externalInterfaces]
         .sort((left, right) => compareBigints(left.baseAddress, right.baseAddress));
     const memory = {
-        ilb: planMemory(config.memory.ilb, sourceDirectory),
-        dlb: planMemory(config.memory.dlb, sourceDirectory),
+        ilb: planMemory('ilb', config.memory.ilb, sourceDirectory),
+        dlb: planMemory('dlb', config.memory.dlb, sourceDirectory),
     };
     const cpu = {
         debug: config.cpu.debug ?? false,
@@ -102,6 +102,7 @@ function recordMissingAddresses(config: SocSourceConfig, diagnostics: SocDiagnos
 }
 
 function planMemory(
+    slot: 'ilb' | 'dlb',
     memory: SocSourceConfig['memory']['ilb'],
     sourceDirectory: string,
 ): PlannedMemory {
@@ -114,7 +115,7 @@ function planMemory(
     if (memory.type === 'internal_ram' && memory.initFile !== undefined) {
         result.initFile = {
             source: path.resolve(sourceDirectory, memory.initFile),
-            outputName: path.basename(memory.initFile),
+            outputName: `${slot}_${path.basename(memory.initFile)}`,
         };
     }
     return result;
