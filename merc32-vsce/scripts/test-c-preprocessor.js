@@ -51,6 +51,85 @@ try {
     assert.match(result.code, /"UART0_BASE"/);
     assert.ok(result.lineMap.some((line) => line.file.endsWith('soc.h')));
 
+    const conditional = preprocess([
+        '#define ENABLED 1',
+        '#define IRQ_COUNT 3',
+        '#if ENABLED && (IRQ_COUNT == 3)',
+        'int selected = 1;',
+        '#else',
+        'int selected = 0;',
+        '#endif',
+    ].join('\n'), {});
+    assert.match(conditional, /int selected = 1;/);
+    assert.doesNotMatch(conditional, /int selected = 0;/);
+
+    const expressionOperators = preprocess([
+        '#define OUTER INNER',
+        '#define INNER 3',
+        '#if !0 && (~0 == -1) && (+5 == 5) && (-5 < 0) && (7 * 3 / 2 % 5 == 0) && ((1 << 4) == 16) && ((16 >> 2) == 4) && (3 < 4) && (4 <= 4) && (4 > 3) && (4 >= 4) && (5 != 4) && (5 == 5) && ((6 & 3) == 2) && ((4 ^ 1) == 5) && ((4 | 1) == 5) && ((0x7fffffff + 1) < 0) && (0x20000000000001 == 1) && (OUTER == 3) || 0',
+        'int operators_work = 1;',
+        '#endif',
+    ].join('\n'), {});
+    assert.match(expressionOperators, /int operators_work = 1;/);
+
+    const definedAndUnknown = preprocess([
+        '#define NAME 0',
+        '#if defined(NAME) && defined NAME && UNKNOWN_IDENTIFIER',
+        'int wrong = 1;',
+        '#else',
+        'int unknown_is_zero = 1;',
+        '#endif',
+        '#if defined(NAME)',
+        'int defined_operand_is_not_expanded = 1;',
+        '#endif',
+    ].join('\n'), {});
+    assert.match(definedAndUnknown, /int unknown_is_zero = 1;/);
+    assert.match(definedAndUnknown, /int defined_operand_is_not_expanded = 1;/);
+    assert.doesNotMatch(definedAndUnknown, /int wrong = 1;/);
+
+    writeFile(root, 'inactive-branch.c', [
+        '#if 0',
+        '#include "missing-while-inactive.h"',
+        '#define HIDDEN 1',
+        '#if 1',
+        'int nested_wrong = 1;',
+        '#else',
+        'int nested_wrong = 2;',
+        '#endif',
+        '#else',
+        '#ifndef HIDDEN',
+        'int active_after_inactive = 1;',
+        '#endif',
+        '#endif',
+        '',
+    ].join('\n'));
+    const inactiveBranch = preprocessFile(root, 'inactive-branch.c').code;
+    assert.match(inactiveBranch, /int active_after_inactive = 1;/);
+    assert.doesNotMatch(inactiveBranch, /nested_wrong/);
+
+    assert.match(preprocess('#define PRESENT 1\n#ifdef PRESENT\nint ifdef_selected = 1;\n#endif', {}), /ifdef_selected/);
+    assert.match(preprocess('#ifndef ABSENT\nint ifndef_selected = 1;\n#endif', {}), /ifndef_selected/);
+    assert.throws(() => preprocess('#else\n', {}), /unexpected #else/);
+    assert.throws(() => preprocess('#if 1\n#else\n#else\n#endif\n', {}), /duplicate #else/);
+    assert.throws(() => preprocess('#if 1\nint missing_endif;\n', {}), /unterminated conditional/);
+    assert.throws(() => preprocess('#if 1 / 0\n#endif\n', {}), /division by zero/);
+    assert.throws(() => preprocess('#if 1 % 0\n#endif\n', {}), /remainder by zero/);
+    assert.match(
+        preprocess('#if 0 && (1 / 0)\nint short_circuited = 0;\n#else\nint short_circuited = 1;\n#endif\n', {}),
+        /int short_circuited = 1;/,
+    );
+
+    writeFile(root, 'cycle-a.h', '#include "cycle-b.h"\n');
+    writeFile(root, 'cycle-b.h', '#include "cycle-a.h"\n');
+    writeFile(root, 'cycle-main.c', '#include "cycle-a.h"\n');
+    assert.throws(() => preprocessFile(root, 'cycle-main.c'), /include cycle/);
+
+    for (let index = 0; index < 33; index++) {
+        writeFile(root, `depth-${index}.h`, index === 32 ? 'int deepest_include;\n' : `#include "depth-${index + 1}.h"\n`);
+    }
+    writeFile(root, 'depth-main.c', '#include "depth-0.h"\n');
+    assert.throws(() => preprocessFile(root, 'depth-main.c'), /include depth exceeds 32/);
+
     assert.match(preprocess('int x = VALUE;', { VALUE: '7' }), /int x = 7;/);
     assert.match(preprocess('char *s = "VALUE";', { VALUE: '7' }), /"VALUE"/);
     assert.match(preprocess("int c = 'V';", { V: '7' }), /'V'/);
