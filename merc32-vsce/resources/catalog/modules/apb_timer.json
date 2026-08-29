@@ -1,0 +1,14 @@
+{
+  "type": "apb_timer",
+  "module": "apb_timer",
+  "rtlFiles": ["rtl/apb_timer/apb_timer.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {},
+  "ports": [
+    { "name": "pwm0", "direction": "output", "width": 1 },
+    { "name": "pwm1", "direction": "output", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

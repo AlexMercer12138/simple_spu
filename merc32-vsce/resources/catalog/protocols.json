@@ -1,0 +1,103 @@
+[
+  {
+    "type": "local_bus",
+    "rtlFiles": [],
+    "alignment": 4,
+    "ports": [
+      { "name": "lb_rden", "direction": "output", "width": 1 },
+      { "name": "lb_wren", "direction": "output", "width": 1 },
+      { "name": "lb_strb", "direction": "output", "width": 4 },
+      { "name": "lb_wdata", "direction": "output", "width": 32 },
+      { "name": "lb_addr", "direction": "output", "width": 32 },
+      { "name": "lb_rdata", "direction": "input", "width": 32 },
+      { "name": "lb_valid", "direction": "input", "width": 1 }
+    ]
+  },
+  {
+    "type": "apb",
+    "rtlFiles": ["rtl/bridge/lb2apb.v"],
+    "alignment": 4,
+    "addressWidthParameter": "APB_ADDR_WIDTH",
+    "ports": [
+      { "name": "m_apb_psel", "direction": "output", "width": 1 },
+      { "name": "m_apb_penable", "direction": "output", "width": 1 },
+      { "name": "m_apb_paddr", "direction": "output", "width": { "parameter": "APB_ADDR_WIDTH" } },
+      { "name": "m_apb_pwrite", "direction": "output", "width": 1 },
+      { "name": "m_apb_pwdata", "direction": "output", "width": 32 },
+      { "name": "m_apb_pstrb", "direction": "output", "width": 4 },
+      { "name": "m_apb_prdata", "direction": "input", "width": 32 },
+      { "name": "m_apb_pready", "direction": "input", "width": 1 }
+    ]
+  },
+  {
+    "type": "axi4_lite",
+    "rtlFiles": ["rtl/bridge/lb2axi_lite.v"],
+    "alignment": 4,
+    "addressWidthParameter": "AXI_ADDR_WIDTH",
+    "ports": [
+      { "name": "m_axi_awvalid", "direction": "output", "width": 1 },
+      { "name": "m_axi_awready", "direction": "input", "width": 1 },
+      { "name": "m_axi_awaddr", "direction": "output", "width": { "parameter": "AXI_ADDR_WIDTH" } },
+      { "name": "m_axi_wvalid", "direction": "output", "width": 1 },
+      { "name": "m_axi_wready", "direction": "input", "width": 1 },
+      { "name": "m_axi_wdata", "direction": "output", "width": 32 },
+      { "name": "m_axi_wstrb", "direction": "output", "width": 4 },
+      { "name": "m_axi_bvalid", "direction": "input", "width": 1 },
+      { "name": "m_axi_bready", "direction": "output", "width": 1 },
+      { "name": "m_axi_bresp", "direction": "input", "width": 2 },
+      { "name": "m_axi_arvalid", "direction": "output", "width": 1 },
+      { "name": "m_axi_arready", "direction": "input", "width": 1 },
+      { "name": "m_axi_araddr", "direction": "output", "width": { "parameter": "AXI_ADDR_WIDTH" } },
+      { "name": "m_axi_rvalid", "direction": "input", "width": 1 },
+      { "name": "m_axi_rready", "direction": "output", "width": 1 },
+      { "name": "m_axi_rdata", "direction": "input", "width": 32 },
+      { "name": "m_axi_rresp", "direction": "input", "width": 2 }
+    ]
+  },
+  {
+    "type": "wishbone",
+    "rtlFiles": ["rtl/bridge/lb2wbc.v"],
+    "alignment": 4,
+    "addressWidthParameter": "WB_ADDR_WIDTH",
+    "ports": [
+      { "name": "m_wb_cyc_o", "direction": "output", "width": 1 },
+      { "name": "m_wb_stb_o", "direction": "output", "width": 1 },
+      { "name": "m_wb_we_o", "direction": "output", "width": 1 },
+      { "name": "m_wb_adr_o", "direction": "output", "width": { "parameter": "WB_ADDR_WIDTH" } },
+      { "name": "m_wb_dat_o", "direction": "output", "width": 32 },
+      { "name": "m_wb_sel_o", "direction": "output", "width": 4 },
+      { "name": "m_wb_ack_i", "direction": "input", "width": 1 },
+      { "name": "m_wb_dat_i", "direction": "input", "width": 32 }
+    ]
+  },
+  {
+    "type": "avalon",
+    "rtlFiles": ["rtl/bridge/lb2avalon.v"],
+    "alignment": 4,
+    "addressWidthParameter": "AV_ADDR_WIDTH",
+    "ports": [
+      { "name": "m_av_address", "direction": "output", "width": { "parameter": "AV_ADDR_WIDTH" } },
+      { "name": "m_av_read", "direction": "output", "width": 1 },
+      { "name": "m_av_write", "direction": "output", "width": 1 },
+      { "name": "m_av_writedata", "direction": "output", "width": 32 },
+      { "name": "m_av_byteenable", "direction": "output", "width": 4 },
+      { "name": "m_av_waitrequest", "direction": "input", "width": 1 },
+      { "name": "m_av_readdata", "direction": "input", "width": 32 },
+      { "name": "m_av_readdatavalid", "direction": "input", "width": 1 }
+    ]
+  },
+  {
+    "type": "drp",
+    "rtlFiles": ["rtl/bridge/lb2drp.v"],
+    "alignment": 4,
+    "addressWidthParameter": "DRP_ADDR_WIDTH",
+    "ports": [
+      { "name": "addr", "direction": "output", "width": { "parameter": "DRP_ADDR_WIDTH" } },
+      { "name": "en", "direction": "output", "width": 1 },
+      { "name": "we", "direction": "output", "width": 1 },
+      { "name": "rdy", "direction": "input", "width": 1 },
+      { "name": "in", "direction": "output", "width": 32 },
+      { "name": "out", "direction": "input", "width": 32 }
+    ]
+  }
+]

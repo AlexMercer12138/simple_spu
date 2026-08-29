@@ -1,0 +1,21 @@
+{
+  "type": "apb_i2c",
+  "module": "apb_i2c",
+  "rtlFiles": ["rtl/apb_i2c/apb_i2c.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "SYS_CLK_FREQ": { "type": "integer", "minimum": 1, "default": 50000000 },
+    "FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "maximum": 128, "default": 16 }
+  },
+  "ports": [
+    { "name": "scl_o", "direction": "output", "width": 1 },
+    { "name": "scl_t", "direction": "output", "width": 1 },
+    { "name": "scl_i", "direction": "input", "width": 1 },
+    { "name": "sda_o", "direction": "output", "width": 1 },
+    { "name": "sda_t", "direction": "output", "width": 1 },
+    { "name": "sda_i", "direction": "input", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

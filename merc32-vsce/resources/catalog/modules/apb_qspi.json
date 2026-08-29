@@ -1,0 +1,29 @@
+{
+  "type": "apb_qspi",
+  "module": "apb_qspi",
+  "rtlFiles": ["rtl/apb_qspi/apb_qspi.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "CS_COUNT": { "type": "integer", "minimum": 1, "default": 4 },
+    "FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "maximum": 128, "default": 16 }
+  },
+  "ports": [
+    { "name": "qspi_sclk_o", "direction": "output", "width": 1 },
+    { "name": "qspi_cs_n", "direction": "output", "width": { "parameter": "CS_COUNT" } },
+    { "name": "qspi_d0_i", "direction": "input", "width": 1 },
+    { "name": "qspi_d0_o", "direction": "output", "width": 1 },
+    { "name": "qspi_d0_t", "direction": "output", "width": 1 },
+    { "name": "qspi_d1_i", "direction": "input", "width": 1 },
+    { "name": "qspi_d1_o", "direction": "output", "width": 1 },
+    { "name": "qspi_d1_t", "direction": "output", "width": 1 },
+    { "name": "qspi_d2_i", "direction": "input", "width": 1 },
+    { "name": "qspi_d2_o", "direction": "output", "width": 1 },
+    { "name": "qspi_d2_t", "direction": "output", "width": 1 },
+    { "name": "qspi_d3_i", "direction": "input", "width": 1 },
+    { "name": "qspi_d3_o", "direction": "output", "width": 1 },
+    { "name": "qspi_d3_t", "direction": "output", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

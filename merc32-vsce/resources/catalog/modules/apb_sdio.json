@@ -1,0 +1,30 @@
+{
+  "type": "apb_sdio",
+  "module": "apb_sdio",
+  "rtlFiles": ["rtl/apb_sdio/apb_sdio.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "maximum": 512, "default": 128 }
+  },
+  "ports": [
+    { "name": "sd_clk_o", "direction": "output", "width": 1 },
+    { "name": "sd_cmd_i", "direction": "input", "width": 1 },
+    { "name": "sd_cmd_o", "direction": "output", "width": 1 },
+    { "name": "sd_cmd_t", "direction": "output", "width": 1 },
+    { "name": "sd_dat_i", "direction": "input", "width": 8 },
+    { "name": "sd_dat_o", "direction": "output", "width": 8 },
+    { "name": "sd_dat_t", "direction": "output", "width": 8 },
+    { "name": "card_detect_n", "direction": "input", "width": 1 },
+    { "name": "write_protect", "direction": "input", "width": 1 },
+    { "name": "emmc_reset_n", "direction": "output", "width": 1 },
+    { "name": "dma_tx_rd_en", "direction": "output", "width": 1 },
+    { "name": "dma_tx_dout", "direction": "input", "width": 32 },
+    { "name": "dma_tx_empty", "direction": "input", "width": 1 },
+    { "name": "dma_rx_wr_en", "direction": "output", "width": 1 },
+    { "name": "dma_rx_din", "direction": "output", "width": 32 },
+    { "name": "dma_rx_full", "direction": "input", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

@@ -1,0 +1,19 @@
+{
+  "type": "apb_can",
+  "module": "apb_can",
+  "rtlFiles": ["rtl/apb_can/apb_can.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "SYS_CLK_FREQ": { "type": "integer", "minimum": 1, "default": 50000000 },
+    "DEFAULT_BIT_RATE": { "type": "integer", "minimum": 1, "default": 500000 },
+    "TX_FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "default": 8 },
+    "RX_FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "default": 8 }
+  },
+  "ports": [
+    { "name": "can_rx", "direction": "input", "width": 1 },
+    { "name": "can_tx", "direction": "output", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

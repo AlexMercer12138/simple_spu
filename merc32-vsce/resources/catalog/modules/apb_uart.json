@@ -1,0 +1,17 @@
+{
+  "type": "apb_uart",
+  "module": "apb_uart",
+  "rtlFiles": ["rtl/apb_uart/apb_uart.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "SYS_CLK_FREQ": { "type": "integer", "minimum": 1, "default": 50000000 },
+    "FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "maximum": 128, "default": 8 }
+  },
+  "ports": [
+    { "name": "uart_rx", "direction": "input", "width": 1 },
+    { "name": "uart_tx", "direction": "output", "width": 1 }
+  ],
+  "interrupts": ["interrupt"]
+}

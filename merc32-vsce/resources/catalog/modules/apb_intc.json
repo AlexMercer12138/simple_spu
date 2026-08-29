@@ -1,0 +1,14 @@
+{
+  "type": "apb_intc",
+  "module": "apb_intc",
+  "rtlFiles": ["rtl/apb_intc/apb_intc.v"],
+  "multiple": false,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {
+    "IRQ_COUNT": { "type": "integer", "minimum": 1, "maximum": 32, "default": 1 },
+    "IRQ_MODE": { "type": "integer", "minimum": 0, "default": 0 }
+  },
+  "ports": [],
+  "interrupts": ["interrupt"]
+}

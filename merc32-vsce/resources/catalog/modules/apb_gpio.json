@@ -1,0 +1,15 @@
+{
+  "type": "apb_gpio",
+  "module": "apb_gpio",
+  "rtlFiles": ["rtl/apb_gpio/apb_gpio.v"],
+  "multiple": true,
+  "addressSize": 4096,
+  "alignment": 4096,
+  "parameters": {},
+  "ports": [
+    { "name": "gpio_i", "direction": "input", "width": 32 },
+    { "name": "gpio_o", "direction": "output", "width": 32 },
+    { "name": "gpio_t", "direction": "output", "width": 32 }
+  ],
+  "interrupts": ["interrupt"]
+}
