@@ -208,7 +208,10 @@ Edge events latch in pending state. A level source becomes pending while its
 configured active level is present; clearing it while the source remains active
 allows it to become pending again. Enabled pending source zero has the highest
 fixed priority. The controller output is high-level active and software
-configures the CPU interrupt mode accordingly.
+configures the CPU interrupt mode accordingly. Tiny C controller firmware uses
+the no-argument `__irq_enable_level()` intrinsic, which emits interrupt control
+value `5`; legacy `__irq_enable()` continues to emit rising-edge control value
+`1`, and `__irq_disable()` continues to emit `0`.
 
 The APB register map is:
 

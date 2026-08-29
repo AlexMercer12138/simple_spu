@@ -14,7 +14,7 @@ void __irq_handler(void) {
 int main(void) {
     volatile unsigned int *status = (volatile unsigned int *)status_addr;
 
-    __irq_enable();
+    __irq_enable_level();
     *status = ready_code;
 
     while (irq_count < 2) {

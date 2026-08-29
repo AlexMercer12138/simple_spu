@@ -326,6 +326,7 @@ volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
 unsigned int __load32(unsigned int addr);
 unsigned int __store32(unsigned int addr, unsigned int value);
 void __irq_enable(void);
+void __irq_enable_level(void);
 void __irq_disable(void);
 ```
 
@@ -338,7 +339,9 @@ __store32(addr, value)  // 写入 *(uint32_t *)addr = value，并返回 value
 
 普通指针已经可以完成同类操作，内建函数主要作为低层测试和显式 MMIO 访问入口。
 
-`__irq_enable()` 和 `__irq_disable()` 分别写入 `r1=1` 和 `r1=0`，只允许在程序定义了有效 `void __irq_handler(void)` 时使用。编译器不会自动插入这两个操作。
+`__irq_enable()`、`__irq_enable_level()` 和 `__irq_disable()` 分别写入
+`r1=1`、`r1=5` 和 `r1=0`。三者只允许在程序定义了有效
+`void __irq_handler(void)` 时使用；编译器不会自动插入这些操作。
 
 ## 10. 当前语言子集
 
@@ -381,7 +384,7 @@ Tiny C 将下面的精确函数签名保留为中断处理函数：
 void __irq_handler(void)
 ```
 
-编译器会验证该保留函数的定义必须返回 `void` 且参数列表为空；签名无效时不能生成中断入口。`__irq_enable()` 和 `__irq_disable()` 也只允许在程序具有有效 `__irq_handler` 时使用。
+编译器会验证该保留函数的定义必须返回 `void` 且参数列表为空；签名无效时不能生成中断入口。`__irq_enable()`、`__irq_enable_level()` 和 `__irq_disable()` 也只允许在程序具有有效 `__irq_handler` 时使用。
 
 汇编器的 `.entry __start` 只在字节地址 `0` 注入一条复位跳转 `jmp __start`，不负责设置中断向量。编译器把下面这一条且仅一条向量指令放在字节地址 `4`：
 
@@ -392,7 +395,10 @@ jmp __irq_handler
 
 `__start` 完成全局变量初始化后，仅在程序具有有效中断处理函数时将 `r2` 设置为字节地址 `4`。
 
-零参数内建函数 `__irq_enable()` 写入 `r1=1`，即使能中断并选择 CPU 上升沿触发模式；`__irq_disable()` 写入 `r1=0`。两者都要求程序具有有效中断处理函数。
+零参数内建函数 `__irq_enable()` 写入 `r1=1`，即使能中断并选择 CPU
+上升沿触发模式；`__irq_enable_level()` 写入 `r1=5`，即使能中断并选择
+CPU 高电平触发模式，适用于 `apb_intc` 等高有效控制器输出；
+`__irq_disable()` 写入 `r1=0`。三者都要求程序具有有效中断处理函数。
 
 CPU 接受中断时把 `resolved_next_pc` 写入 `r3`，自动清除 `r1[0]`，然后跳转到 `R[r2]`。硬件不保存其他寄存器、不保存比较状态，也不维护禁止嵌套的活动标志。
 

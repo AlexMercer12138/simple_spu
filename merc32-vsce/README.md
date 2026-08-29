@@ -370,7 +370,7 @@ volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
 *status = 0x600D;
 ```
 
-定义名为 `__irq_handler` 的无参 `void` 函数即可启用中断支持，编译器会在向量地址自动生成跳转指令并保存 / 恢复上下文。通过内置调用 `__irq_enable()` / `__irq_disable()` 控制中断使能：
+定义名为 `__irq_handler` 的无参 `void` 函数即可启用中断支持，编译器会在向量地址自动生成跳转指令并保存 / 恢复上下文。通过内置调用 `__irq_enable()` / `__irq_disable()` 控制上升沿中断使能；高有效中断控制器输出使用 `__irq_enable_level()`。后者写入 `r1=5`，而原有 `__irq_enable()` 继续写入 `r1=1`：
 
 ```c
 volatile unsigned int irq_count = 0;

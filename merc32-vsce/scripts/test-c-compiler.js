@@ -694,6 +694,7 @@ for (const [testSource, pattern, expectedLocation, options] of [
     ['void noop(void) {}\nint a[] = {noop()};\nint main(void) { return 0; }', /array initializer element cannot have void type/, { line: 2, column: 11 }],
     ['void noop(void) {}\nint main(void) { int a[] = {noop()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
     ['void __irq_handler(void) {}\nint main(void) { int a[] = {__irq_enable()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
+    ['void __irq_handler(void) {}\nint main(void) { int a[] = {__irq_enable_level()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
     ['int a[] = {(int *)0}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }],
     ['int main(void) { int a[] = {(int *)0}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
     ['int *a[1] = {0}; int main(void) { return 0; }', /arrays of pointers are not supported/, { line: 1, column: 8 }],
@@ -2019,6 +2020,26 @@ assert.ok(irqEnableIndex < irqDisableIndex);
 assert.strictEqual(irqMainInstructions.filter((line) => line === 'mov r1, 1').length, 1);
 assert.strictEqual(irqMainInstructions.filter((line) => line === 'mov r1, 0').length, 1);
 
+const { assembly: levelIrqAssembly } = compileC(`
+void __irq_handler(void) {
+}
+
+int main(void) {
+    __irq_enable_level();
+    __irq_enable();
+    __irq_disable();
+    return 0;
+}
+`, { moduleName: 'level_irq_compiler_test' });
+const levelIrqMainInstructions = functionAssemblyBody(levelIrqAssembly, 'main')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+assert.deepStrictEqual(
+    levelIrqMainInstructions.filter((line) => /^mov r1, /.test(line)),
+    ['mov r1, 5', 'mov r1, 1', 'mov r1, 0'],
+);
+
 const irqAssembler = new SimpleCPUAssembler();
 const irqResult = irqAssembler.assemble(irqAssembly, { sourceFileName: 'irq_compiler_test.asm' });
 assert.ok(irqResult.machineCodes.length > 0);
@@ -2063,6 +2084,13 @@ int main(void) {
 
 expectCompilerError(`
 int main(void) {
+    __irq_enable_level();
+    return 0;
+}
+`, /__irq_enable_level requires a defined __irq_handler/);
+
+expectCompilerError(`
+int main(void) {
     __irq_disable();
     return 0;
 }
@@ -2077,6 +2105,16 @@ int main(void) {
     return 0;
 }
 `, /__irq_enable expects 0 arguments/);
+
+expectCompilerError(`
+void __irq_handler(void) {
+}
+
+int main(void) {
+    __irq_enable_level(1);
+    return 0;
+}
+`, /__irq_enable_level expects 0 arguments/);
 
 expectCompilerError(`
 void __irq_handler(void) {

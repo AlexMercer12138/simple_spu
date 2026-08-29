@@ -54,7 +54,7 @@ module tinyc_irq_tb();
     reg [31:0] second_return = 32'd0;
     reg [31:0] saved_regs [0:15];
     reg ready_seen = 1'b0;
-    reg return_seen = 1'b0;
+    reg first_service_seen = 1'b0;
     reg second_return_seen = 1'b0;
     reg done = 1'b0;
 
@@ -118,14 +118,11 @@ module tinyc_irq_tb();
         end
     endtask
 
-    task pulse_interrupt;
+    task assert_interrupt_level;
         begin
             while (merc32_core_inst.cpu_state != ST_STEP)
                 @(negedge clk);
             interrupt <= 1'b1;
-            repeat (4) @(posedge clk);
-            @(negedge clk);
-            interrupt <= 1'b0;
         end
     endtask
 
@@ -197,7 +194,7 @@ module tinyc_irq_tb();
             record_error("startup IRQ vector", 32'd4,
                          merc32_core_inst.regi_int[2]);
 
-        pulse_interrupt();
+        assert_interrupt_level();
 
         while (merc32_core_inst.cpu_state != ST_INTR)
             @(negedge clk);
@@ -216,13 +213,27 @@ module tinyc_irq_tb();
         if (merc32_core_inst.regi_int[1][0] !== 1'b0)
             record_error("IRQ clears enable bit", 32'd0,
                          {31'd0, merc32_core_inst.regi_int[1][0]});
+        if (merc32_core_inst.regi_int[1][2:1] !== 2'b10)
+            record_error("IRQ preserves high-level mode", 32'd2,
+                         {30'd0, merc32_core_inst.regi_int[1][2:1]});
 
         wait (handler_pass_count == 1);
+        first_service_seen = 1'b1;
+
+        while (merc32_core_inst.cpu_state != ST_INTR)
+            @(negedge clk);
+        second_return = merc32_core_inst.prog_addr;
+        if (second_return !== saved_return)
+            record_error("held-high IRQ preserves return address", saved_return,
+                         second_return);
+        interrupt <= 1'b0;
+
+        wait (handler_pass_count == 2);
         while (!((merc32_core_inst.cpu_state == ST_LOAD) &&
-                 (merc32_core_inst.prog_addr == saved_return))) begin
+                 (merc32_core_inst.prog_addr == second_return))) begin
             @(negedge clk);
         end
-        return_seen = 1'b1;
+        second_return_seen = 1'b1;
 
         for (reg_index = 4; reg_index <= 14; reg_index = reg_index + 1) begin
             if (merc32_core_inst.regi_int[reg_index] !== saved_regs[reg_index]) begin
@@ -232,38 +243,21 @@ module tinyc_irq_tb();
                          merc32_core_inst.regi_int[reg_index]);
             end
         end
-        if (merc32_core_inst.regi_int[1][0] !== 1'b1)
-            record_error("IRQ return re-enables interrupts", 32'd1,
-                         {31'd0, merc32_core_inst.regi_int[1][0]});
-
-        repeat (8) @(posedge clk);
-        if (interrupt_count != 1)
-            record_error("one IRQ pulse enters once", 32'd1,
-                         interrupt_count);
-
-        pulse_interrupt();
-        while (merc32_core_inst.cpu_state != ST_INTR)
-            @(negedge clk);
-        second_return = merc32_core_inst.prog_addr;
-
-        wait (handler_pass_count == 2);
-        while (!((merc32_core_inst.cpu_state == ST_LOAD) &&
-                 (merc32_core_inst.prog_addr == second_return))) begin
-            @(negedge clk);
-        end
-        second_return_seen = 1'b1;
+        if (merc32_core_inst.regi_int[1][2:0] !== 3'b101)
+            record_error("IRQ return restores enabled high-level mode", 32'd5,
+                         {29'd0, merc32_core_inst.regi_int[1][2:0]});
 
         repeat (8) @(posedge clk);
         if (interrupt_count != 2)
-            record_error("two IRQ pulses enter twice", 32'd2,
+            record_error("held-high IRQ enters twice", 32'd2,
                          interrupt_count);
 
         done = 1'b1;
-        if ((error_count == 0) && return_seen && second_return_seen)
+        if ((error_count == 0) && first_service_seen && second_return_seen)
             $display("TEST PASS");
         else
-            $display("TEST FAIL: IRQ errors=%0d return_seen=%0d second_return_seen=%0d",
-                     error_count, return_seen, second_return_seen);
+            $display("TEST FAIL: IRQ errors=%0d first_service_seen=%0d second_return_seen=%0d",
+                     error_count, first_service_seen, second_return_seen);
         $finish;
     end
 

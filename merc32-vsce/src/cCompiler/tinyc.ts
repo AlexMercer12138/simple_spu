@@ -1334,6 +1334,19 @@ const MAX_DLB_ADDR_WIDTH = 25;
 // At two instructions per element, three inline zero stores cost no more than the loop path.
 const MAX_INLINE_LOCAL_ARRAY_ZERO_STORES = 3;
 
+function interruptControlValue(name: string): number | undefined {
+    switch (name) {
+        case '__irq_disable':
+            return 0;
+        case '__irq_enable':
+            return 1;
+        case '__irq_enable_level':
+            return 5;
+        default:
+            return undefined;
+    }
+}
+
 class CodeGenerator {
     private readonly lines: string[] = [];
     private readonly globals = new Map<string, Slot>();
@@ -2824,14 +2837,15 @@ class CodeGenerator {
     }
 
     private emitCall(expr: CallExpr, target: string, valueRequired: boolean): CType {
-        if (expr.name === '__irq_enable' || expr.name === '__irq_disable') {
+        const irqControlValue = interruptControlValue(expr.name);
+        if (irqControlValue !== undefined) {
             if (expr.args.length !== 0) {
                 throw new CompilerError(`${expr.name} expects 0 arguments`);
             }
             if (!this.interruptHandler) {
                 throw new CompilerError(`${expr.name} requires a defined __irq_handler`);
             }
-            this.emit(`mov r1, ${expr.name === '__irq_enable' ? 1 : 0}`);
+            this.emit(`mov r1, ${irqControlValue}`);
             return voidType();
         }
         if (expr.name === '__load32') {
@@ -3078,7 +3092,7 @@ class CodeGenerator {
                 if (isComparison(expr.op) || expr.op === '&&' || expr.op === '||') return intType();
                 return this.binaryResultType(expr.op, this.exprType(expr.left), this.exprType(expr.right));
             case 'call':
-                if (expr.name === '__irq_enable' || expr.name === '__irq_disable') return voidType();
+                if (interruptControlValue(expr.name) !== undefined) return voidType();
                 if (expr.name === '__load32' || expr.name === '__store32') return uintType();
                 return this.functionMap.get(expr.name)?.returnType || intType();
             case 'cast':
