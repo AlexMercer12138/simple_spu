@@ -640,9 +640,11 @@ Diagnostics retain the original include file and line. Include cycles and a
 bounded include-depth violation are errors. The generated header deliberately
 uses only the supported subset.
 
-The default Tiny C data base changes to `0x08000000`. Stack and static-data
-calculations use the configured DLB word address width and must remain within
-the fixed DLB region.
+The default Tiny C data base changes to `0x08000000`. The public compiler API
+accepts `dataBase` only in `0x08000000` through `0x0FFFFFFF` and accepts
+`dlbAddrWidth` only in `1` through `25`. The exclusive limit
+`dataBase + 2^(dlbAddrWidth + 2)` may equal but never exceed `0x10000000`, so
+stack and static-data calculations remain inside the fixed DLB region.
 
 ## 16. Verification
 

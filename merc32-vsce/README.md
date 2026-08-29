@@ -102,9 +102,12 @@ npx vsce package
 | `merc32-asm.outputPath` | 自定义输出目录（空则与源文件同目录） | `""` |
 | `merc32-asm.c.keepAssembly` | 构建 C 时是否保留中间生成的 `.asm` 文件 | `true` |
 | `merc32-asm.c.dataBase` | C 编译器使用的 DLB 数据基址 | `0x08000000` |
-| `merc32-asm.c.dlbAddrWidth` | DLB 字地址位宽，用于初始化 C 栈指针 | `16` |
+| `merc32-asm.c.dlbAddrWidth` | DLB 字地址位宽（`1..25`），用于初始化 C 栈指针 | `16` |
 
 `dataBase` 与 `dlbAddrWidth` 支持 `0x` / `0b` 前缀的字面量。
+Tiny C 只接受 `0x08000000..0x0FFFFFFF` 内的 `dataBase`；计算得到的
+`dataBase + (1 << (dlbAddrWidth + 2))` 是独占上界，且不得超过
+`0x10000000`。
 
 ## 汇编语法参考
 

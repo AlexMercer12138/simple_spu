@@ -50,6 +50,64 @@ function sourceLocation(sourceText, needle, occurrence = 1) {
     };
 }
 
+function immediatePattern(register, value) {
+    const unsigned = value >>> 0;
+    const format = (part) => part > 9 ? `0x${part.toString(16).toUpperCase()}` : String(part);
+    if (value >= 0 && value <= 0xffff) {
+        return `mov ${register}, ${format(value)}`;
+    }
+
+    const high = (unsigned >>> 16) & 0xffff;
+    const low = unsigned & 0xffff;
+    const lines = [
+        `mov ${register}, ${format(high)}`,
+        `mov ${register}, ${register} << 16`,
+    ];
+    if (low !== 0) {
+        lines.push(`mov ${register}, ${register} \\+ ${format(low)}`);
+    }
+    return lines.join('\\r?\\n');
+}
+
+function immediateStoreEvents(assembly) {
+    const registers = new Map();
+    const events = [];
+    for (const rawLine of assembly.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        let match = line.match(/^mov (r[78]), (0x[0-9A-F]+|\d+)$/);
+        if (match) {
+            registers.set(match[1], Number.parseInt(match[2], match[2].startsWith('0x') ? 16 : 10));
+            continue;
+        }
+        match = line.match(/^mov (r[78]), \1 << 16$/);
+        if (match && registers.has(match[1])) {
+            registers.set(match[1], (registers.get(match[1]) * 0x1_0000) >>> 0);
+            continue;
+        }
+        match = line.match(/^mov (r[78]), \1 \+ (0x[0-9A-F]+|\d+)$/);
+        if (match && registers.has(match[1])) {
+            const part = Number.parseInt(match[2], match[2].startsWith('0x') ? 16 : 10);
+            registers.set(match[1], (registers.get(match[1]) + part) >>> 0);
+            continue;
+        }
+        match = line.match(/^(mov|sb|sh|sw) \[(r8|r12 \+ \d+)\], r7$/);
+        if (match && registers.has('r7')) {
+            events.push({
+                store: match[1],
+                target: match[2],
+                address: match[2] === 'r8' ? registers.get('r8') : undefined,
+                value: registers.get('r7'),
+            });
+            continue;
+        }
+        match = line.match(/^mov (r[78]), /);
+        if (match) {
+            registers.delete(match[1]);
+        }
+    }
+    return events;
+}
+
 const source = `
 int data[4];
 
@@ -168,7 +226,7 @@ int main(void) {
 
 const { assembly: narrowAssembly } = compileC(narrowSource, {
     moduleName: 'narrow_type_test',
-    dataBase: 0x100,
+    dataBase: 0x0800_0100,
 });
 
 assert.match(narrowAssembly, /\blb r\d+, \[r8\]/);
@@ -199,23 +257,23 @@ assert.match(shortBody, /mov r8, r8 << 1/);
 assert.match(intBody, /mov r8, r8 << 2/);
 
 const globalInitExpectations = [
-    ['0x100', 'sb'],
-    ['0x101', 'sb'],
-    ['0x102', 'sh'],
-    ['0x104', 'sh'],
-    ['0x108', 'sw'],
-    ['0x10C', 'sb'],
-    ['0x10D', 'sb'],
-    ['0x10E', 'sb'],
-    ['0x110', 'sh'],
-    ['0x112', 'sh'],
-    ['0x114', 'sh'],
-    ['0x118', 'sw'],
-    ['0x11C', 'sw'],
-    ['0x120', 'sw'],
+    [0x0800_0100, 'sb'],
+    [0x0800_0101, 'sb'],
+    [0x0800_0102, 'sh'],
+    [0x0800_0104, 'sh'],
+    [0x0800_0108, 'sw'],
+    [0x0800_010c, 'sb'],
+    [0x0800_010d, 'sb'],
+    [0x0800_010e, 'sb'],
+    [0x0800_0110, 'sh'],
+    [0x0800_0112, 'sh'],
+    [0x0800_0114, 'sh'],
+    [0x0800_0118, 'sw'],
+    [0x0800_011c, 'sw'],
+    [0x0800_0120, 'sw'],
 ];
 for (const [address, store] of globalInitExpectations) {
-    assert.match(narrowAssembly, new RegExp(`mov r8, ${address}\\r?\\n${store} \\[r8\\], r7`));
+    assert.match(narrowAssembly, new RegExp(`${immediatePattern('r8', address)}\\r?\\n${store} \\[r8\\], r7`));
 }
 
 const layoutBody = narrowAssembly.match(/^layout_test:\r?\n([\s\S]*?)^__layout_test_return:/m)?.[1];
@@ -321,22 +379,20 @@ int main(void) {
 
 const { assembly: stringLiteralAssembly } = compileC(stringLiteralSource, {
     moduleName: 'string_literal_test',
-    dataBase: 0x200,
+    dataBase: 0x0800_0200,
 });
 
-const globalStringAddressText = stringLiteralAssembly.match(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, 0x200\r?\nsw \[r8\], r7$/m,
-)?.[1];
-assert.ok(globalStringAddressText, 'missing global string pointer initializer');
+const globalStringStore = immediateStoreEvents(stringLiteralAssembly)
+    .find((event) => event.store === 'sw' && event.address === 0x0800_0200);
+assert.ok(globalStringStore, 'missing global string pointer initializer');
 
 const mainBody = stringLiteralAssembly.match(
     /^main:\r?\n([\s\S]*?)^__main_return:/m,
 )?.[1];
 assert.ok(mainBody, 'missing assembly body for main');
-const localStringAddressText = mainBody.match(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nsw \[r12 \+ 8\], r7$/m,
-)?.[1];
-assert.ok(localStringAddressText, 'missing local string pointer initializer');
+const localStringStore = immediateStoreEvents(mainBody)
+    .find((event) => event.store === 'sw' && event.target === 'r12 + 8');
+assert.ok(localStringStore, 'missing local string pointer initializer');
 
 const parseImmediate = (text) => Number.parseInt(text, text.startsWith('0x') ? 16 : 10);
 
@@ -366,47 +422,47 @@ int main(void) {
 
 const { assembly: initializerAssembly } = compileC(initializerSource, {
     moduleName: 'array_initializer_test',
-    dataBase: 0x300,
+    dataBase: 0x0800_0300,
 });
 const initializerStartBody = initializerAssembly.match(
     /^__start:\r?\n([\s\S]*?)^__halt:/m,
 )?.[1];
 assert.ok(initializerStartBody, 'missing array initializer startup body');
 
-const initializerGlobalStores = [...initializerStartBody.matchAll(
-    /^mov r8, (0x[0-9A-F]+|\d+)\r?\n(sb|sh|sw) \[r8\], r7$/gm,
-)].map((match) => [parseImmediate(match[1]), match[2]]);
+const initializerGlobalStores = immediateStoreEvents(initializerStartBody)
+    .filter((event) => event.address !== undefined)
+    .map((event) => [event.address, event.store]);
 assert.deepStrictEqual(initializerGlobalStores, [
-    [0x300, 'sb'], [0x301, 'sb'], [0x302, 'sb'], [0x303, 'sb'], [0x304, 'sb'], [0x305, 'sb'],
-    [0x306, 'sb'], [0x307, 'sb'], [0x308, 'sb'], [0x309, 'sb'],
-    [0x30a, 'sb'], [0x30b, 'sb'], [0x30c, 'sb'], [0x30d, 'sb'],
-    [0x30e, 'sh'], [0x310, 'sh'], [0x312, 'sh'],
-    [0x314, 'sh'], [0x316, 'sh'], [0x318, 'sh'], [0x31a, 'sh'], [0x31c, 'sh'],
-    [0x320, 'sw'], [0x324, 'sw'], [0x328, 'sw'],
-    [0x32c, 'sw'], [0x330, 'sw'], [0x334, 'sw'], [0x338, 'sw'],
+    [0x0800_0300, 'sb'], [0x0800_0301, 'sb'], [0x0800_0302, 'sb'], [0x0800_0303, 'sb'], [0x0800_0304, 'sb'], [0x0800_0305, 'sb'],
+    [0x0800_0306, 'sb'], [0x0800_0307, 'sb'], [0x0800_0308, 'sb'], [0x0800_0309, 'sb'],
+    [0x0800_030a, 'sb'], [0x0800_030b, 'sb'], [0x0800_030c, 'sb'], [0x0800_030d, 'sb'],
+    [0x0800_030e, 'sh'], [0x0800_0310, 'sh'], [0x0800_0312, 'sh'],
+    [0x0800_0314, 'sh'], [0x0800_0316, 'sh'], [0x0800_0318, 'sh'], [0x0800_031a, 'sh'], [0x0800_031c, 'sh'],
+    [0x0800_0320, 'sw'], [0x0800_0324, 'sw'], [0x0800_0328, 'sw'],
+    [0x0800_032c, 'sw'], [0x0800_0330, 'sw'], [0x0800_0334, 'sw'], [0x0800_0338, 'sw'],
 ], 'unexpected global array layout or hidden string-pool allocation');
 
 for (const [address, store, value] of [
-    [0x300, 'sb', 0x68], [0x301, 'sb', 0x65], [0x302, 'sb', 0x6c],
-    [0x303, 'sb', 0x6c], [0x304, 'sb', 0x6f], [0x305, 'sb', 0],
-    [0x306, 'sb', 0xe4], [0x307, 'sb', 0xb8], [0x308, 'sb', 0xad],
-    [0x309, 'sb', 0], [0x30a, 'sb', 0], [0x30b, 'sb', 0],
-    [0x30c, 'sb', 0], [0x30d, 'sb', 0],
-    [0x30e, 'sh', 1], [0x312, 'sh', 3],
-    [0x314, 'sh', 4], [0x316, 'sh', 5],
-    [0x318, 'sh', 0], [0x31a, 'sh', 0], [0x31c, 'sh', 0],
-    [0x320, 'sw', 6], [0x324, 'sw', 7], [0x328, 'sw', 8],
-    [0x32c, 'sw', 9], [0x330, 'sw', 0], [0x334, 'sw', 0], [0x338, 'sw', 0],
+    [0x0800_0300, 'sb', 0x68], [0x0800_0301, 'sb', 0x65], [0x0800_0302, 'sb', 0x6c],
+    [0x0800_0303, 'sb', 0x6c], [0x0800_0304, 'sb', 0x6f], [0x0800_0305, 'sb', 0],
+    [0x0800_0306, 'sb', 0xe4], [0x0800_0307, 'sb', 0xb8], [0x0800_0308, 'sb', 0xad],
+    [0x0800_0309, 'sb', 0], [0x0800_030a, 'sb', 0], [0x0800_030b, 'sb', 0],
+    [0x0800_030c, 'sb', 0], [0x0800_030d, 'sb', 0],
+    [0x0800_030e, 'sh', 1], [0x0800_0312, 'sh', 3],
+    [0x0800_0314, 'sh', 4], [0x0800_0316, 'sh', 5],
+    [0x0800_0318, 'sh', 0], [0x0800_031a, 'sh', 0], [0x0800_031c, 'sh', 0],
+    [0x0800_0320, 'sw', 6], [0x0800_0324, 'sw', 7], [0x0800_0328, 'sw', 8],
+    [0x0800_032c, 'sw', 9], [0x0800_0330, 'sw', 0], [0x0800_0334, 'sw', 0], [0x0800_0338, 'sw', 0],
 ]) {
     const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
     assert.match(
         initializerStartBody,
-        new RegExp(`^mov r7, ${immediate}\\r?\\nmov r8, 0x${address.toString(16).toUpperCase()}\\r?\\n${store} \\[r8\\], r7$`, 'm'),
+        new RegExp(`^mov r7, ${immediate}\\r?\\n${immediatePattern('r8', address)}\\r?\\n${store} \\[r8\\], r7$`, 'm'),
     );
 }
 assert.match(
     initializerStartBody,
-    /^mov r7, 0xFFFF\r?\nmov r7, r7 << 16\r?\nmov r7, r7 \+ 0xFFFE\r?\nmov r8, 0x310\r?\nsh \[r8\], r7$/m,
+    new RegExp(`^${immediatePattern('r7', 0xffff_fffe)}\\r?\\n${immediatePattern('r8', 0x0800_0310)}\\r?\\nsh \\[r8\\], r7$`, 'm'),
 );
 
 const initializerMainBody = initializerAssembly.match(
@@ -469,23 +525,23 @@ int main(void) {
 }
 `, {
     moduleName: 'array_integer_constant_expression_test',
-    dataBase: 0x500,
+    dataBase: 0x0800_0500,
 });
 for (const [address, store, value] of [
-    [0x500, 'sb', 1],
-    [0x501, 'sb', 0x41],
-    [0x502, 'sh', 1],
-    [0x504, 'sw', 0],
-    [0x508, 'sw', 1],
-    [0x510, 'sw', 0],
-    [0x514, 'sw', 1],
+    [0x0800_0500, 'sb', 1],
+    [0x0800_0501, 'sb', 0x41],
+    [0x0800_0502, 'sh', 1],
+    [0x0800_0504, 'sw', 0],
+    [0x0800_0508, 'sw', 1],
+    [0x0800_0510, 'sw', 0],
+    [0x0800_0514, 'sw', 1],
 ]) {
     const immediate = value > 9 ? `0x${value.toString(16).toUpperCase()}` : String(value);
     assert.match(
         integerConstantArrayAssembly,
         new RegExp(
             `^mov r7, ${immediate}\\r?\\n` +
-            `mov r8, 0x${address.toString(16).toUpperCase()}\\r?\\n` +
+            `${immediatePattern('r8', address)}\\r?\\n` +
             `${store} \\[r8\\], r7$`,
             'm',
         ),
@@ -493,16 +549,16 @@ for (const [address, store, value] of [
 }
 assert.match(
     integerConstantArrayAssembly,
-    /^mov r7, 0x7FFF\r?\nmov r7, r7 << 16\r?\nmov r7, r7 \+ 0xFFFF\r?\nmov r8, 0x50C\r?\nsw \[r8\], r7$/m,
+    new RegExp(`^${immediatePattern('r7', 0x7fff_ffff)}\\r?\\n${immediatePattern('r8', 0x0800_050c)}\\r?\\nsw \\[r8\\], r7$`, 'm'),
 );
 assert.ok(new SimpleCPUAssembler().assemble(integerConstantArrayAssembly, {
     sourceFileName: 'array_integer_constant_expression_test.asm',
 }).machineCodes.length > 0);
 
 for (const [testSource, expectedLocation, options] of [
-    ['int a[] = {"a" - "b"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
-    ['int a[] = {"a" == "a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
-    ['int a[] = {(int)"a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x600, dlbAddrWidth: 0 }],
+    ['int a[] = {"a" - "b"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x0800_0600, dlbAddrWidth: 1 }],
+    ['int a[] = {"a" == "a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x0800_0600, dlbAddrWidth: 1 }],
+    ['int a[] = {(int)"a"}; int main(void) { return 0; }', { line: 1, column: 11 }, { dataBase: 0x0800_0600, dlbAddrWidth: 1 }],
     ['int value;\nint a[] = {value};\nint main(void) { return 0; }', { line: 2, column: 11 }],
     ['int seed(void) { return 1; }\nint a[] = {seed()};\nint main(void) { return 0; }', { line: 2, column: 11 }],
     ['int value;\nint a[] = {value = 1};\nint main(void) { return 0; }', { line: 2, column: 11 }],
@@ -608,16 +664,16 @@ char *copied_pointer = "same";
 int main(void) { return copied[0] + copied_pointer[0]; }
 `, {
     moduleName: 'array_initializer_string_pool_test',
-    dataBase: 0x400,
+    dataBase: 0x0800_0400,
 });
 assert.match(
     initializerStringPoolAssembly,
-    /^mov r7, 0x40C\r?\nmov r8, 0x408\r?\nsw \[r8\], r7$/m,
+    new RegExp(`^${immediatePattern('r7', 0x0800_040c)}\\r?\\n${immediatePattern('r8', 0x0800_0408)}\\r?\\nsw \\[r8\\], r7$`, 'm'),
     'a string expression must still allocate a pooled copy',
 );
 assert.match(
     initializerStringPoolAssembly,
-    /^mov r7, 0x73\r?\nmov r8, 0x40C\r?\nsb \[r8\], r7$/m,
+    new RegExp(`^mov r7, 0x73\\r?\\n${immediatePattern('r8', 0x0800_040c)}\\r?\\nsb \\[r8\\], r7$`, 'm'),
 );
 
 for (const [testSource, pattern, expectedLocation, options] of [
@@ -633,8 +689,8 @@ for (const [testSource, pattern, expectedLocation, options] of [
     ['int main(void) { int local[]; return 0; }', /incomplete array requires an initializer/, { line: 1, column: 29 }],
     ['int a[] = {"x"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }],
     ['int main(void) { int a[] = {"x"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }],
-    ['int a[] = {"ABCDE"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }, { dataBase: 0x200, dlbAddrWidth: 0 }],
-    ['int main(void) { int a[] = {"ABCDE"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }, { dataBase: 0x200, dlbAddrWidth: 0 }],
+    ['int a[] = {"ABCDE"}; int main(void) { return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 11 }, { dataBase: 0x0800_0200, dlbAddrWidth: 1 }],
+    ['int main(void) { int a[] = {"ABCDE"}; return 0; }', /array initializer element cannot have pointer type/, { line: 1, column: 28 }, { dataBase: 0x0800_0200, dlbAddrWidth: 1 }],
     ['void noop(void) {}\nint a[] = {noop()};\nint main(void) { return 0; }', /array initializer element cannot have void type/, { line: 2, column: 11 }],
     ['void noop(void) {}\nint main(void) { int a[] = {noop()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
     ['void __irq_handler(void) {}\nint main(void) { int a[] = {__irq_enable()}; return 0; }', /array initializer element cannot have void type/, { line: 2, column: 28 }],
@@ -645,16 +701,16 @@ for (const [testSource, pattern, expectedLocation, options] of [
     expectCompilerError(testSource, pattern, expectedLocation, options);
 }
 
-const sameStringAddress = parseImmediate(globalStringAddressText);
+const sameStringAddress = globalStringStore.value;
 assert.strictEqual(
-    parseImmediate(localStringAddressText),
+    localStringStore.value,
     sameStringAddress,
     'identical string literals must share one static address',
 );
 
-const stagedArgumentAddresses = [...mainBody.matchAll(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov \[r12 \+ \d+\], r7$/gm,
-)].map((match) => parseImmediate(match[1]));
+const stagedArgumentAddresses = immediateStoreEvents(mainBody)
+    .filter((event) => event.store === 'mov' && event.target.startsWith('r12 + '))
+    .map((event) => event.value);
 assert.strictEqual(stagedArgumentAddresses.length, 1, 'expected one staged string argument');
 const concatenatedStringAddress = stagedArgumentAddresses[0];
 assert.notStrictEqual(concatenatedStringAddress, sameStringAddress);
@@ -664,10 +720,10 @@ const startBody = stringLiteralAssembly.match(
 )?.[1];
 assert.ok(startBody, 'missing startup assembly body');
 const staticBytes = new Map();
-for (const match of startBody.matchAll(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
-)) {
-    staticBytes.set(parseImmediate(match[2]), parseImmediate(match[1]));
+for (const event of immediateStoreEvents(startBody)) {
+    if (event.store === 'sb' && event.address !== undefined) {
+        staticBytes.set(event.address, event.value);
+    }
 }
 
 assert.deepStrictEqual(
@@ -685,25 +741,21 @@ char *large_text = "${'A'.repeat(largeStringByteLength)}";
 int main(void) { return large_text[0]; }
 `, {
     moduleName: 'large_string_literal_test',
-    dataBase: 0x200,
+    dataBase: 0x0800_0200,
 });
 assert.match(
     largeStringAssembly,
-    /^mov r7, 0x204\r?\nmov r8, 0x200\r?\nsw \[r8\], r7$/m,
+    new RegExp(`^${immediatePattern('r7', 0x0800_0204)}\\r?\\n${immediatePattern('r8', 0x0800_0200)}\\r?\\nsw \\[r8\\], r7$`, 'm'),
 );
 assert.match(
     largeStringAssembly,
-    /^mov r7, 0x41\r?\nmov r8, 0x204\r?\nsb \[r8\], r7$/m,
+    new RegExp(`^mov r7, 0x41\\r?\\n${immediatePattern('r8', 0x0800_0204)}\\r?\\nsb \\[r8\\], r7$`, 'm'),
 );
-const largeStringTerminatorAddress = 0x204 + largeStringByteLength;
-const largeStringTerminatorHigh = largeStringTerminatorAddress >>> 16;
-const largeStringTerminatorLow = largeStringTerminatorAddress & 0xffff;
+const largeStringTerminatorAddress = 0x0800_0204 + largeStringByteLength;
 assert.match(
     largeStringAssembly,
     new RegExp(
-        `^mov r7, 0\\r?\\nmov r8, ${largeStringTerminatorHigh}\\r?\\n` +
-            `mov r8, r8 << 16\\r?\\nmov r8, r8 \\+ 0x${largeStringTerminatorLow.toString(16).toUpperCase()}\\r?\\n` +
-            'sb \\[r8\\], r7$',
+        `^mov r7, 0\\r?\\n${immediatePattern('r8', largeStringTerminatorAddress)}\\r?\\nsb \\[r8\\], r7$`,
         'm',
     ),
 );
@@ -727,24 +779,24 @@ int main(void) { return 0; }
 `;
 const { assembly: pointerConstantAssembly } = compileC(pointerConstantSource, {
     moduleName: 'pointer_string_constant_test',
-    dataBase: 0x200,
+    dataBase: 0x0800_0200,
 });
 const pointerConstantInitializers = new Map();
-for (const match of pointerConstantAssembly.matchAll(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsw \[r8\], r7$/gm,
-)) {
-    pointerConstantInitializers.set(parseImmediate(match[2]), parseImmediate(match[1]));
+for (const event of immediateStoreEvents(pointerConstantAssembly)) {
+    if (event.store === 'sw' && event.address !== undefined) {
+        pointerConstantInitializers.set(event.address, event.value);
+    }
 }
-const shortStringBase = pointerConstantInitializers.get(0x200);
-const intStringBase = pointerConstantInitializers.get(0x210);
+const shortStringBase = pointerConstantInitializers.get(0x0800_0200);
+const intStringBase = pointerConstantInitializers.get(0x0800_0210);
 assert.strictEqual(typeof shortStringBase, 'number');
 assert.strictEqual(typeof intStringBase, 'number');
-assert.strictEqual(pointerConstantInitializers.get(0x204), shortStringBase + 2);
-assert.strictEqual(pointerConstantInitializers.get(0x208), shortStringBase + 4);
-assert.strictEqual(pointerConstantInitializers.get(0x20c), shortStringBase - 2);
-assert.strictEqual(pointerConstantInitializers.get(0x214), intStringBase + 4);
-assert.strictEqual(pointerConstantInitializers.get(0x218), intStringBase - 4);
-assert.strictEqual(pointerConstantInitializers.get(0x21c), 2);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_0204), shortStringBase + 2);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_0208), shortStringBase + 4);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_020c), shortStringBase - 2);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_0214), intStringBase + 4);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_0218), intStringBase - 4);
+assert.strictEqual(pointerConstantInitializers.get(0x0800_021c), 2);
 
 expectCompilerError(
     'char *bad = "left" + "right"; int main(void) { return 0; }',
@@ -1042,7 +1094,7 @@ int main(void) {
 
 const { assembly: conditionalExpressionAssembly } = compileC(conditionalExpressionSource, {
     moduleName: 'conditional_expression_test',
-    dataBase: 0x400,
+    dataBase: 0x0800_0400,
 });
 
 const chooseConditionalBody = conditionalExpressionAssembly.match(
@@ -1121,10 +1173,10 @@ assert.strictEqual((castedVoidBody.match(/^jmp void_false, r14$/gm) || []).lengt
 assert.doesNotMatch(castedVoidBody, /^mov r7, r4$/m);
 
 const conditionalStaticBytes = new Map();
-for (const match of conditionalExpressionAssembly.matchAll(
-    /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
-)) {
-    conditionalStaticBytes.set(parseImmediate(match[2]), parseImmediate(match[1]));
+for (const event of immediateStoreEvents(conditionalExpressionAssembly)) {
+    if (event.store === 'sb' && event.address !== undefined) {
+        conditionalStaticBytes.set(event.address, event.value);
+    }
 }
 const hasStaticBytes = (bytes) => [...conditionalStaticBytes.keys()].some(
     (address) => bytes.every((byte, offset) => conditionalStaticBytes.get(address + offset) === byte),
@@ -1134,7 +1186,10 @@ assert.ok(hasStaticBytes([0x52, 0x49, 0x47, 0x48, 0x54, 0]), 'false global strin
 assert.ok(hasStaticBytes([0x54, 0x52, 0x55, 0x45, 0]), 'true local string branch must be pooled');
 assert.ok(hasStaticBytes([0x46, 0x41, 0x4c, 0x53, 0x45, 0]), 'false local string branch must be pooled');
 
-assert.match(conditionalExpressionAssembly, /^mov r7, 0x29\r?\nmov r8, 0x400\r?\nsw \[r8\], r7$/m);
+assert.match(
+    conditionalExpressionAssembly,
+    new RegExp(`^mov r7, 0x29\\r?\\n${immediatePattern('r8', 0x0800_0400)}\\r?\\nsw \\[r8\\], r7$`, 'm'),
+);
 const conditionalAssemblerResult = new SimpleCPUAssembler().assemble(conditionalExpressionAssembly, {
     sourceFileName: 'conditional_expression_test.asm',
 });
@@ -1341,7 +1396,7 @@ int main(void) {
 
 const { assembly: assignmentValueAssembly } = compileC(assignmentValueSource, {
     moduleName: 'assignment_value_test',
-    dataBase: 0x600,
+    dataBase: 0x0800_0600,
 });
 const assignmentBody = (functionName) => assignmentValueAssembly.match(
     new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
@@ -1351,19 +1406,22 @@ const assignmentToR8Body = assignmentBody('assignment_to_r8');
 assert.ok(assignmentToR8Body, 'missing assignment_to_r8 assembly body');
 assert.match(
     assignmentToR8Body,
-    /^mov r7, 5\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+    new RegExp(`^mov r7, 5\\r?\\n${immediatePattern('r8', 0x0800_0600)}\\r?\\nsw \\[r8\\], r7\\r?\\nmov r8, r7$`, 'm'),
 );
 assert.doesNotMatch(assignmentToR8Body, /^sw \[r8\], r8$/m);
 
 const assignmentToR7Body = assignmentBody('assignment_to_r7');
 assert.ok(assignmentToR7Body, 'missing assignment_to_r7 assembly body');
-assert.match(assignmentToR7Body, /^mov r7, 6\r?\nmov r8, 0x600\r?\nsw \[r8\], r7$/m);
+assert.match(
+    assignmentToR7Body,
+    new RegExp(`^mov r7, 6\\r?\\n${immediatePattern('r8', 0x0800_0600)}\\r?\\nsw \\[r8\\], r7$`, 'm'),
+);
 
 const assignmentToR4Body = assignmentBody('assignment_to_r4');
 assert.ok(assignmentToR4Body, 'missing assignment_to_r4 assembly body');
 assert.match(
     assignmentToR4Body,
-    /^mov r7, 7\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r4, r7$/m,
+    new RegExp(`^mov r7, 7\\r?\\n${immediatePattern('r8', 0x0800_0600)}\\r?\\nsw \\[r8\\], r7\\r?\\nmov r4, r7$`, 'm'),
 );
 
 const localAssignmentBody = assignmentBody('local_assignment_to_r8');
@@ -1397,7 +1455,7 @@ const compoundAssignmentRhsBody = assignmentBody('compound_assignment_rhs');
 assert.ok(compoundAssignmentRhsBody, 'missing compound_assignment_rhs assembly body');
 assert.match(
     compoundAssignmentRhsBody,
-    /^mov r7, 0xD\r?\nmov r8, 0x604\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+    new RegExp(`^mov r7, 0xD\\r?\\n${immediatePattern('r8', 0x0800_0604)}\\r?\\nsw \\[r8\\], r7\\r?\\nmov r8, r7$`, 'm'),
 );
 assert.doesNotMatch(compoundAssignmentRhsBody, /^sw \[r8\], r8$/m);
 
@@ -1405,7 +1463,7 @@ const nestedAssignmentBody = assignmentBody('nested_assignment');
 assert.ok(nestedAssignmentBody, 'missing nested_assignment assembly body');
 assert.match(
     nestedAssignmentBody,
-    /^mov r7, 0xE\r?\nsw \[r12 \+ 8\], r7\r?\nmov r8, 0x600\r?\nsw \[r8\], r7\r?\nmov r8, r7$/m,
+    new RegExp(`^mov r7, 0xE\\r?\\nsw \\[r12 \\+ 8\\], r7\\r?\\n${immediatePattern('r8', 0x0800_0600)}\\r?\\nsw \\[r8\\], r7\\r?\\nmov r8, r7$`, 'm'),
 );
 assert.doesNotMatch(nestedAssignmentBody, /^sw \[r8\], r8$/m);
 
@@ -1692,7 +1750,7 @@ const controlFlowErrorCases = [
         source: 'int main(void) { switch (0) { case "a string too large for the configured DLB": return 1; } return 0; }',
         pattern: /case value must be an integer constant expression/,
         marker: 'case',
-        options: { dataBase: 0x200, dlbAddrWidth: 0 },
+        options: { dataBase: 0x0800_0200, dlbAddrWidth: 1 },
     },
     {
         source: 'int main(void) { int values[1]; int *pointer = values; switch (pointer) { default: break; } return 0; }',
@@ -1779,13 +1837,13 @@ expectCompilerError(
 
 compileC('char *text = "ABC"; int main(void) { return text[0]; }', {
     moduleName: 'dlb_exact_fit_string_test',
-    dataBase: 0x200,
+    dataBase: 0x0800_0200,
     dlbAddrWidth: 1,
 });
 assert.throws(
     () => compileC('char *text = "ABCD"; int main(void) { return text[0]; }', {
         moduleName: 'dlb_overflow_string_test',
-        dataBase: 0x200,
+        dataBase: 0x0800_0200,
         dlbAddrWidth: 1,
     }),
     (error) => {
@@ -1796,13 +1854,21 @@ assert.throws(
 );
 
 const compilerOptionErrorCases = [
-    [{ dataBase: -1 }, /dataBase must be between 0 and 0xFFFFFFFF/],
+    [{ dataBase: -1 }, /dataBase must be within DLB 0x08000000\.\.0x0FFFFFFF/],
     [{ dataBase: Number.NaN }, /dataBase must be a finite safe integer/],
     [{ dataBase: 1.5 }, /dataBase must be a finite safe integer/],
-    [{ dataBase: 0x1_0000_0000 }, /dataBase must be between 0 and 0xFFFFFFFF/],
-    [{ dlbAddrWidth: -1 }, /dlbAddrWidth must be a non-negative safe integer/],
-    [{ dlbAddrWidth: Number.NaN }, /dlbAddrWidth must be a non-negative safe integer/],
-    [{ dlbAddrWidth: 1.5 }, /dlbAddrWidth must be a non-negative safe integer/],
+    [{ dataBase: 0x07ff_ffff }, /dataBase must be within DLB 0x08000000\.\.0x0FFFFFFF/],
+    [{ dataBase: 0x1000_0000 }, /dataBase must be within DLB 0x08000000\.\.0x0FFFFFFF/],
+    [{ dataBase: 0x1_0000_0000 }, /dataBase must be within DLB 0x08000000\.\.0x0FFFFFFF/],
+    [{ dlbAddrWidth: -1 }, /dlbAddrWidth must be an integer in range 1\.\.25/],
+    [{ dlbAddrWidth: 0 }, /dlbAddrWidth must be an integer in range 1\.\.25/],
+    [{ dlbAddrWidth: Number.NaN }, /dlbAddrWidth must be an integer in range 1\.\.25/],
+    [{ dlbAddrWidth: 1.5 }, /dlbAddrWidth must be an integer in range 1\.\.25/],
+    [{ dlbAddrWidth: 26 }, /dlbAddrWidth must be an integer in range 1\.\.25/],
+    [
+        { dataBase: 0x0800_0004, dlbAddrWidth: 25 },
+        /DLB data range exceeds exclusive limit 0x10000000/,
+    ],
 ];
 for (const [options, pattern] of compilerOptionErrorCases) {
     assert.throws(
@@ -1815,15 +1881,35 @@ for (const [options, pattern] of compilerOptionErrorCases) {
     );
 }
 
+compileC('int main(void) { return 0; }', {
+    moduleName: 'minimum_dlb_layout_test',
+    dataBase: 0x0800_0000,
+    dlbAddrWidth: 1,
+});
+compileC('int main(void) { return 0; }', {
+    moduleName: 'highest_legal_dlb_base_test',
+    dataBase: 0x0fff_fff8,
+    dlbAddrWidth: 1,
+});
+const { assembly: fullDlbAssembly } = compileC('int main(void) { return 0; }', {
+    moduleName: 'full_dlb_test',
+    dataBase: 0x0800_0000,
+    dlbAddrWidth: 25,
+});
+assert.match(fullDlbAssembly, /^__start:\r?\nmov r13, 0x1000\r?\nmov r13, r13 << 16\r?\njmp main, r14$/m);
+
 const { assembly: finalAddressAssembly } = compileC(
-    'int main(void) { return "ABC"[0]; }',
+    'int main(void) { return "ABCDEFG"[0]; }',
     {
         moduleName: 'final_dlb_addresses_test',
-        dataBase: 0xffff_fffc,
-        dlbAddrWidth: 0,
+        dataBase: 0x0fff_fff8,
+        dlbAddrWidth: 1,
     },
 );
-assert.match(finalAddressAssembly, /^__start:\r?\nmov r13, 0\r?\nmov r7, 0x41$/m);
+assert.match(
+    finalAddressAssembly,
+    new RegExp(`^__start:\\r?\\n${immediatePattern('r13', 0x1000_0000)}\\r?\\nmov r7, 0x41$`, 'm'),
+);
 const finalAddressBytes = new Map();
 for (const match of finalAddressAssembly.matchAll(
     /^mov r7, (0x[0-9A-F]+|\d+)\r?\nmov r8, (0x[0-9A-F]+|\d+)\r?\nmov r8, r8 << 16\r?\nmov r8, r8 \+ (0x[0-9A-F]+|\d+)\r?\nsb \[r8\], r7$/gm,
@@ -1831,18 +1917,21 @@ for (const match of finalAddressAssembly.matchAll(
     const address = parseImmediate(match[2]) * 0x1_0000 + parseImmediate(match[3]);
     finalAddressBytes.set(address, parseImmediate(match[1]));
 }
-assert.strictEqual(finalAddressBytes.size, 4);
+assert.strictEqual(finalAddressBytes.size, 8);
 assert.deepStrictEqual(
-    [0xffff_fffc, 0xffff_fffd, 0xffff_fffe, 0xffff_ffff]
+    [
+        0x0fff_fff8, 0x0fff_fff9, 0x0fff_fffa, 0x0fff_fffb,
+        0x0fff_fffc, 0x0fff_fffd, 0x0fff_fffe, 0x0fff_ffff,
+    ]
         .map((address) => finalAddressBytes.get(address)),
-    [0x41, 0x42, 0x43, 0x00],
+    [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x00],
 );
 
 assert.throws(
-    () => compileC('int main(void) { return "ABCD"[0]; }', {
+    () => compileC('int main(void) { return "ABCDEFGH"[0]; }', {
         moduleName: 'past_final_dlb_address_test',
-        dataBase: 0xffff_fffc,
-        dlbAddrWidth: 0,
+        dataBase: 0x0fff_fff8,
+        dlbAddrWidth: 1,
     }),
     (error) => {
         assert.ok(error instanceof CompilerError);
@@ -1850,13 +1939,6 @@ assert.throws(
         return true;
     },
 );
-
-const { assembly: fullAddressSpaceAssembly } = compileC('int main(void) { return 0; }', {
-    moduleName: 'full_address_space_test',
-    dataBase: 0,
-    dlbAddrWidth: 30,
-});
-assert.match(fullAddressSpaceAssembly, /^__start:\r?\nmov r13, 0\r?\njmp main, r14$/m);
 
 const irqSource = `
 volatile unsigned int irq_count = 0;

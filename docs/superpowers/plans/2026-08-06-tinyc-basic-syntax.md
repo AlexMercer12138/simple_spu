@@ -127,7 +127,7 @@ int main(void) {
 
 const { assembly: stringAssembly } = compileC(stringLiteralSource, {
     moduleName: 'string_literal_test',
-    dataBase: 0x200,
+    dataBase: 0x08000200,
 });
 assert.match(stringAssembly, /sb \[r8\], r7/);
 for (const byte of [0x41, 0x42, 0xe4, 0xb8, 0xad, 0x0a, 0x00]) {
@@ -184,7 +184,7 @@ interface StaticString {
 private readonly staticStrings = new Map<string, StaticString>();
 ```
 
-After indexing user globals, recursively traverse all global initializers and function bodies. For each string, allocate `bytes.length + 1` bytes at `nextGlobalAddress`, deduplicate identical content, and retain the address. Add a DLB bounds check against `dataBase + (1 << (dlbAddrWidth + 2))`.
+After indexing user globals, recursively traverse all global initializers and function bodies. For each string, allocate `bytes.length + 1` bytes at `nextGlobalAddress`, deduplicate identical content, and retain the address. Require `dataBase` in `0x08000000..0x0FFFFFFF`, `dlbAddrWidth` in `1..25`, and the exclusive bound `dataBase + (1 << (dlbAddrWidth + 2))` at or below `0x10000000`; retain the static-data overflow check against that bound.
 
 Extend `emitGlobalInitializers()` to emit each payload byte followed by a zero with `sb`. Extend `emitExpr()` and `exprType()` so a string loads its address and has type `char *`. Extend constant evaluation so a string expression can initialize a global pointer.
 

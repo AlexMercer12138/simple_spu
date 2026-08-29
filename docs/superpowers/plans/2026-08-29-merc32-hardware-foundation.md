@@ -169,6 +169,11 @@ config.get<string>('c.dataBase', '0x08000000')
 options.dataBase ?? 0x0800_0000
 ```
 
+The public compiler API must reject `dataBase` outside
+`0x08000000..0x0FFFFFFF`, reject `dlbAddrWidth` outside `1..25`, and reject an
+exclusive computed data limit above `0x10000000`. A limit exactly equal to
+`0x10000000` remains valid.
+
 Update the package configuration default, ABI equations, all real DLB pointers
 in examples and tests, and `DATA_PAGE` in `full_test.asm`. Do not replace
 unrelated numeric result markers such as `0x01000000`.

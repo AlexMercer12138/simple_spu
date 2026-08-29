@@ -118,6 +118,11 @@ jmp r14
 dataBase = 0x08000000
 ```
 
+编译器只接受 DLB 区域内的 `dataBase`（`0x08000000..0x0FFFFFFF`）和
+`1..25` 的 `dlbAddrWidth`。计算得到的独占数据上界
+`dataBase + (1 << (dlbAddrWidth + 2))` 不得超过 `0x10000000`；上界恰好
+等于 `0x10000000` 是完整覆盖 128 MiB DLB 的合法布局。
+
 默认 DLB 地址宽度为 16 个 word 地址位，因此默认栈顶为：
 
 ```text

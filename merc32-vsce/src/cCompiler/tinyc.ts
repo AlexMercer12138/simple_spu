@@ -1327,6 +1327,10 @@ const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
 const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
+const DLB_BASE_ADDRESS = 0x0800_0000;
+const DLB_EXCLUSIVE_LIMIT = 0x1000_0000;
+const MIN_DLB_ADDR_WIDTH = 1;
+const MAX_DLB_ADDR_WIDTH = 25;
 // At two instructions per element, three inline zero stores cost no more than the loop path.
 const MAX_INLINE_LOCAL_ARRAY_ZERO_STORES = 3;
 
@@ -1350,18 +1354,20 @@ class CodeGenerator {
         if (!Number.isSafeInteger(dataBase)) {
             throw new CompilerError('dataBase must be a finite safe integer');
         }
-        if (dataBase < 0 || dataBase > 0xffff_ffff) {
-            throw new CompilerError('dataBase must be between 0 and 0xFFFFFFFF');
+        if (dataBase < DLB_BASE_ADDRESS || dataBase >= DLB_EXCLUSIVE_LIMIT) {
+            throw new CompilerError('dataBase must be within DLB 0x08000000..0x0FFFFFFF');
         }
 
         const dlbAddrWidth = options.dlbAddrWidth ?? 16;
-        if (!Number.isSafeInteger(dlbAddrWidth) || dlbAddrWidth < 0) {
-            throw new CompilerError('dlbAddrWidth must be a non-negative safe integer');
+        if (!Number.isSafeInteger(dlbAddrWidth) ||
+            dlbAddrWidth < MIN_DLB_ADDR_WIDTH ||
+            dlbAddrWidth > MAX_DLB_ADDR_WIDTH) {
+            throw new CompilerError('dlbAddrWidth must be an integer in range 1..25');
         }
 
         const dataLimit = dataBase + 2 ** (dlbAddrWidth + 2);
-        if (!Number.isSafeInteger(dataLimit) || dataLimit > 0x1_0000_0000) {
-            throw new CompilerError('DLB address range exceeds 32-bit address space');
+        if (dataLimit > DLB_EXCLUSIVE_LIMIT) {
+            throw new CompilerError('DLB data range exceeds exclusive limit 0x10000000');
         }
 
         this.dataBase = dataBase;
