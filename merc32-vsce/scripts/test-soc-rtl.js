@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { fileURLToPath, pathToFileURL } = require('url');
 
 const {
     generateSoc, loadCatalog, parseSocConfig, planSoc,
@@ -19,37 +20,167 @@ const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-soc-rtl-'));
 
 function denyRepositoryRtlAfterPreparation() {
     const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
-    const originals = new Map();
+    const originals = [];
+    const normalizePathLike = (value, operation) => {
+        let decoded;
+        if (typeof value === 'string') {
+            decoded = value;
+        } else if (Buffer.isBuffer(value)) {
+            try {
+                decoded = new TextDecoder('utf-8', { fatal: true }).decode(value);
+            } catch (error) {
+                throw new TypeError(`Unnormalizable filesystem path for ${operation}: invalid UTF-8 Buffer.`,
+                    { cause: error });
+            }
+        } else if (value instanceof URL) {
+            try {
+                decoded = fileURLToPath(value);
+            } catch (error) {
+                throw new TypeError(`Unnormalizable filesystem path for ${operation}: ${value.href}`,
+                    { cause: error });
+            }
+        } else {
+            throw new TypeError(`Unnormalizable filesystem path for ${operation}: ${Object.prototype.toString.call(value)}.`);
+        }
+        return path.resolve(decoded).toLowerCase();
+    };
     const deny = (value, operation) => {
-        if (typeof value !== 'string') return;
-        const normalized = path.resolve(value).toLowerCase();
+        const normalized = normalizePathLike(value, operation);
         if (normalized === repositoryRtlRoot
             || normalized.startsWith(`${repositoryRtlRoot}${path.sep}`)) {
             throw new Error(`repository-root RTL ${operation} after preparation: ${value}`);
         }
     };
-    for (const method of [
-        'accessSync', 'copyFileSync', 'cpSync', 'createReadStream', 'existsSync',
-        'lstatSync', 'openSync', 'readFileSync', 'readdirSync', 'readlinkSync',
-        'realpathSync', 'statSync',
-    ]) {
-        const original = fs[method];
-        originals.set(method, original);
-        const guarded = function deniedRepositoryRtlAccess(value, ...args) {
-            deny(value, method);
-            return original.call(fs, value, ...args);
-        };
-        if (method === 'realpathSync' && typeof original.native === 'function') {
-            guarded.native = function deniedNativeRealpath(value, ...args) {
-                deny(value, 'realpathSync.native');
-                return original.native.call(original, value, ...args);
+    const guardArguments = (args, indices, operation) => {
+        for (const index of indices) deny(args[index], operation);
+    };
+    const replace = (owner, method, guarded) => {
+        const original = owner[method];
+        if (typeof original !== 'function') return;
+        originals.push({ owner, method, original });
+        owner[method] = guarded(original);
+    };
+    const syncMethods = new Map([
+        ['accessSync', [0]], ['copyFileSync', [0, 1]], ['cpSync', [0, 1]],
+        ['createReadStream', [0]], ['createWriteStream', [0]], ['existsSync', [0]],
+        ['linkSync', [0, 1]], ['lstatSync', [0]], ['mkdirSync', [0]],
+        ['mkdtempSync', [0]], ['openSync', [0]], ['opendirSync', [0]],
+        ['readFileSync', [0]], ['readdirSync', [0]], ['readlinkSync', [0]],
+        ['realpathSync', [0]], ['renameSync', [0, 1]], ['rmdirSync', [0]],
+        ['rmSync', [0]], ['statSync', [0]], ['unlinkSync', [0]],
+        ['writeFileSync', [0]],
+    ]);
+    for (const [method, indices] of syncMethods) {
+        replace(fs, method, (original) => {
+            const guarded = function deniedRepositoryRtlAccess(...args) {
+                guardArguments(args, indices, method);
+                return original.apply(this, args);
             };
-        }
-        fs[method] = guarded;
+            if (method === 'realpathSync' && typeof original.native === 'function') {
+                guarded.native = function deniedNativeRealpath(...args) {
+                    guardArguments(args, indices, 'realpathSync.native');
+                    return original.native.apply(original, args);
+                };
+            }
+            return guarded;
+        });
+    }
+    const callbackMethods = new Map([
+        ['access', [0]], ['copyFile', [0, 1]], ['cp', [0, 1]], ['link', [0, 1]],
+        ['lstat', [0]], ['mkdir', [0]], ['mkdtemp', [0]], ['open', [0]],
+        ['opendir', [0]], ['readFile', [0]], ['readdir', [0]], ['readlink', [0]],
+        ['realpath', [0]], ['rename', [0, 1]], ['rmdir', [0]], ['rm', [0]],
+        ['stat', [0]], ['unlink', [0]], ['writeFile', [0]],
+    ]);
+    for (const [method, indices] of callbackMethods) {
+        replace(fs, method, (original) => {
+            const guarded = function deniedRepositoryRtlAccess(...args) {
+                try {
+                    guardArguments(args, indices, method);
+                } catch (error) {
+                    const callback = args[args.length - 1];
+                    if (typeof callback !== 'function') throw error;
+                    process.nextTick(callback, error);
+                    return undefined;
+                }
+                return original.apply(this, args);
+            };
+            if (method === 'realpath' && typeof original.native === 'function') {
+                guarded.native = function deniedNativeRealpath(...args) {
+                    try {
+                        guardArguments(args, indices, 'realpath.native');
+                    } catch (error) {
+                        const callback = args[args.length - 1];
+                        if (typeof callback !== 'function') throw error;
+                        process.nextTick(callback, error);
+                        return undefined;
+                    }
+                    return original.native.apply(original, args);
+                };
+            }
+            return guarded;
+        });
+    }
+    const promiseMethods = new Map([
+        ['access', [0]], ['copyFile', [0, 1]], ['cp', [0, 1]], ['link', [0, 1]],
+        ['lstat', [0]], ['mkdir', [0]], ['mkdtemp', [0]], ['open', [0]],
+        ['opendir', [0]], ['readFile', [0]], ['readdir', [0]], ['readlink', [0]],
+        ['realpath', [0]], ['rename', [0, 1]], ['rmdir', [0]], ['rm', [0]],
+        ['stat', [0]], ['unlink', [0]], ['writeFile', [0]],
+    ]);
+    for (const [method, indices] of promiseMethods) {
+        replace(fs.promises, method, (original) => function deniedRepositoryRtlAccess(...args) {
+            try {
+                guardArguments(args, indices, `promises.${method}`);
+            } catch (error) {
+                return Promise.reject(error);
+            }
+            return original.apply(this, args);
+        });
     }
     return () => {
-        for (const [method, original] of originals) fs[method] = original;
+        for (const { owner, method, original } of originals.reverse()) {
+            owner[method] = original;
+        }
     };
+}
+
+async function assertRepositoryRtlDenialCoverage() {
+    const target = path.join(repositoryRoot, 'rtl', 'cpu', 'core.v');
+    const bypasses = [];
+    const isDenial = (error) => error instanceof Error
+        && /repository-root RTL .* after preparation/.test(error.message);
+    const expectSynchronousDenial = (label, operation) => {
+        try {
+            const result = operation();
+            if (result && typeof result.destroy === 'function') result.destroy();
+            bypasses.push(label);
+        } catch (error) {
+            if (!isDenial(error)) throw error;
+        }
+    };
+
+    expectSynchronousDenial('fs.readFileSync(string)', () => fs.readFileSync(target));
+    expectSynchronousDenial('fs.createReadStream(string)', () => fs.createReadStream(target));
+    expectSynchronousDenial('fs.readFileSync(file URL)',
+        () => fs.readFileSync(pathToFileURL(target)));
+    expectSynchronousDenial('fs.readFileSync(Buffer)',
+        () => fs.readFileSync(Buffer.from(target)));
+
+    const callbackError = await new Promise((resolve) => {
+        fs.readFile(target, (error) => resolve(error));
+    });
+    if (!isDenial(callbackError)) bypasses.push('fs.readFile(callback)');
+
+    try {
+        await fs.promises.readFile(target);
+        bypasses.push('fs.promises.readFile');
+    } catch (error) {
+        if (!isDenial(error)) throw error;
+    }
+
+    assert.deepStrictEqual(bypasses, [],
+        `repository RTL denial bypasses: ${bypasses.join(', ')}`);
 }
 
 const expectedPreparedRtl = [
@@ -542,15 +673,17 @@ endmodule
     console.log('  external_irq_reset_behavior: simulated');
 }
 
-let restoreRepositoryRtlAccess = () => {};
-try {
-    runPreparationContractTests();
-    prepareResources();
-    restoreRepositoryRtlAccess = denyRepositoryRtlAfterPreparation();
-    const catalog = loadCatalog(packagedAssetRoot);
-    const minimal = readFixture('minimal.merc32.json');
-    const multi = readFixture('multi-peripheral.merc32.json');
-    const all = readFixture('all-peripherals.merc32.json');
+async function run() {
+    let restoreRepositoryRtlAccess = () => {};
+    try {
+        runPreparationContractTests();
+        prepareResources();
+        restoreRepositoryRtlAccess = denyRepositoryRtlAfterPreparation();
+        await assertRepositoryRtlDenialCoverage();
+        const catalog = loadCatalog(packagedAssetRoot);
+        const minimal = readFixture('minimal.merc32.json');
+        const multi = readFixture('multi-peripheral.merc32.json');
+        const all = readFixture('all-peripherals.merc32.json');
 
     const internal = withProject(clone(minimal), 'internal_memories');
     internal.memory.ilb = { type: 'internal_ram', size: '32KiB' };
@@ -679,8 +812,14 @@ try {
     }
     simulateStatefulRouter();
     simulateExternalIrqReset(catalog);
-    console.log('MERC32 generated RTL matrix passed.');
-} finally {
-    restoreRepositoryRtlAccess();
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+        console.log('MERC32 generated RTL matrix passed.');
+    } finally {
+        restoreRepositoryRtlAccess();
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
 }
+
+run().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+});
