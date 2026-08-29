@@ -106,16 +106,26 @@ function assertGuardedApisRestored(snapshot) {
         `filesystem APIs not restored:\n${mismatches.join('\n')}`);
 }
 
-function denyRepositoryRtlAfterPreparation() {
-    const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
+function denyRepositoryRtlAfterPreparation(
+    repositoryRtlPath = path.join(repositoryRoot, 'rtl'),
+) {
+    const repositoryRtlRoot = path.resolve(repositoryRtlPath).toLowerCase();
     const originals = [];
-    const canonicalizeWindowsExtendedLengthPath = (value) => {
-        if (process.platform !== 'win32') return value;
-        if (/^\\\\\?\\[a-z]:\\/i.test(value)) return value.slice(4);
-        if (/^\\\\\?\\unc\\[^\\]+\\[^\\]+(?:\\|$)/i.test(value)) {
-            return `\\\\${value.slice(8)}`;
+    const normalizeDecodedPath = (value) => {
+        if (process.platform !== 'win32') return path.resolve(value).toLowerCase();
+        const namespace = value.match(/^[\\/]{2}\?[\\/](.*)$/s);
+        if (namespace === null) return path.resolve(value).toLowerCase();
+        const payload = namespace[1];
+        if (/^[a-z]:[\\/]/i.test(payload)) {
+            return path.resolve(payload).toLowerCase();
         }
-        return value;
+        const unc = payload.match(/^unc[\\/]([^\\/]+)[\\/]([^\\/]+)(?:[\\/](.*))?$/is);
+        if (unc !== null && !['.', '..'].includes(unc[1])
+            && !['.', '..'].includes(unc[2])) {
+            const remainder = unc[3] === undefined ? '' : `\\${unc[3]}`;
+            return path.resolve(`\\\\${unc[1]}\\${unc[2]}${remainder}`).toLowerCase();
+        }
+        return value.toLowerCase();
     };
     const normalizePathLike = (value, operation) => {
         let decoded;
@@ -133,7 +143,7 @@ function denyRepositoryRtlAfterPreparation() {
             return undefined;
         }
         try {
-            return canonicalizeWindowsExtendedLengthPath(path.resolve(decoded)).toLowerCase();
+            return normalizeDecodedPath(decoded);
         } catch {
             return undefined;
         }
@@ -220,6 +230,7 @@ function denyRepositoryRtlAfterPreparation() {
 async function assertRepositoryRtlDenialCoverage() {
     const target = path.join(repositoryRoot, 'rtl', 'cpu', 'core.v');
     const bypasses = [];
+    const falseDenials = [];
     const isDenial = (error) => error instanceof Error
         && /repository-root RTL .* after preparation/.test(error.message);
     const expectSynchronousDenial = (label, operation) => {
@@ -229,6 +240,14 @@ async function assertRepositoryRtlDenialCoverage() {
             bypasses.push(label);
         } catch (error) {
             if (!isDenial(error)) throw error;
+        }
+    };
+    const expectSynchronousDelegation = (label, operation, expected) => {
+        try {
+            assert.deepStrictEqual(operation(), expected);
+        } catch (error) {
+            if (!isDenial(error)) throw error;
+            falseDenials.push(label);
         }
     };
 
@@ -242,6 +261,9 @@ async function assertRepositoryRtlDenialCoverage() {
         const extendedTarget = path.toNamespacedPath(target);
         const extendedTargetWithForwardSeparators = extendedTarget.slice(0, 4)
             + extendedTarget.slice(4).replaceAll(path.sep, '/');
+        const extendedTargetWithMixedPrefix = extendedTarget.slice(0, 3) + '/'
+            + extendedTarget.slice(4).replaceAll(path.sep, '/');
+        const extendedTargetWithForwardPrefix = extendedTarget.replaceAll(path.sep, '/');
         expectSynchronousDenial('fs.readFileSync(extended-length string)',
             () => fs.readFileSync(extendedTarget));
         expectSynchronousDenial('fs.readFileSync(extended-length Buffer)',
@@ -250,7 +272,44 @@ async function assertRepositoryRtlDenialCoverage() {
             () => fs.readFileSync(extendedTargetWithForwardSeparators));
         expectSynchronousDenial('fs.readFileSync(extended-length Buffer, forward separators)',
             () => fs.readFileSync(Buffer.from(extendedTargetWithForwardSeparators)));
+        expectSynchronousDenial('fs.readFileSync(extended-length string, mixed prefix)',
+            () => fs.readFileSync(extendedTargetWithMixedPrefix));
+        expectSynchronousDenial('fs.readFileSync(extended-length Buffer, forward prefix)',
+            () => fs.readFileSync(Buffer.from(extendedTargetWithForwardPrefix)));
+
+        const unrelatedNamespaces = [
+            ['GLOBALROOT traversal', `\\\\?\\GLOBALROOT\\..\\${target}`],
+            ['Volume GUID-like traversal',
+                `\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\..\\${target}`],
+            ['Device traversal', `\\\\?\\Device\\..\\${target}`],
+            ['malformed UNC traversal', `\\\\?\\UNC\\server\\..\\..\\${target}`],
+        ];
+        for (const [label, candidate] of unrelatedNamespaces) {
+            expectSynchronousDelegation(`fs.existsSync(${label})`,
+                () => fs.existsSync(candidate), true);
+        }
+
+        const uncRepositoryRtlRoot = '\\\\server\\share\\repository\\rtl';
+        const extendedUncTarget = '\\\\?\\UNC\\server\\share\\repository\\rtl\\cpu\\core.v';
+        const extendedUncTargetWithMixedSeparators = '\\\\?\\UNC/server/share/repository/rtl/cpu/core.v';
+        const extendedUncTargetWithForwardPrefix = '//?/UNC/server/share/repository/rtl/cpu/core.v';
+        const restoreUncRepositoryRtlAccess = denyRepositoryRtlAfterPreparation(
+            uncRepositoryRtlRoot);
+        try {
+            expectSynchronousDenial('fs.existsSync(extended UNC string)',
+                () => fs.existsSync(extendedUncTarget));
+            expectSynchronousDenial('fs.existsSync(extended UNC Buffer)',
+                () => fs.existsSync(Buffer.from(extendedUncTarget)));
+            expectSynchronousDenial('fs.existsSync(extended UNC string, mixed separators)',
+                () => fs.existsSync(extendedUncTargetWithMixedSeparators));
+            expectSynchronousDenial('fs.existsSync(extended UNC Buffer, forward prefix)',
+                () => fs.existsSync(Buffer.from(extendedUncTargetWithForwardPrefix)));
+        } finally {
+            restoreUncRepositoryRtlAccess();
+        }
     }
+    expectSynchronousDelegation('fs.existsSync(ordinary non-repository path)',
+        () => fs.existsSync(temporaryRoot), true);
     expectSynchronousDenial('fs.linkSync(repository RTL source)',
         () => fs.linkSync(target, path.join(temporaryRoot, 'denied-source-link')));
     expectSynchronousDenial('fs.linkSync(repository RTL destination)',
@@ -268,8 +327,11 @@ async function assertRepositoryRtlDenialCoverage() {
         if (!isDenial(error)) throw error;
     }
 
-    assert.deepStrictEqual(bypasses, [],
-        `repository RTL denial bypasses: ${bypasses.join(', ')}`);
+    assert.deepStrictEqual({ bypasses, falseDenials }, { bypasses: [], falseDenials: [] },
+        `repository RTL guard failures:\n${[
+            ...bypasses.map((label) => `bypass: ${label}`),
+            ...falseDenials.map((label) => `false denial: ${label}`),
+        ].join('\n')}`);
 }
 
 async function assertFileSystemContractCompatibility(apiSnapshot) {
