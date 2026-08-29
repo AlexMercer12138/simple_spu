@@ -932,6 +932,153 @@ endmodule
     console.log('  external_irq_reset_behavior: simulated');
 }
 
+function simulateSingleSourceController() {
+    const config = {
+        schemaVersion: 1,
+        project: { name: 'single_irq_soc', outputDir: 'generated/single_irq_soc' },
+        cpu: { debug: false },
+        memory: {
+            ilb: { type: 'external_local_bus', size: '32KiB' },
+            dlb: { type: 'external_local_bus', size: '64KiB' },
+        },
+        peripherals: [{
+            type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+        }],
+        externalInterfaces: [],
+        interrupt: {
+            mode: 'controller', controller: 'intc0', sources: [
+                { source: 'external.only', id: 0, trigger: 'high' },
+            ],
+        },
+    };
+    const { rtlDirectory } = assembleAndElaborate('single_source_controller_behavior', config);
+    fs.writeFileSync(path.join(rtlDirectory, 'single_irq_tb.v'), `
+module single_irq_tb;
+reg clk;
+reg rst_n;
+wire ilb_rden;
+wire ilb_wren;
+wire [12:0] ilb_addr;
+wire [3:0] ilb_strb;
+wire [31:0] ilb_wdata;
+reg [31:0] ilb_rdata;
+reg ilb_ack;
+wire dlb_rden;
+wire dlb_wren;
+wire [13:0] dlb_addr;
+wire [3:0] dlb_strb;
+wire [31:0] dlb_wdata;
+reg [31:0] dlb_rdata;
+reg dlb_ack;
+reg external_only;
+
+single_irq_soc dut (
+    .clk(clk), .rst_n(rst_n),
+    .ilb_rden(ilb_rden), .ilb_wren(ilb_wren), .ilb_addr(ilb_addr),
+    .ilb_strb(ilb_strb), .ilb_wdata(ilb_wdata),
+    .ilb_rdata(ilb_rdata), .ilb_ack(ilb_ack),
+    .dlb_rden(dlb_rden), .dlb_wren(dlb_wren), .dlb_addr(dlb_addr),
+    .dlb_strb(dlb_strb), .dlb_wdata(dlb_wdata),
+    .dlb_rdata(dlb_rdata), .dlb_ack(dlb_ack),
+    .external_only(external_only)
+);
+
+always #5 clk = ~clk;
+
+task intc_enable_source_zero;
+    begin
+        @(negedge clk);
+        force dut.intc0_psel = 1'b1;
+        force dut.builtin_apb_penable = 1'b1;
+        force dut.builtin_apb_pwrite = 1'b1;
+        force dut.builtin_apb_paddr = 32'h0000_0008;
+        force dut.builtin_apb_pwdata = 32'h0000_0001;
+        force dut.builtin_apb_pstrb = 4'hf;
+        @(posedge clk);
+        #1;
+        @(negedge clk);
+        release dut.intc0_psel;
+        release dut.builtin_apb_penable;
+        release dut.builtin_apb_pwrite;
+        release dut.builtin_apb_paddr;
+        release dut.builtin_apb_pwdata;
+        release dut.builtin_apb_pstrb;
+    end
+endtask
+
+task intc_clear_source_zero;
+    begin
+        @(negedge clk);
+        force dut.intc0_psel = 1'b1;
+        force dut.builtin_apb_penable = 1'b1;
+        force dut.builtin_apb_pwrite = 1'b1;
+        force dut.builtin_apb_paddr = 32'h0000_0018;
+        force dut.builtin_apb_pwdata = 32'h0000_0001;
+        force dut.builtin_apb_pstrb = 4'hf;
+        @(posedge clk);
+        #1;
+        @(negedge clk);
+        release dut.intc0_psel;
+        release dut.builtin_apb_penable;
+        release dut.builtin_apb_pwrite;
+        release dut.builtin_apb_paddr;
+        release dut.builtin_apb_pwdata;
+        release dut.builtin_apb_pstrb;
+    end
+endtask
+
+initial begin
+    clk = 1'b0;
+    rst_n = 1'b0;
+    ilb_rdata = 32'b0;
+    ilb_ack = 1'b0;
+    dlb_rdata = 32'b0;
+    dlb_ack = 1'b0;
+    external_only = 1'b0;
+
+    repeat (3) @(posedge clk);
+    #1;
+    if (dut.intc0_irq_sources !== 1'b0) $fatal(1, "reset source state was not inactive");
+    @(negedge clk);
+    rst_n = 1'b1;
+    external_only = 1'b1;
+    repeat (3) @(posedge clk);
+    #1;
+    if (dut.intc0_irq_sources !== 1'b1) $fatal(1, "single source was not conditioned high");
+    intc_enable_source_zero();
+    #1;
+    if (dut.intc0_interrupt !== 1'b1) $fatal(1, "enabled source did not assert controller IRQ");
+    @(negedge clk);
+    external_only = 1'b0;
+    repeat (3) @(posedge clk);
+    #1;
+    if (dut.intc0_irq_sources !== 1'b0) $fatal(1, "single source was not conditioned low");
+    if (dut.intc0_interrupt !== 1'b1) $fatal(1, "pending controller IRQ did not remain asserted");
+    intc_clear_source_zero();
+    #1;
+    if (dut.intc0_interrupt !== 1'b0) $fatal(1, "cleared inactive source left IRQ asserted");
+
+    $display("single_source_controller_behavior: PASS");
+    $finish;
+end
+endmodule
+`);
+    const compile = spawnSync('iverilog', [
+        '-Wall', '-Wno-timescale', '-g2005', '-s', 'single_irq_tb',
+        '-o', 'single_irq.vvp', '-f', 'files.f', 'single_irq_tb.v',
+    ], { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(compile.status, 0,
+        `single-source controller compile failed:\n${compile.stdout}\n${compile.stderr}`);
+    assert.strictEqual(compile.stderr, '',
+        `single-source controller warnings:\n${compile.stderr}`);
+    const simulation = spawnSync('vvp', ['single_irq.vvp'],
+        { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(simulation.status, 0,
+        `single-source controller simulation failed:\n${simulation.stdout}\n${simulation.stderr}`);
+    assert.match(simulation.stdout, /single_source_controller_behavior: PASS/);
+    console.log('  single_source_controller_behavior: simulated');
+}
+
 async function run() {
     const guardedApiSnapshot = snapshotGuardedFileSystemApis();
     let restoreRepositoryRtlAccess = () => {};
@@ -988,6 +1135,16 @@ async function run() {
         mode: 'controller', controller: 'cpu0', sources: [
             { source: 'external.foo', id: 0, trigger: 'high' },
             { source: 'external.foo_sync0', id: 1, trigger: 'low' },
+        ],
+    };
+
+    const singleSourceController = withProject(clone(minimal), 'single_source_controller');
+    singleSourceController.peripherals = [{
+        type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+    }];
+    singleSourceController.interrupt = {
+        mode: 'controller', controller: 'intc0', sources: [
+            { source: 'external.only', id: 0, trigger: 'high' },
         ],
     };
 
@@ -1061,6 +1218,7 @@ async function run() {
         ['internal_memories', internal],
         ['multiple_apb_instances', repeated],
         ['controller_mode', withProject(clone(multi), 'controller_mode')],
+        ['single_source_controller', singleSourceController],
         ['simultaneous_protocols', protocols],
         ['downstream_address_widths', widths],
         ['debug_disabled', debugOff],
@@ -1073,6 +1231,7 @@ async function run() {
     }
     simulateStatefulRouter();
     simulateExternalIrqReset(catalog);
+    simulateSingleSourceController();
         console.log('MERC32 generated RTL matrix passed.');
     } finally {
         restoreRepositoryRtlAccess();

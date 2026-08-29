@@ -2,6 +2,7 @@ import { ModuleCatalog, SocDiagnostic, SocSourceConfig } from './model';
 import { validateSocConfig } from './validate';
 
 const MAX_U32 = 0xffffffffn;
+const ADDRESS_SPACE_SIZE = 1n << 32n;
 const PLB_BASE = 0x10000000n;
 const KIBIBYTE = 1024n;
 const MEBIBYTE = KIBIBYTE * KIBIBYTE;
@@ -89,6 +90,9 @@ export function alignUp(value: bigint, alignment: bigint): bigint {
     requireU32(value, 'address');
     if (typeof alignment !== 'bigint' || alignment <= 0n) {
         throw new RangeError('alignment must be a positive power of two');
+    }
+    if (alignment > ADDRESS_SPACE_SIZE) {
+        throw new RangeError('alignment must not exceed the 32-bit address space');
     }
 
     let factor = alignment;

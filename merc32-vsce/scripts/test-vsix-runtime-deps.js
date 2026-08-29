@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 const extensionRoot = path.resolve(__dirname, '..');
+const packageJson = JSON.parse(fs.readFileSync(
+    path.join(extensionRoot, 'package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(
     path.join(extensionRoot, 'package-lock.json'), 'utf8'));
 const ignoreLines = fs.readFileSync(path.join(extensionRoot, '.vscodeignore'), 'utf8')
@@ -17,6 +19,10 @@ const productionPackages = Object.entries(packageLock.packages)
 
 assert.ok(productionPackages.includes('node_modules/ajv'));
 assert.ok(productionPackages.includes('node_modules/jsonc-parser'));
+assert.match(packageJson.scripts['test:soc'], /(?:^|&&\s*)npm run test:vsix:deps(?:\s*&&|$)/,
+    'the normal SoC verification gate must include the VSIX runtime dependency contract');
+assert.doesNotMatch(packageJson.scripts['test:vsix:deps'], /npm run test:soc/,
+    'the dependency contract must not recurse into the composite SoC gate');
 
 for (const logicalPath of productionPackages) {
     assert.ok(fs.existsSync(path.join(extensionRoot, logicalPath, 'package.json')),

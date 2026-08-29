@@ -459,7 +459,7 @@ function emitPeripheral(writer: VerilogWriter, plan: SocPlan, peripheral: Planne
     }
     if (peripheral.type === 'apb_intc') {
         const count = parameterNumber(peripheral.parameters.IRQ_COUNT);
-        writer.line(wireDeclaration(`${peripheral.name}_irq_sources`, count));
+        writer.line(`wire [${count - 1}:0] ${peripheral.name}_irq_sources;`);
         for (let id = 0; id < count; id += 1) {
             const source = plan.interrupt.mode === 'controller'
                 ? plan.interrupt.sources.find((item) => item.id === id)

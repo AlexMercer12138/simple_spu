@@ -25,11 +25,236 @@ for (const logicalPath of [
 }
 fs.cpSync(catalogResources, path.join(catalogAssetRoot, 'catalog'), { recursive: true });
 const catalog = loadCatalog(catalogAssetRoot);
-const expectedModuleTypes = [
-    'apb_can', 'apb_gpio', 'apb_i2c', 'apb_intc',
-    'apb_qspi', 'apb_sdio', 'apb_timer', 'apb_uart',
+const expectedModuleDescriptorFiles = [
+    'apb_can.json', 'apb_gpio.json', 'apb_i2c.json', 'apb_intc.json',
+    'apb_qspi.json', 'apb_sdio.json', 'apb_timer.json', 'apb_uart.json',
 ];
-assert.deepStrictEqual([...catalog.modules.keys()].sort(), expectedModuleTypes);
+assert.deepStrictEqual(fs.readdirSync(path.join(catalogResources, 'modules')).sort(),
+    expectedModuleDescriptorFiles,
+    'catalog descriptor paths and case are part of the committed public contract');
+for (const fileName of expectedModuleDescriptorFiles) {
+    const rawDescriptor = JSON.parse(fs.readFileSync(
+        path.join(catalogResources, 'modules', fileName), 'utf8'));
+    assert.strictEqual(`${rawDescriptor.type}.json`, fileName,
+        `${fileName} must remain bound to its exact module type and case`);
+}
+assert.deepStrictEqual(Object.fromEntries(catalog.modules), {
+    apb_can: {
+        type: 'apb_can', module: 'apb_can', rtlFiles: ['rtl/apb_can/apb_can.v'],
+        multiple: true, addressSize: 4096, alignment: 4096,
+        parameters: {
+            SYS_CLK_FREQ: { type: 'integer', minimum: 1, default: 50000000 },
+            DEFAULT_BIT_RATE: { type: 'integer', minimum: 1, default: 500000 },
+            TX_FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, default: 8 },
+            RX_FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, default: 8 },
+        },
+        ports: [
+            { name: 'can_rx', direction: 'input', width: 1 },
+            { name: 'can_tx', direction: 'output', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_gpio: {
+        type: 'apb_gpio', module: 'apb_gpio', rtlFiles: ['rtl/apb_gpio/apb_gpio.v'],
+        multiple: true, addressSize: 4096, alignment: 4096, parameters: {},
+        ports: [
+            { name: 'gpio_i', direction: 'input', width: 32 },
+            { name: 'gpio_o', direction: 'output', width: 32 },
+            { name: 'gpio_t', direction: 'output', width: 32 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_i2c: {
+        type: 'apb_i2c', module: 'apb_i2c', rtlFiles: ['rtl/apb_i2c/apb_i2c.v'],
+        multiple: true, addressSize: 4096, alignment: 4096,
+        parameters: {
+            SYS_CLK_FREQ: { type: 'integer', minimum: 1, default: 50000000 },
+            FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, maximum: 128, default: 16 },
+        },
+        ports: [
+            { name: 'scl_o', direction: 'output', width: 1 },
+            { name: 'scl_t', direction: 'output', width: 1 },
+            { name: 'scl_i', direction: 'input', width: 1 },
+            { name: 'sda_o', direction: 'output', width: 1 },
+            { name: 'sda_t', direction: 'output', width: 1 },
+            { name: 'sda_i', direction: 'input', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_intc: {
+        type: 'apb_intc', module: 'apb_intc', rtlFiles: ['rtl/apb_intc/apb_intc.v'],
+        multiple: false, addressSize: 4096, alignment: 4096,
+        parameters: {
+            IRQ_COUNT: { type: 'integer', minimum: 1, maximum: 32, default: 1 },
+            IRQ_MODE: { type: 'integer', minimum: 0, default: 0 },
+        },
+        ports: [], interrupts: ['interrupt'],
+    },
+    apb_qspi: {
+        type: 'apb_qspi', module: 'apb_qspi', rtlFiles: ['rtl/apb_qspi/apb_qspi.v'],
+        multiple: true, addressSize: 4096, alignment: 4096,
+        parameters: {
+            CS_COUNT: { type: 'integer', minimum: 1, maximum: 16, default: 4 },
+            FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, maximum: 128, default: 16 },
+        },
+        ports: [
+            { name: 'qspi_sclk_o', direction: 'output', width: 1 },
+            { name: 'qspi_cs_n', direction: 'output', width: { parameter: 'CS_COUNT' } },
+            { name: 'qspi_d0_i', direction: 'input', width: 1 },
+            { name: 'qspi_d0_o', direction: 'output', width: 1 },
+            { name: 'qspi_d0_t', direction: 'output', width: 1 },
+            { name: 'qspi_d1_i', direction: 'input', width: 1 },
+            { name: 'qspi_d1_o', direction: 'output', width: 1 },
+            { name: 'qspi_d1_t', direction: 'output', width: 1 },
+            { name: 'qspi_d2_i', direction: 'input', width: 1 },
+            { name: 'qspi_d2_o', direction: 'output', width: 1 },
+            { name: 'qspi_d2_t', direction: 'output', width: 1 },
+            { name: 'qspi_d3_i', direction: 'input', width: 1 },
+            { name: 'qspi_d3_o', direction: 'output', width: 1 },
+            { name: 'qspi_d3_t', direction: 'output', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_sdio: {
+        type: 'apb_sdio', module: 'apb_sdio', rtlFiles: ['rtl/apb_sdio/apb_sdio.v'],
+        multiple: true, addressSize: 4096, alignment: 4096,
+        parameters: {
+            FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, maximum: 512, default: 128 },
+        },
+        ports: [
+            { name: 'sd_clk_o', direction: 'output', width: 1 },
+            { name: 'sd_cmd_i', direction: 'input', width: 1 },
+            { name: 'sd_cmd_o', direction: 'output', width: 1 },
+            { name: 'sd_cmd_t', direction: 'output', width: 1 },
+            { name: 'sd_dat_i', direction: 'input', width: 8 },
+            { name: 'sd_dat_o', direction: 'output', width: 8 },
+            { name: 'sd_dat_t', direction: 'output', width: 8 },
+            { name: 'card_detect_n', direction: 'input', width: 1 },
+            { name: 'write_protect', direction: 'input', width: 1 },
+            { name: 'emmc_reset_n', direction: 'output', width: 1 },
+            { name: 'dma_tx_rd_en', direction: 'output', width: 1 },
+            { name: 'dma_tx_dout', direction: 'input', width: 32 },
+            { name: 'dma_tx_empty', direction: 'input', width: 1 },
+            { name: 'dma_rx_wr_en', direction: 'output', width: 1 },
+            { name: 'dma_rx_din', direction: 'output', width: 32 },
+            { name: 'dma_rx_full', direction: 'input', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_timer: {
+        type: 'apb_timer', module: 'apb_timer', rtlFiles: ['rtl/apb_timer/apb_timer.v'],
+        multiple: true, addressSize: 4096, alignment: 4096, parameters: {},
+        ports: [
+            { name: 'pwm0', direction: 'output', width: 1 },
+            { name: 'pwm1', direction: 'output', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+    apb_uart: {
+        type: 'apb_uart', module: 'apb_uart', rtlFiles: ['rtl/apb_uart/apb_uart.v'],
+        multiple: true, addressSize: 4096, alignment: 4096,
+        parameters: {
+            SYS_CLK_FREQ: { type: 'integer', minimum: 1, default: 50000000 },
+            FIFO_DEPTH: { type: 'powerOfTwo', minimum: 8, maximum: 128, default: 8 },
+        },
+        ports: [
+            { name: 'uart_rx', direction: 'input', width: 1 },
+            { name: 'uart_tx', direction: 'output', width: 1 },
+        ],
+        interrupts: ['interrupt'],
+    },
+});
+assert.deepStrictEqual(Object.fromEntries(catalog.protocols), {
+    local_bus: {
+        type: 'local_bus', rtlFiles: [], alignment: 4,
+        ports: [
+            { name: 'lb_rden', direction: 'output', width: 1 },
+            { name: 'lb_wren', direction: 'output', width: 1 },
+            { name: 'lb_strb', direction: 'output', width: 4 },
+            { name: 'lb_wdata', direction: 'output', width: 32 },
+            { name: 'lb_addr', direction: 'output', width: 32 },
+            { name: 'lb_rdata', direction: 'input', width: 32 },
+            { name: 'lb_valid', direction: 'input', width: 1 },
+        ],
+    },
+    apb: {
+        type: 'apb', rtlFiles: ['rtl/bridge/lb2apb.v'], alignment: 4,
+        addressWidthParameter: 'APB_ADDR_WIDTH',
+        ports: [
+            { name: 'm_apb_psel', direction: 'output', width: 1 },
+            { name: 'm_apb_penable', direction: 'output', width: 1 },
+            { name: 'm_apb_paddr', direction: 'output', width: { parameter: 'APB_ADDR_WIDTH' } },
+            { name: 'm_apb_pwrite', direction: 'output', width: 1 },
+            { name: 'm_apb_pwdata', direction: 'output', width: 32 },
+            { name: 'm_apb_pstrb', direction: 'output', width: 4 },
+            { name: 'm_apb_prdata', direction: 'input', width: 32 },
+            { name: 'm_apb_pready', direction: 'input', width: 1 },
+        ],
+    },
+    axi4_lite: {
+        type: 'axi4_lite', rtlFiles: ['rtl/bridge/lb2axi_lite.v'], alignment: 4,
+        addressWidthParameter: 'AXI_ADDR_WIDTH',
+        ports: [
+            { name: 'm_axi_awvalid', direction: 'output', width: 1 },
+            { name: 'm_axi_awready', direction: 'input', width: 1 },
+            { name: 'm_axi_awaddr', direction: 'output', width: { parameter: 'AXI_ADDR_WIDTH' } },
+            { name: 'm_axi_wvalid', direction: 'output', width: 1 },
+            { name: 'm_axi_wready', direction: 'input', width: 1 },
+            { name: 'm_axi_wdata', direction: 'output', width: 32 },
+            { name: 'm_axi_wstrb', direction: 'output', width: 4 },
+            { name: 'm_axi_bvalid', direction: 'input', width: 1 },
+            { name: 'm_axi_bready', direction: 'output', width: 1 },
+            { name: 'm_axi_bresp', direction: 'input', width: 2 },
+            { name: 'm_axi_arvalid', direction: 'output', width: 1 },
+            { name: 'm_axi_arready', direction: 'input', width: 1 },
+            { name: 'm_axi_araddr', direction: 'output', width: { parameter: 'AXI_ADDR_WIDTH' } },
+            { name: 'm_axi_rvalid', direction: 'input', width: 1 },
+            { name: 'm_axi_rready', direction: 'output', width: 1 },
+            { name: 'm_axi_rdata', direction: 'input', width: 32 },
+            { name: 'm_axi_rresp', direction: 'input', width: 2 },
+        ],
+    },
+    wishbone: {
+        type: 'wishbone', rtlFiles: ['rtl/bridge/lb2wbc.v'], alignment: 4,
+        addressWidthParameter: 'WB_ADDR_WIDTH',
+        ports: [
+            { name: 'm_wb_cyc_o', direction: 'output', width: 1 },
+            { name: 'm_wb_stb_o', direction: 'output', width: 1 },
+            { name: 'm_wb_we_o', direction: 'output', width: 1 },
+            { name: 'm_wb_adr_o', direction: 'output', width: { parameter: 'WB_ADDR_WIDTH' } },
+            { name: 'm_wb_dat_o', direction: 'output', width: 32 },
+            { name: 'm_wb_sel_o', direction: 'output', width: 4 },
+            { name: 'm_wb_ack_i', direction: 'input', width: 1 },
+            { name: 'm_wb_dat_i', direction: 'input', width: 32 },
+        ],
+    },
+    avalon: {
+        type: 'avalon', rtlFiles: ['rtl/bridge/lb2avalon.v'], alignment: 4,
+        addressWidthParameter: 'AV_ADDR_WIDTH',
+        ports: [
+            { name: 'm_av_address', direction: 'output', width: { parameter: 'AV_ADDR_WIDTH' } },
+            { name: 'm_av_read', direction: 'output', width: 1 },
+            { name: 'm_av_write', direction: 'output', width: 1 },
+            { name: 'm_av_writedata', direction: 'output', width: 32 },
+            { name: 'm_av_byteenable', direction: 'output', width: 4 },
+            { name: 'm_av_waitrequest', direction: 'input', width: 1 },
+            { name: 'm_av_readdata', direction: 'input', width: 32 },
+            { name: 'm_av_readdatavalid', direction: 'input', width: 1 },
+        ],
+    },
+    drp: {
+        type: 'drp', rtlFiles: ['rtl/bridge/lb2drp.v'], alignment: 4,
+        addressWidthParameter: 'DRP_ADDR_WIDTH',
+        ports: [
+            { name: 'drp_addr', direction: 'output', width: { parameter: 'DRP_ADDR_WIDTH' } },
+            { name: 'drp_en', direction: 'output', width: 1 },
+            { name: 'drp_we', direction: 'output', width: 1 },
+            { name: 'drp_rdy', direction: 'input', width: 1 },
+            { name: 'drp_in', direction: 'output', width: 32 },
+            { name: 'drp_out', direction: 'input', width: 32 },
+        ],
+    },
+});
 assert.deepStrictEqual([...catalog.modules.values()]
     .filter((module) => !module.multiple).map((module) => module.type), ['apb_intc']);
 assert.strictEqual(catalog.modules.get('apb_qspi').ports
@@ -150,6 +375,7 @@ assert.strictEqual(parseByteSize(4096), 4096n);
 assert.strictEqual(formatHex32(0x10000000n), '0x10000000');
 assert.strictEqual(rangeEnd(0x10000000n, 4096n), 0x10000fffn);
 assert.strictEqual(alignUp(0x10000001n, 4096n), 0x10001000n);
+assert.strictEqual(alignUp(0n, 1n << 32n), 0n);
 
 assert.throws(() => parseU32('0x100000000'), /32-bit unsigned/);
 assert.throws(() => parseU32(-1), /32-bit unsigned/);
@@ -173,6 +399,7 @@ assert.throws(() => rangeEnd(0xfffff000n, 8192n), /overflows/);
 assert.throws(() => rangeEnd(0n, 0n), /positive size/);
 assert.throws(() => alignUp(0n, 0n), /power of two/);
 assert.throws(() => alignUp(0n, 3n), /power of two/);
+assert.throws(() => alignUp(0n, 1n << 33n), /32-bit address space/);
 assert.throws(() => alignUp(0xffffffffn, 2n), /overflows/);
 
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
@@ -180,6 +407,10 @@ const minimalText = fs.readFileSync(path.join(fixtureDirectory, 'minimal.merc32.
 const multiText = fs.readFileSync(path.join(fixtureDirectory, 'multi-peripheral.merc32.json'), 'utf8');
 const minimal = JSON.parse(minimalText);
 const multi = JSON.parse(multiText);
+
+function planInMemory(config, catalogOverride = catalog) {
+    return planSoc(config, catalogOverride, { baseDirectory: fixtureDirectory });
+}
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -320,7 +551,7 @@ for (const reservedWord of ['module', 'wire', 'always', 'generate', 'uwire']) {
     reservedProjectName.project.name = reservedWord;
     assertDiagnostic(diagnosticsFor(reservedProjectName), 'SOC_VERILOG_RESERVED',
         ['project', 'name']);
-    assert.strictEqual(planSoc(reservedProjectName, catalog).plan, undefined);
+    assert.strictEqual(planInMemory(reservedProjectName).plan, undefined);
 }
 
 for (const packagedModuleName of ['MERC32_top', 'apb_uart', 'lb2apb']) {
@@ -328,7 +559,7 @@ for (const packagedModuleName of ['MERC32_top', 'apb_uart', 'lb2apb']) {
     collidingProject.project.name = packagedModuleName;
     assertDiagnostic(diagnosticsFor(collidingProject), 'SOC_VERILOG_MODULE_COLLISION',
         ['project', 'name']);
-    assert.strictEqual(planSoc(collidingProject, catalog).plan, undefined);
+    assert.strictEqual(planInMemory(collidingProject).plan, undefined);
 }
 
 for (const legalProjectName of ['module_soc', 'MERC32_topper', 'wireless']) {
@@ -345,7 +576,7 @@ routerMasterCollision.externalInterfaces = [{
 }];
 assertDiagnostic(diagnosticsFor(routerMasterCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
     ['externalInterfaces', 0, 'name']);
-assert.strictEqual(planSoc(routerMasterCollision, catalog).plan, undefined);
+assert.strictEqual(planInMemory(routerMasterCollision).plan, undefined);
 
 const cpuInstanceCollision = clone(minimal);
 cpuInstanceCollision.peripherals = [{
@@ -353,7 +584,7 @@ cpuInstanceCollision.peripherals = [{
 }];
 assertDiagnostic(diagnosticsFor(cpuInstanceCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
     ['peripherals', 0, 'name']);
-assert.strictEqual(planSoc(cpuInstanceCollision, catalog).plan, undefined);
+assert.strictEqual(planInMemory(cpuInstanceCollision).plan, undefined);
 
 const synchronizerCollision = clone(minimal);
 synchronizerCollision.peripherals = [{
@@ -367,7 +598,7 @@ synchronizerCollision.interrupt = {
 };
 assertDiagnostic(diagnosticsFor(synchronizerCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
     ['interrupt', 'sources', 1, 'source']);
-assert.strictEqual(planSoc(synchronizerCollision, catalog).plan, undefined);
+assert.strictEqual(planInMemory(synchronizerCollision).plan, undefined);
 
 const generatedNameModules = new Map(catalog.modules);
 generatedNameModules.set('collision_fixture', {
@@ -383,7 +614,7 @@ generatedNameModules.set('apb_collision_fixture', {
 const generatedNameCatalog = { modules: generatedNameModules, protocols: catalog.protocols };
 assertDiagnostic(validateSocConfig(minimal, generatedNameCatalog),
     'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
-assert.strictEqual(planSoc(minimal, generatedNameCatalog).plan, undefined);
+assert.strictEqual(planInMemory(minimal, generatedNameCatalog).plan, undefined);
 
 const generatedApbNameCollision = clone(minimal);
 generatedApbNameCollision.project.name = 'generated_apb_soc';
@@ -392,7 +623,7 @@ generatedApbNameCollision.peripherals = [{
 }];
 assertDiagnostic(validateSocConfig(generatedApbNameCollision, generatedNameCatalog),
     'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
-assert.strictEqual(planSoc(generatedApbNameCollision, generatedNameCatalog).plan, undefined);
+assert.strictEqual(planInMemory(generatedApbNameCollision, generatedNameCatalog).plan, undefined);
 
 for (const outputDir of [
     '', '.', '..', '../outside', 'generated/../outside',
@@ -407,6 +638,25 @@ const normalRelativeOutput = clone(minimal);
 normalRelativeOutput.project.outputDir = 'build/generated/demo_soc';
 assert.strictEqual(diagnosticsFor(normalRelativeOutput)
     .some((diagnostic) => diagnostic.code === 'SOC_PROJECT_OUTPUT'), false);
+
+const provenanceFreePaths = clone(multi);
+const provenanceFreePlan = planSoc(provenanceFreePaths, catalog);
+assert.strictEqual(provenanceFreePlan.plan, undefined);
+assertDiagnostic(provenanceFreePlan.diagnostics, 'SOC_PATH_CONTEXT', ['project', 'outputDir']);
+assertDiagnostic(provenanceFreePlan.diagnostics, 'SOC_PATH_CONTEXT', ['memory', 'ilb', 'initFile']);
+const explicitContextPlan = planSoc(provenanceFreePaths, catalog, {
+    baseDirectory: fixtureDirectory,
+}).plan;
+assert.ok(explicitContextPlan);
+assert.strictEqual(explicitContextPlan.outputDir,
+    path.join(fixtureDirectory, 'generated', 'demo_soc'));
+assert.strictEqual(explicitContextPlan.memory.ilb.initFile.source,
+    path.join(fixtureDirectory, 'firmware.mem'));
+const relativeContextPlan = planSoc(provenanceFreePaths, catalog, {
+    baseDirectory: 'relative/context',
+});
+assert.strictEqual(relativeContextPlan.plan, undefined);
+assertDiagnostic(relativeContextPlan.diagnostics, 'SOC_PATH_CONTEXT', ['project', 'outputDir']);
 
 const duplicateName = clone(multi);
 duplicateName.externalInterfaces[0].name = 'uart0';
@@ -428,7 +678,7 @@ oneWordMemories.memory.ilb = { type: 'internal_ram', size: 4 };
 oneWordMemories.memory.dlb = { type: 'external_local_bus', size: 4 };
 assertDiagnostic(diagnosticsFor(oneWordMemories), 'SOC_MEMORY_SIZE', ['memory', 'ilb', 'size']);
 assertDiagnostic(diagnosticsFor(oneWordMemories), 'SOC_MEMORY_SIZE', ['memory', 'dlb', 'size']);
-const oneWordPlanResult = planSoc(oneWordMemories, catalog);
+const oneWordPlanResult = planInMemory(oneWordMemories);
 assert.strictEqual(oneWordPlanResult.plan, undefined);
 assertDiagnostic(oneWordPlanResult.diagnostics, 'SOC_MEMORY_SIZE', ['memory', 'ilb', 'size']);
 assertDiagnostic(oneWordPlanResult.diagnostics, 'SOC_MEMORY_SIZE', ['memory', 'dlb', 'size']);
@@ -436,7 +686,7 @@ assertDiagnostic(oneWordPlanResult.diagnostics, 'SOC_MEMORY_SIZE', ['memory', 'd
 const minimumMemories = clone(minimal);
 minimumMemories.memory.ilb = { type: 'internal_ram', size: 8 };
 minimumMemories.memory.dlb = { type: 'external_local_bus', size: 8 };
-const minimumMemoryPlan = planSoc(minimumMemories, catalog).plan;
+const minimumMemoryPlan = planInMemory(minimumMemories).plan;
 assert.ok(minimumMemoryPlan);
 assert.strictEqual(minimumMemoryPlan.memory.ilb.wordAddressWidth, 1);
 assert.strictEqual(minimumMemoryPlan.memory.dlb.wordAddressWidth, 1);
@@ -446,7 +696,7 @@ maximumMemory.memory.ilb = { type: 'internal_ram', size: '128MiB' };
 maximumMemory.memory.dlb = { type: 'external_local_bus', size: '128MiB' };
 assert.strictEqual(diagnosticsFor(maximumMemory)
     .some((item) => item.code === 'SOC_MEMORY_SIZE'), false);
-const maximumMemoryPlan = planSoc(maximumMemory, catalog).plan;
+const maximumMemoryPlan = planInMemory(maximumMemory).plan;
 assert.ok(maximumMemoryPlan);
 assert.strictEqual(maximumMemoryPlan.memory.ilb.wordAddressWidth, 25);
 assert.strictEqual(maximumMemoryPlan.memory.dlb.wordAddressWidth, 25);
@@ -743,7 +993,7 @@ function assertDeeplyFrozen(value) {
 }
 assertDeeplyFrozen(plan);
 
-const plannedMinimal = planSoc(minimal, catalog).plan;
+const plannedMinimal = planInMemory(minimal).plan;
 assert.ok(plannedMinimal);
 assert.deepStrictEqual(plannedMinimal.cpu, { debug: false, jtagIdCode: 0x4d320001n });
 assert.strictEqual(plannedMinimal.topPorts.find((item) => item.name === 'ilb_addr').width, 13);
@@ -760,7 +1010,7 @@ physicalPorts.peripherals = [
     },
     { type: 'apb_sdio', name: 'sdio0', baseAddress: '0x10001000' },
 ];
-const physicalPlan = planSoc(physicalPorts, catalog).plan;
+const physicalPlan = planInMemory(physicalPorts).plan;
 assert.ok(physicalPlan);
 assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'qspi0_qspi_cs_n'),
     { name: 'qspi0_qspi_cs_n', direction: 'output', width: 16 });
@@ -771,7 +1021,7 @@ assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'sdio0
 assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'sdio0_dma_rx_din'),
     { name: 'sdio0_dma_rx_din', direction: 'output', width: 32 });
 
-const invalidPlanResult = planSoc(overlap, catalog);
+const invalidPlanResult = planInMemory(overlap);
 assert.strictEqual(invalidPlanResult.plan, undefined);
 assertDiagnostic(invalidPlanResult.diagnostics, 'SOC_ADDRESS_OVERLAP',
     ['peripherals', 1, 'baseAddress']);
@@ -794,7 +1044,7 @@ sameBasenameInitFiles.memory.ilb = {
 sameBasenameInitFiles.memory.dlb = {
     type: 'internal_ram', size: '64KiB', initFile: 'data/firmware.mem',
 };
-const sameBasenamePlan = planSoc(sameBasenameInitFiles, catalog).plan;
+const sameBasenamePlan = planInMemory(sameBasenameInitFiles).plan;
 assert.ok(sameBasenamePlan);
 assert.deepStrictEqual(
     [sameBasenamePlan.memory.ilb.initFile.outputName, sameBasenamePlan.memory.dlb.initFile.outputName],
@@ -805,7 +1055,7 @@ assert.notStrictEqual(
     sameBasenamePlan.memory.dlb.initFile.outputName.toLowerCase(),
 );
 assert.deepStrictEqual(
-    planSoc(sameBasenameInitFiles, catalog).plan.memory,
+    planInMemory(sameBasenameInitFiles).plan.memory,
     sameBasenamePlan.memory,
     'memory output names must be deterministic across repeat planning',
 );
@@ -813,7 +1063,7 @@ assert.deepStrictEqual(
 const caseOnlyInitFiles = clone(sameBasenameInitFiles);
 caseOnlyInitFiles.memory.ilb.initFile = 'boot/Firmware.mem';
 caseOnlyInitFiles.memory.dlb.initFile = 'data/firmware.mem';
-const caseOnlyPlan = planSoc(caseOnlyInitFiles, catalog).plan;
+const caseOnlyPlan = planInMemory(caseOnlyInitFiles).plan;
 assert.ok(caseOnlyPlan);
 assert.deepStrictEqual(
     [caseOnlyPlan.memory.ilb.initFile.outputName, caseOnlyPlan.memory.dlb.initFile.outputName],

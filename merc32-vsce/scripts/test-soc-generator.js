@@ -44,6 +44,10 @@ function planFixture(config, fileName) {
     return result.plan;
 }
 
+function planInMemory(config) {
+    return soc.planSoc(config, catalog, { baseDirectory: fixtureDirectory });
+}
+
 function assertSortedObjectKeys(value) {
     if (Array.isArray(value)) {
         value.forEach(assertSortedObjectKeys);
@@ -1539,6 +1543,8 @@ try {
 
     const multi = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'multi-peripheral.merc32.json'), 'utf8'));
+    const minimal = JSON.parse(fs.readFileSync(
+        path.join(fixtureDirectory, 'minimal.merc32.json'), 'utf8'));
     const controllerPlan = planFixture(multi, 'multi-peripheral.merc32.json');
     const resolvedConfig = soc.renderResolvedConfig(controllerPlan);
     const addressMap = soc.renderAddressMap(controllerPlan);
@@ -1688,14 +1694,27 @@ try {
     assert.strictEqual(soc.renderPlbRouter(controllerPlan), router);
     assert.strictEqual(soc.renderApbInterconnect(controllerPlan), apb);
 
+    const singleSourceController = clone(minimal);
+    singleSourceController.peripherals = [{
+        type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+    }];
+    singleSourceController.interrupt = {
+        mode: 'controller', controller: 'intc0', sources: [
+            { source: 'external.only', id: 0, trigger: 'high' },
+        ],
+    };
+    const singleSourceTop = soc.renderSocTop(
+        planFixture(singleSourceController, 'single-source-controller.merc32.json'));
+    assert.match(singleSourceTop, /wire \[0:0\] intc0_irq_sources;/);
+    assert.match(singleSourceTop, /assign intc0_irq_sources\[0\] = external_only_conditioned;/);
+    assert.match(singleSourceTop, /\.IRQ_COUNT\s*\(1\)/);
+
     const all = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'all-peripherals.merc32.json'), 'utf8'));
     const allTop = soc.renderSocTop(planFixture(all, 'all-peripherals.merc32.json'));
     assert.match(allTop, /assign av0_router_ack = av0_bridge_valid;/);
     assert.doesNotMatch(allTop, /av0_bridge_valid\s*\|/);
 
-    const minimal = JSON.parse(fs.readFileSync(
-        path.join(fixtureDirectory, 'minimal.merc32.json'), 'utf8'));
     const minimalPlan = planFixture(minimal, 'minimal.merc32.json');
     assert.deepStrictEqual(soc.expectedGeneratedFiles(minimalPlan), [
         'rtl/minimal_soc.v', 'rtl/generated/minimal_soc_plb_router.v',
@@ -1724,11 +1743,11 @@ try {
         type: 'local_bus', name: 'ilb_external_local_bus', baseAddress: '0x20000000',
         windowSize: '4KiB', addressWidth: 12,
     }];
-    assert.ok(soc.planSoc(inactiveFeatureCollision, catalog).plan,
+    assert.ok(planInMemory(inactiveFeatureCollision).plan,
         'an endpoint may use an inactive ILB feature macro namespace');
     const activeFeatureCollision = clone(inactiveFeatureCollision);
     activeFeatureCollision.memory.ilb.type = 'external_local_bus';
-    const activeCollision = soc.planSoc(activeFeatureCollision, catalog);
+    const activeCollision = planInMemory(activeFeatureCollision);
     assert.strictEqual(activeCollision.plan, undefined);
     assert.match(JSON.stringify(activeCollision.diagnostics), /SOC_MACRO_COLLISION/);
     const inactiveDlbFeatureCollision = clone(minimal);
@@ -1737,11 +1756,11 @@ try {
         type: 'local_bus', name: 'dlb_internal_ram', baseAddress: '0x20000000',
         windowSize: '4KiB', addressWidth: 12,
     }];
-    assert.ok(soc.planSoc(inactiveDlbFeatureCollision, catalog).plan,
+    assert.ok(planInMemory(inactiveDlbFeatureCollision).plan,
         'an endpoint may use an inactive DLB feature macro namespace');
     const activeDlbFeatureCollision = clone(inactiveDlbFeatureCollision);
     activeDlbFeatureCollision.memory.dlb.type = 'internal_ram';
-    const activeDlbCollision = soc.planSoc(activeDlbFeatureCollision, catalog);
+    const activeDlbCollision = planInMemory(activeDlbFeatureCollision);
     assert.strictEqual(activeDlbCollision.plan, undefined);
     assert.match(JSON.stringify(activeDlbCollision.diagnostics), /SOC_MACRO_COLLISION/);
     const noneTop = soc.renderSocTop(minimalPlan);

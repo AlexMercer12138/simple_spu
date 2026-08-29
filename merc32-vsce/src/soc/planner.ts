@@ -34,16 +34,25 @@ const TRIGGER_ENCODING = {
     falling: 3n,
 } as const;
 
+export interface PlanSocOptions {
+    /** Absolute directory used to resolve source-relative paths without parser provenance. */
+    baseDirectory: string;
+}
+
 /** Converts a validated source configuration into the sole emitter input. */
-export function planSoc(config: SocSourceConfig, catalog: ModuleCatalog): SocPlanResult {
+export function planSoc(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+    options?: PlanSocOptions,
+): SocPlanResult {
     const diagnostics = [...validateSocConfig(config, catalog)];
     recordMissingAddresses(config, diagnostics);
+    const sourceFile = config[SOC_SOURCE_FILE] ?? '';
+    const sourceDirectory = planningSourceDirectory(config, sourceFile, options, diagnostics);
     if (diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
         return deepFreeze({ diagnostics });
     }
 
-    const sourceFile = config[SOC_SOURCE_FILE] ?? '';
-    const sourceDirectory = sourceFile === '' ? process.cwd() : path.dirname(sourceFile);
     const interrupt = planInterrupt(config);
     const peripherals = planPeripherals(config, catalog, interrupt);
     const externalInterfaces = planExternalInterfaces(config, catalog);
@@ -76,6 +85,43 @@ export function planSoc(config: SocSourceConfig, catalog: ModuleCatalog): SocPla
         rtlFiles,
     };
     return deepFreeze({ plan, diagnostics });
+}
+
+function planningSourceDirectory(
+    config: SocSourceConfig,
+    sourceFile: string,
+    options: PlanSocOptions | undefined,
+    diagnostics: SocDiagnostic[],
+): string {
+    if (sourceFile !== '' && path.isAbsolute(sourceFile)) {
+        return path.dirname(sourceFile);
+    }
+    if (typeof options?.baseDirectory === 'string' && path.isAbsolute(options.baseDirectory)) {
+        return path.normalize(options.baseDirectory);
+    }
+
+    const message = sourceFile === '' && options === undefined
+        ? 'Planning relative paths requires parser provenance or an explicit absolute baseDirectory.'
+        : 'Planning path provenance and baseDirectory values must be absolute.';
+    diagnostics.push({
+        severity: 'error',
+        code: 'SOC_PATH_CONTEXT',
+        path: ['project', 'outputDir'],
+        message,
+    });
+    for (const slot of ['ilb', 'dlb'] as const) {
+        const memory = config.memory?.[slot];
+        if (memory?.type === 'internal_ram' && memory.initFile !== undefined
+            && !path.isAbsolute(memory.initFile)) {
+            diagnostics.push({
+                severity: 'error',
+                code: 'SOC_PATH_CONTEXT',
+                path: ['memory', slot, 'initFile'],
+                message,
+            });
+        }
+    }
+    return '';
 }
 
 function recordMissingAddresses(config: SocSourceConfig, diagnostics: SocDiagnostic[]): void {
