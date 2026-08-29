@@ -41,6 +41,17 @@ function planFixture(config, fileName) {
     return result.plan;
 }
 
+function assertSortedObjectKeys(value) {
+    if (Array.isArray(value)) {
+        value.forEach(assertSortedObjectKeys);
+        return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    const keys = Object.keys(value);
+    assert.deepStrictEqual(keys, [...keys].sort(), `generated object keys must be sorted: ${keys}`);
+    Object.values(value).forEach(assertSortedObjectKeys);
+}
+
 let catalog;
 try {
     fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
@@ -59,36 +70,83 @@ try {
     const starterMain = soc.renderStarterMain(controllerPlan);
 
     assert.strictEqual(resolvedConfig, soc.renderResolvedConfig(controllerPlan));
-    assert.match(resolvedConfig, /^\{\n  "/);
-    assert.ok(resolvedConfig.endsWith('\n'));
-    assert.match(resolvedConfig, /"baseAddress": "0x10000000"/);
-    assert.match(resolvedConfig, /"endAddress": "0x10000fff"/);
-    assert.match(resolvedConfig, /"jtagIdCode": "0x4d320001"/);
+    const resolved = JSON.parse(resolvedConfig);
+    assert.strictEqual(`${JSON.stringify(resolved, null, 2)}\n`, resolvedConfig);
+    assertSortedObjectKeys(resolved);
+    assert.deepStrictEqual(resolved.cpu, { debug: true, jtagIdCode: '0x4d320001' });
+    assert.deepStrictEqual(resolved.memory, {
+        dlb: {
+            baseAddress: '0x08000000', endAddress: '0x0800ffff',
+            sizeBytes: 65536, type: 'external_local_bus', wordAddressWidth: 14,
+        },
+        ilb: {
+            baseAddress: '0x00000000', endAddress: '0x00007fff', initFile: 'firmware.mem',
+            sizeBytes: 32768, type: 'internal_ram', wordAddressWidth: 13,
+        },
+    });
+    assert.deepStrictEqual(resolved.interrupt, {
+        controller: 'intc0', irqCount: 4, irqMode: '0x00000000000000e4', mode: 'controller',
+        sources: [
+            { id: 0, source: 'uart0.interrupt', trigger: 'high' },
+            { id: 1, source: 'uart1.interrupt', trigger: 'low' },
+            { id: 2, source: 'gpio0.interrupt', trigger: 'rising' },
+            { id: 3, source: 'external.wake', topPort: 'external_wake', trigger: 'falling' },
+        ],
+    });
+    assert.deepStrictEqual(resolved.peripherals.map((item) => ({
+        baseAddress: item.baseAddress, endAddress: item.endAddress, interrupts: item.interrupts,
+        module: item.module, name: item.name, sizeBytes: item.sizeBytes, type: item.type,
+    })), [
+        { baseAddress: '0x10000000', endAddress: '0x10000fff', interrupts: ['interrupt'], module: 'apb_uart', name: 'uart0', sizeBytes: 4096, type: 'apb_uart' },
+        { baseAddress: '0x10001000', endAddress: '0x10001fff', interrupts: ['interrupt'], module: 'apb_uart', name: 'uart1', sizeBytes: 4096, type: 'apb_uart' },
+        { baseAddress: '0x10002000', endAddress: '0x10002fff', interrupts: ['interrupt'], module: 'apb_gpio', name: 'gpio0', sizeBytes: 4096, type: 'apb_gpio' },
+        { baseAddress: '0x10003000', endAddress: '0x10003fff', interrupts: ['interrupt'], module: 'apb_intc', name: 'intc0', sizeBytes: 4096, type: 'apb_intc' },
+    ]);
+    assert.deepStrictEqual(resolved.externalInterfaces.map((item) => ({
+        addressWidth: item.addressWidth, baseAddress: item.baseAddress, endAddress: item.endAddress,
+        name: item.name, sizeBytes: item.sizeBytes, type: item.type,
+    })), [
+        { addressWidth: 12, baseAddress: '0x10004000', endAddress: '0x10004fff', name: 'apb_ext0', sizeBytes: 4096, type: 'apb' },
+        { addressWidth: 32, baseAddress: '0x20000000', endAddress: '0x20ffffff', name: 'axi0', sizeBytes: 16777216, type: 'axi4_lite' },
+    ]);
+    assert.deepStrictEqual(resolved.rtlFiles, controllerPlan.rtlFiles);
+    assert.deepStrictEqual(resolved.topPorts, controllerPlan.topPorts);
 
     assert.strictEqual(addressMap, soc.renderAddressMap(controllerPlan));
-    assert.match(addressMap, /^\{\n  "/);
-    assert.ok(addressMap.endsWith('\n'));
-    assert.match(addressMap, /"baseAddress": "0x10000000"/);
-    assert.match(addressMap, /"endAddress": "0x20ffffff"/);
-    assert.doesNotMatch(addressMap, /(?:^|\n)# /);
+    assert.strictEqual(addressMap, [
+        '{', '  "endpoints": [',
+        '    {', '      "baseAddress": "0x10000000",', '      "endAddress": "0x10000fff",', '      "kind": "peripheral",', '      "name": "uart0",', '      "sizeBytes": 4096,', '      "type": "apb_uart"', '    },',
+        '    {', '      "baseAddress": "0x10001000",', '      "endAddress": "0x10001fff",', '      "kind": "peripheral",', '      "name": "uart1",', '      "sizeBytes": 4096,', '      "type": "apb_uart"', '    },',
+        '    {', '      "baseAddress": "0x10002000",', '      "endAddress": "0x10002fff",', '      "kind": "peripheral",', '      "name": "gpio0",', '      "sizeBytes": 4096,', '      "type": "apb_gpio"', '    },',
+        '    {', '      "baseAddress": "0x10003000",', '      "endAddress": "0x10003fff",', '      "kind": "peripheral",', '      "name": "intc0",', '      "sizeBytes": 4096,', '      "type": "apb_intc"', '    },',
+        '    {', '      "baseAddress": "0x10004000",', '      "endAddress": "0x10004fff",', '      "kind": "external",', '      "name": "apb_ext0",', '      "sizeBytes": 4096,', '      "type": "apb"', '    },',
+        '    {', '      "baseAddress": "0x20000000",', '      "endAddress": "0x20ffffff",', '      "kind": "external",', '      "name": "axi0",', '      "sizeBytes": 16777216,', '      "type": "axi4_lite"', '    }', '  ],', '  "memory": {',
+        '    "dlb": {', '      "baseAddress": "0x08000000",', '      "endAddress": "0x0800ffff",', '      "name": "dlb",', '      "sizeBytes": 65536', '    },',
+        '    "ilb": {', '      "baseAddress": "0x00000000",', '      "endAddress": "0x00007fff",', '      "name": "ilb",', '      "sizeBytes": 32768', '    }', '  },', '  "project": "demo_soc"', '}', '',
+    ].join('\n'));
 
-    assert.match(header, /^#ifndef DEMO_SOC_H\n#define DEMO_SOC_H\n/m);
-    assert.match(header, /#define DEMO_SOC_ILB_SIZE 32768/);
-    assert.match(header, /#define DEMO_SOC_DLB_BASE 0x08000000/);
-    assert.match(header, /#define DEMO_SOC_UART0_BASE 0x10000000/);
-    assert.match(header, /#define DEMO_SOC_UART0_IRQ 0/);
-    assert.match(header, /#define MERC32_IRQ_TRIGGER_HIGH 0/);
-    assert.match(header, /#define MERC32_IRQ_TRIGGER_LOW 1/);
-    assert.match(header, /#define MERC32_IRQ_TRIGGER_RISING 2/);
-    assert.match(header, /#define MERC32_IRQ_TRIGGER_FALLING 3/);
-    assert.match(header, /#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH/);
-    assert.match(header, /#endif\n$/);
+    assert.strictEqual(header, [
+        '#ifndef DEMO_SOC_H', '#define DEMO_SOC_H', '#define DEMO_SOC_ILB_BASE 0x00000000', '#define DEMO_SOC_ILB_SIZE 32768', '#define DEMO_SOC_ILB_END 0x00007fff', '#define DEMO_SOC_FEATURE_ILB_INTERNAL_RAM 1', '#define DEMO_SOC_DLB_BASE 0x08000000', '#define DEMO_SOC_DLB_SIZE 65536', '#define DEMO_SOC_DLB_END 0x0800ffff', '#define DEMO_SOC_FEATURE_DLB_EXTERNAL_LOCAL_BUS 1', '#define DEMO_SOC_FEATURE_DEBUG 1', '#define DEMO_SOC_UART0_BASE 0x10000000', '#define DEMO_SOC_UART0_SIZE 4096', '#define DEMO_SOC_UART0_END 0x10000fff', '#define DEMO_SOC_FEATURE_UART0 1', '#define DEMO_SOC_UART1_BASE 0x10001000', '#define DEMO_SOC_UART1_SIZE 4096', '#define DEMO_SOC_UART1_END 0x10001fff', '#define DEMO_SOC_FEATURE_UART1 1', '#define DEMO_SOC_GPIO0_BASE 0x10002000', '#define DEMO_SOC_GPIO0_SIZE 4096', '#define DEMO_SOC_GPIO0_END 0x10002fff', '#define DEMO_SOC_FEATURE_GPIO0 1', '#define DEMO_SOC_INTC0_BASE 0x10003000', '#define DEMO_SOC_INTC0_SIZE 4096', '#define DEMO_SOC_INTC0_END 0x10003fff', '#define DEMO_SOC_FEATURE_INTC0 1', '#define DEMO_SOC_APB_EXT0_BASE 0x10004000', '#define DEMO_SOC_APB_EXT0_SIZE 4096', '#define DEMO_SOC_APB_EXT0_END 0x10004fff', '#define DEMO_SOC_FEATURE_APB_EXT0 1', '#define DEMO_SOC_AXI0_BASE 0x20000000', '#define DEMO_SOC_AXI0_SIZE 16777216', '#define DEMO_SOC_AXI0_END 0x20ffffff', '#define DEMO_SOC_FEATURE_AXI0 1', '#define MERC32_IRQ_TRIGGER_HIGH 0', '#define MERC32_IRQ_TRIGGER_LOW 1', '#define MERC32_IRQ_TRIGGER_RISING 2', '#define MERC32_IRQ_TRIGGER_FALLING 3', '#define DEMO_SOC_UART0_IRQ 0', '#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH', '#define DEMO_SOC_UART1_IRQ 1', '#define DEMO_SOC_UART1_IRQ_TRIGGER MERC32_IRQ_TRIGGER_LOW', '#define DEMO_SOC_GPIO0_IRQ 2', '#define DEMO_SOC_GPIO0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_RISING', '#define DEMO_SOC_EXTERNAL_WAKE_IRQ 3', '#define DEMO_SOC_EXTERNAL_WAKE_IRQ_TRIGGER MERC32_IRQ_TRIGGER_FALLING', '#endif', '',
+    ].join('\n'));
     assert.doesNotMatch(header, /#define\s+\w+\s*\(/);
 
-    assert.match(readme, /# demo_soc/);
-    assert.match(readme, /Top module: `demo_soc`/);
-    assert.match(readme, /## Generated files/);
-    assert.match(readme, /Generation identity/);
+    const expectedFiles = [
+        'rtl/demo_soc.v', 'rtl/generated/demo_soc_plb_router.v',
+        'rtl/generated/demo_soc_apb_interconnect.v',
+        'rtl/apb_gpio/apb_gpio.v', 'rtl/apb_intc/apb_intc.v', 'rtl/apb_uart/apb_uart.v',
+        'rtl/bridge/lb2apb.v', 'rtl/bridge/lb2axi_lite.v', 'rtl/cpu/MERC32_top.v',
+        'rtl/cpu/core.v', 'rtl/debug/jtag_debug.v', 'rtl/misc/div.v', 'rtl/misc/mul.v',
+        'rtl/misc/spram.v', 'rtl/files.f', 'memory/firmware.mem',
+        'software/include/demo_soc.h', 'software/src/main.c',
+        'config/demo_soc.resolved.json', 'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
+    ];
+    assert.deepStrictEqual(soc.expectedGeneratedFiles(controllerPlan), expectedFiles);
+    const readmeFiles = readme.slice(
+        readme.indexOf('## Generated files\n\n') + '## Generated files\n\n'.length,
+        readme.indexOf('\n## Generation identity'),
+    );
+    assert.strictEqual(readmeFiles, `${expectedFiles.map((file) => `- \`${file}\``).join('\n')}\n`);
+    assert.match(readme, /^# demo_soc\n\nTop module: `demo_soc`\n/m);
     assert.doesNotMatch(readme, /successfully generated/i);
 
     assert.strictEqual(starterMain, [
@@ -161,20 +219,43 @@ try {
 
     const minimal = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'minimal.merc32.json'), 'utf8'));
-    const headerCollision = clone(minimal);
-    headerCollision.peripherals = [{
-        type: 'apb_uart', name: 'ilb', baseAddress: '0x10000000',
+    const minimalPlan = planFixture(minimal, 'minimal.merc32.json');
+    assert.deepStrictEqual(soc.expectedGeneratedFiles(minimalPlan), [
+        'rtl/minimal_soc.v', 'rtl/generated/minimal_soc_plb_router.v',
+        'rtl/cpu/MERC32_top.v', 'rtl/cpu/core.v', 'rtl/misc/div.v', 'rtl/misc/mul.v',
+        'rtl/files.f', 'software/include/minimal_soc.h', 'software/src/main.c',
+        'config/minimal_soc.resolved.json', 'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
+    ]);
+    const inactiveFeatureCollision = clone(minimal);
+    inactiveFeatureCollision.memory.ilb.type = 'internal_ram';
+    inactiveFeatureCollision.externalInterfaces = [{
+        type: 'local_bus', name: 'ilb_external_local_bus', baseAddress: '0x20000000',
+        windowSize: '4KiB', addressWidth: 12,
     }];
-    const headerCollisionParsed = soc.parseSocConfig(
-        `${JSON.stringify(headerCollision, null, 2)}\n`,
-        path.join(fixtureDirectory, 'header-collision.merc32.json'), catalog);
-    assert.ok(headerCollisionParsed.config);
-    assert.match(JSON.stringify(headerCollisionParsed.diagnostics), /SOC_MACRO_COLLISION/);
-    assert.strictEqual(soc.planSoc(headerCollisionParsed.config, catalog).plan, undefined);
-    const noneTop = soc.renderSocTop(planFixture(minimal, 'minimal.merc32.json'));
+    assert.ok(soc.planSoc(inactiveFeatureCollision, catalog).plan,
+        'an endpoint may use an inactive ILB feature macro namespace');
+    const activeFeatureCollision = clone(inactiveFeatureCollision);
+    activeFeatureCollision.memory.ilb.type = 'external_local_bus';
+    const activeCollision = soc.planSoc(activeFeatureCollision, catalog);
+    assert.strictEqual(activeCollision.plan, undefined);
+    assert.match(JSON.stringify(activeCollision.diagnostics), /SOC_MACRO_COLLISION/);
+    const inactiveDlbFeatureCollision = clone(minimal);
+    inactiveDlbFeatureCollision.memory.dlb.type = 'external_local_bus';
+    inactiveDlbFeatureCollision.externalInterfaces = [{
+        type: 'local_bus', name: 'dlb_internal_ram', baseAddress: '0x20000000',
+        windowSize: '4KiB', addressWidth: 12,
+    }];
+    assert.ok(soc.planSoc(inactiveDlbFeatureCollision, catalog).plan,
+        'an endpoint may use an inactive DLB feature macro namespace');
+    const activeDlbFeatureCollision = clone(inactiveDlbFeatureCollision);
+    activeDlbFeatureCollision.memory.dlb.type = 'internal_ram';
+    const activeDlbCollision = soc.planSoc(activeDlbFeatureCollision, catalog);
+    assert.strictEqual(activeDlbCollision.plan, undefined);
+    assert.match(JSON.stringify(activeDlbCollision.diagnostics), /SOC_MACRO_COLLISION/);
+    const noneTop = soc.renderSocTop(minimalPlan);
     assert.match(noneTop, /\.interrupt\s*\(1'b0\)/);
     assert.strictEqual(soc.renderApbInterconnect(
-        planFixture(minimal, 'minimal.merc32.json')), undefined);
+        minimalPlan), undefined);
 
     const direct = clone(minimal);
     direct.peripherals = [{

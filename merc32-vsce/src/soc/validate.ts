@@ -308,12 +308,12 @@ function reserveGeneratedHeaderMacros(
     const project = config.project.name.toUpperCase();
     const projectPath: readonly (string | number)[] = ['project', 'name'];
     record(`${project}_H`, projectPath);
-    for (const memory of ['ILB', 'DLB']) {
+    for (const [name, memory] of [['ILB', config.memory.ilb], ['DLB', config.memory.dlb]] as const) {
         for (const suffix of ['BASE', 'SIZE', 'END']) {
-            record(`${project}_${memory}_${suffix}`, projectPath);
+            record(`${project}_${name}_${suffix}`, projectPath);
         }
-        record(`${project}_FEATURE_${memory}_INTERNAL_RAM`, projectPath);
-        record(`${project}_FEATURE_${memory}_EXTERNAL_LOCAL_BUS`, projectPath);
+        const type = memory.type === 'internal_ram' ? 'INTERNAL_RAM' : 'EXTERNAL_LOCAL_BUS';
+        record(`${project}_FEATURE_${name}_${type}`, projectPath);
     }
     record(`${project}_FEATURE_DEBUG`, projectPath);
     for (const trigger of ['HIGH', 'LOW', 'RISING', 'FALLING']) {

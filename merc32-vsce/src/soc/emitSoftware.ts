@@ -102,13 +102,7 @@ export function renderGeneratedReadme(plan: SocPlan): string {
     for (const port of plan.topPorts) {
         ports.push(`- \`${port.direction} ${port.name}${port.width === 1 ? '' : `[${port.width - 1}:0]`}\``);
     }
-    const files = [
-        '- `rtl/files.f` lists the RTL source files required for compilation.',
-        '- `config/*.resolved.json` records the resolved configuration.',
-        '- `address-map.json` is the machine-readable address map.',
-        '- `software/include/*.h` provides the C configuration macros.',
-        '- `software/src/main.c` is an optional user-owned starter scaffold.',
-    ];
+    const files = expectedGeneratedFiles(plan).map((file) => `- \`${file}\``);
     const identity = [
         `- Project: \`${plan.projectName}\``,
         `- Top module: \`${plan.topModule}\``,
@@ -131,6 +125,31 @@ export function renderStarterMain(plan: SocPlan): string {
 
 export function headerFileName(plan: SocPlan): string {
     return `${plan.projectName}.h`;
+}
+
+/** Returns the deterministic output layout shared by the README and generator. */
+export function expectedGeneratedFiles(plan: SocPlan): readonly string[] {
+    const files = [
+        `rtl/${plan.topModule}.v`,
+        `rtl/generated/${plan.topModule}_plb_router.v`,
+    ];
+    if (plan.peripherals.length > 0) {
+        files.push(`rtl/generated/${plan.topModule}_apb_interconnect.v`);
+    }
+    files.push(...plan.rtlFiles, 'rtl/files.f');
+    for (const memory of [plan.memory.ilb, plan.memory.dlb]) {
+        if (memory.initFile !== undefined) files.push(`memory/${memory.initFile.outputName}`);
+    }
+    files.push(
+        `software/include/${headerFileName(plan)}`,
+        'software/src/main.c',
+        `config/${plan.projectName}.resolved.json`,
+        'address-map.json',
+        'manifest.json',
+        'README.md',
+        'LICENSE',
+    );
+    return files;
 }
 
 function resolvedMemory(memory: SocPlan['memory']['ilb'], baseAddress: bigint): object {
@@ -257,6 +276,8 @@ function assertUniqueHeaderMacros(plan: SocPlan, project: string): void {
     for (const memory of ['ILB', 'DLB']) {
         for (const suffix of ['BASE', 'SIZE', 'END']) add(`${project}_${memory}_${suffix}`);
     }
+    add(`${project}_FEATURE_ILB_${memoryFeatureSuffix(plan.memory.ilb.type)}`);
+    add(`${project}_FEATURE_DLB_${memoryFeatureSuffix(plan.memory.dlb.type)}`);
     for (const endpoint of plan.endpoints) {
         const instance = macroIdentifier(endpoint.name);
         for (const suffix of ['BASE', 'SIZE', 'END']) add(`${project}_${instance}_${suffix}`);
@@ -274,6 +295,10 @@ function assertUniqueHeaderMacros(plan: SocPlan, project: string): void {
 
 function macroIdentifier(value: string): string {
     return value.toUpperCase();
+}
+
+function memoryFeatureSuffix(type: SocPlan['memory']['ilb']['type']): string {
+    return type === 'internal_ram' ? 'INTERNAL_RAM' : 'EXTERNAL_LOCAL_BUS';
 }
 
 function jsonInteger(value: bigint): number | string {
