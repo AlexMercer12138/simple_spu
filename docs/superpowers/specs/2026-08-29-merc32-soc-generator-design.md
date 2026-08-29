@@ -229,6 +229,33 @@ Bits above `IRQ_COUNT` read as zero and ignore writes. APB byte strobes are
 honored. The generated C header records every assigned source ID and trigger
 mode.
 
+### 7.2 Source ownership and protected release
+
+The readable `apb_intc` implementation is developed and verified before its
+release form is produced. At the end of the controller task:
+
+1. Copy the verified readable source to
+   `D:\Development\Projects\ip-repo\intc\apb_intc.v`.
+2. Run `rtl lib index`, `rtl lib status`, and `rtl lib deps apb_intc` from the
+   IP repository to verify its library entry and dependency closure.
+3. Package from the IP repository with:
+
+   ```powershell
+   rtl lib pack --flat --encrypt apb_intc `
+     D:\Development\Projects\simple_cpu\rtl\apb_intc\apb_intc.v --force
+   ```
+
+4. Re-run the standalone controller testbench and generated-SoC elaboration
+   against that packaged file, then record its nonzero size and SHA-256 without
+   printing its protected body.
+
+The readable implementation remains in the IP maintenance repository. This
+repository retains only the single flattened protected distribution file at
+`rtl/apb_intc/apb_intc.v`. Its stable public module, parameters, ports, and
+behavior remain the catalog contract. The interrupt-controller programming
+manual is deliberately excluded from this project and will be written in the
+IP maintenance repository by its separate maintainer.
+
 ## 8. Configuration File
 
 ### 8.1 Naming and editor association
@@ -685,7 +712,9 @@ its `rtl/files.f`.
 
 - Lock and migrate the new address ABI.
 - Refactor the stable CPU wrapper.
-- Implement and verify the single-file interrupt controller.
+- Implement and verify the interrupt controller, migrate its readable source to
+  the IP maintenance repository, and retain only its verified flattened
+  protected single-file package in this repository.
 - Implement catalog, schema, validator, normalized model, and emitters.
 - Implement the `*.merc32.json` graphical custom editor and activity-bar entry.
 - Package all RTL and resources in the VSIX.
@@ -729,4 +758,5 @@ substantially extends the VSCode extension and Tiny C front end.
 
 It does not make protected peripherals editable, infer peripheral metadata from
 RTL, support arbitrary third-party plugins in the first release, generate FPGA
-projects, or preserve the pre-lock `0x00800000` DLB mapping.
+projects, write the interrupt-controller programming manual, or preserve the
+pre-lock `0x00800000` DLB mapping.
