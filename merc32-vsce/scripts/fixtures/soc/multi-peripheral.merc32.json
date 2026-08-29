@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "demo_soc",
+    "outputDir": "generated/demo_soc"
+  },
+  "cpu": {
+    "debug": true,
+    "jtagIdCode": "0x4d320001"
+  },
+  "memory": {
+    "ilb": {
+      "type": "internal_ram",
+      "size": "32KiB",
+      "initFile": "firmware.mem"
+    },
+    "dlb": {
+      "type": "external_local_bus",
+      "size": "64KiB"
+    }
+  },
+  "peripherals": [
+    {
+      "type": "apb_uart",
+      "name": "uart0",
+      "baseAddress": "0x10000000",
+      "parameters": {
+        "SYS_CLK_FREQ": 50000000,
+        "FIFO_DEPTH": 8
+      }
+    },
+    {
+      "type": "apb_uart",
+      "name": "uart1",
+      "baseAddress": "0x10001000"
+    },
+    {
+      "type": "apb_gpio",
+      "name": "gpio0",
+      "baseAddress": "0x10002000"
+    },
+    {
+      "type": "apb_intc",
+      "name": "intc0",
+      "baseAddress": "0x10003000"
+    }
+  ],
+  "externalInterfaces": [
+    {
+      "type": "apb",
+      "name": "apb_ext0",
+      "baseAddress": "0x10004000",
+      "windowSize": "4KiB",
+      "addressWidth": 12
+    },
+    {
+      "type": "axi4_lite",
+      "name": "axi0",
+      "baseAddress": "0x20000000",
+      "windowSize": "16MiB",
+      "addressWidth": 32
+    }
+  ],
+  "interrupt": {
+    "mode": "controller",
+    "controller": "intc0",
+    "sources": [
+      {
+        "source": "uart0.interrupt",
+        "id": 0,
+        "trigger": "high"
+      },
+      {
+        "source": "uart1.interrupt",
+        "id": 1,
+        "trigger": "low"
+      },
+      {
+        "source": "gpio0.interrupt",
+        "id": 2,
+        "trigger": "rising"
+      },
+      {
+        "source": "external.wake",
+        "id": 3,
+        "trigger": "falling"
+      }
+    ]
+  }
+}

@@ -1,4 +1,8 @@
+import { ModuleCatalog, SocDiagnostic, SocSourceConfig } from './model';
+import { validateSocConfig } from './validate';
+
 const MAX_U32 = 0xffffffffn;
+const PLB_BASE = 0x10000000n;
 const KIBIBYTE = 1024n;
 const MEBIBYTE = KIBIBYTE * KIBIBYTE;
 
@@ -101,4 +105,172 @@ export function alignUp(value: bigint, alignment: bigint): bigint {
         throw new RangeError('alignment overflows the 32-bit address space');
     }
     return aligned;
+}
+
+export interface AddressAssignment {
+    path: readonly (string | number)[];
+    address: string;
+}
+
+export interface AddressAssignmentResult {
+    config: SocSourceConfig;
+    assignments: readonly AddressAssignment[];
+    diagnostics: readonly SocDiagnostic[];
+}
+
+interface OccupiedRange {
+    base: bigint;
+    end: bigint;
+}
+
+/** Assigns only absent endpoint addresses, preserving every explicit source value. */
+export function assignMissingAddresses(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+): AddressAssignmentResult {
+    const originalClone = cloneJson(config);
+    const existingDiagnostics = validateSocConfig(config, catalog);
+    if (existingDiagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+        return { config: originalClone, assignments: [], diagnostics: existingDiagnostics };
+    }
+
+    const working = cloneJson(config);
+    const occupied = collectExplicitRanges(config, catalog);
+    const assignments: AddressAssignment[] = [];
+
+    const allocate = (
+        size: bigint,
+        alignment: bigint,
+        path: readonly (string | number)[],
+        write: (address: string) => void,
+    ): boolean => {
+        const base = findLowestFreeRange(occupied, size, alignment);
+        if (base === undefined) {
+            return false;
+        }
+        const address = formatHex32(base);
+        occupied.push({ base, end: base + size - 1n });
+        assignments.push({ path: [...path], address });
+        write(address);
+        return true;
+    };
+
+    for (let index = 0; index < working.peripherals.length; index += 1) {
+        const peripheral = working.peripherals[index];
+        if (peripheral.baseAddress !== undefined) {
+            continue;
+        }
+        const descriptor = catalog.modules.get(peripheral.type)!;
+        const path: readonly (string | number)[] = ['peripherals', index, 'baseAddress'];
+        if (!allocate(BigInt(descriptor.addressSize), BigInt(descriptor.alignment), path,
+            (address) => { peripheral.baseAddress = address; })) {
+            return allocationFailure(originalClone, existingDiagnostics, path);
+        }
+    }
+
+    for (let index = 0; index < working.externalInterfaces.length; index += 1) {
+        const endpoint = working.externalInterfaces[index];
+        if (endpoint.baseAddress !== undefined) {
+            continue;
+        }
+        const protocol = catalog.protocols.get(endpoint.type)!;
+        const alignment = endpoint.addressWidth < 32
+            ? 1n << BigInt(endpoint.addressWidth)
+            : BigInt(protocol.alignment);
+        const path: readonly (string | number)[] = ['externalInterfaces', index, 'baseAddress'];
+        if (!allocate(parseByteSize(endpoint.windowSize), alignment, path,
+            (address) => { endpoint.baseAddress = address; })) {
+            return allocationFailure(originalClone, existingDiagnostics, path);
+        }
+    }
+
+    const diagnostics = validateSocConfig(working, catalog);
+    if (diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+        return { config: originalClone, assignments: [], diagnostics };
+    }
+    return { config: working, assignments, diagnostics };
+}
+
+function collectExplicitRanges(config: SocSourceConfig, catalog: ModuleCatalog): OccupiedRange[] {
+    const ranges: OccupiedRange[] = [];
+    for (const peripheral of config.peripherals) {
+        if (peripheral.baseAddress === undefined) {
+            continue;
+        }
+        const size = BigInt(catalog.modules.get(peripheral.type)!.addressSize);
+        const base = BigInt(peripheral.baseAddress);
+        ranges.push({ base, end: base + size - 1n });
+    }
+    for (const endpoint of config.externalInterfaces) {
+        if (endpoint.baseAddress === undefined) {
+            continue;
+        }
+        const base = BigInt(endpoint.baseAddress);
+        const size = parseByteSize(endpoint.windowSize);
+        ranges.push({ base, end: base + size - 1n });
+    }
+    return ranges;
+}
+
+function findLowestFreeRange(
+    occupied: readonly OccupiedRange[],
+    size: bigint,
+    alignment: bigint,
+): bigint | undefined {
+    const ordered = [...occupied]
+        .sort((left, right) => left.base < right.base ? -1 : left.base > right.base ? 1 : 0);
+    let candidate = alignUp(PLB_BASE, alignment);
+    while (candidate <= MAX_U32) {
+        const end = candidate + size - 1n;
+        if (end > MAX_U32) {
+            return undefined;
+        }
+        const conflict = ordered.find((range) => candidate <= range.end && range.base <= end);
+        if (!conflict) {
+            return candidate;
+        }
+        if (conflict.end === MAX_U32) {
+            return undefined;
+        }
+        try {
+            candidate = alignUp(conflict.end + 1n, alignment);
+        } catch {
+            return undefined;
+        }
+    }
+    return undefined;
+}
+
+function allocationFailure(
+    config: SocSourceConfig,
+    diagnostics: readonly SocDiagnostic[],
+    path: readonly (string | number)[],
+): AddressAssignmentResult {
+    return {
+        config,
+        assignments: [],
+        diagnostics: [
+            ...diagnostics,
+            {
+                severity: 'error',
+                code: 'SOC_ADDRESS_SPACE',
+                path: [...path],
+                message: 'No aligned PLB range is available for this endpoint.',
+            },
+        ],
+    };
+}
+
+function cloneJson<T>(value: T): T {
+    if (Array.isArray(value)) {
+        return value.map((item) => cloneJson(item)) as T;
+    }
+    if (value !== null && typeof value === 'object') {
+        const clone: Record<string, unknown> = {};
+        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+            clone[key] = cloneJson(item);
+        }
+        return clone as T;
+    }
+    return value;
 }

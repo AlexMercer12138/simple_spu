@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "minimal_soc",
+    "outputDir": "generated/minimal_soc"
+  },
+  "cpu": {
+    "debug": false
+  },
+  "memory": {
+    "ilb": {
+      "type": "external_local_bus",
+      "size": "32KiB"
+    },
+    "dlb": {
+      "type": "external_local_bus",
+      "size": "64KiB"
+    }
+  },
+  "peripherals": [],
+  "externalInterfaces": [],
+  "interrupt": {
+    "mode": "none"
+  }
+}

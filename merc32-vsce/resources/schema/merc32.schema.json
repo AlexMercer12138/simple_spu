@@ -1,0 +1,777 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "cpu": {
+      "additionalProperties": false,
+      "properties": {
+        "debug": {
+          "type": "boolean"
+        },
+        "jtagIdCode": {
+          "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "externalInterfaces": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "apb"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "avalon"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "axi4_lite"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "drp"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "local_bus"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "addressWidth": {
+                "type": "integer"
+              },
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "wishbone"
+              },
+              "windowSize": {
+                "oneOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "windowSize",
+              "addressWidth"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "interrupt": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "none"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "direct"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "controller": {
+              "type": "string"
+            },
+            "mode": {
+              "const": "controller"
+            },
+            "sources": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "trigger": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source",
+                  "id",
+                  "trigger"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "mode",
+            "controller",
+            "sources"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "memory": {
+      "additionalProperties": false,
+      "properties": {
+        "dlb": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "initFile": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size": {
+                  "oneOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "internal_ram"
+                }
+              },
+              "required": [
+                "type",
+                "size"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "oneOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "external_local_bus"
+                }
+              },
+              "required": [
+                "type",
+                "size"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ilb": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "initFile": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "size": {
+                  "oneOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "internal_ram"
+                }
+              },
+              "required": [
+                "type",
+                "size"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "oneOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "pattern": "^[0-9]+(?:[Kk][Ii][Bb]|[Mm][Ii][Bb])?$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "external_local_bus"
+                }
+              },
+              "required": [
+                "type",
+                "size"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ilb",
+        "dlb"
+      ],
+      "type": "object"
+    },
+    "peripherals": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "DEFAULT_BIT_RATE": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "RX_FIFO_DEPTH": {
+                    "minimum": 8,
+                    "type": "integer"
+                  },
+                  "SYS_CLK_FREQ": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "TX_FIFO_DEPTH": {
+                    "minimum": 8,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_can"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_gpio"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "FIFO_DEPTH": {
+                    "maximum": 128,
+                    "minimum": 8,
+                    "type": "integer"
+                  },
+                  "SYS_CLK_FREQ": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_i2c"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "IRQ_COUNT": {
+                    "maximum": 32,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "IRQ_MODE": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_intc"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "CS_COUNT": {
+                    "maximum": 16,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "FIFO_DEPTH": {
+                    "maximum": 128,
+                    "minimum": 8,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_qspi"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "FIFO_DEPTH": {
+                    "maximum": 512,
+                    "minimum": 8,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_sdio"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_timer"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseAddress": {
+                "pattern": "^0[xX][0-9a-fA-F]{1,8}$",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "FIFO_DEPTH": {
+                    "maximum": 128,
+                    "minimum": 8,
+                    "type": "integer"
+                  },
+                  "SYS_CLK_FREQ": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "apb_uart"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "project": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "outputDir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "outputDir"
+      ],
+      "type": "object"
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "project",
+    "cpu",
+    "memory",
+    "peripherals",
+    "externalInterfaces",
+    "interrupt"
+  ],
+  "title": "MERC32 SoC configuration",
+  "type": "object"
+}

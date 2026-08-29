@@ -200,5 +200,9 @@
     "test:soc": "npm run test:soc:config",
     "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "jsonc-parser": "^3.3.1"
   }
 }
