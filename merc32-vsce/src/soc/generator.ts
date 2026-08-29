@@ -10,6 +10,7 @@ import {
     assertNoCaseInsensitivePathCollisions,
     createSiblingStagingDirectory,
     generatedPath,
+    identityOf,
     normalizeGeneratedPath,
     sha256,
     sha256File,
@@ -115,6 +116,7 @@ interface SocManifest {
 }
 
 interface PreparedGeneration {
+    allowedAssetRtlPaths: ReadonlySet<string>;
     expectedFiles: readonly string[];
     generatedFiles: readonly GeneratedFile[];
     mainFile: GeneratedFile;
@@ -146,7 +148,8 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
     let preserveStaging = false;
     try {
         const prepared = prepareGeneration(options);
-        const previousManifest = readExistingManifest(prepared.outputDir);
+        const previousManifest = readExistingManifest(
+            prepared.outputDir, prepared.allowedAssetRtlPaths);
         const previous = previousManifest?.manifest;
         const ownershipChanged = previous !== undefined
             && (!sameCanonicalPath(previous.sourceConfig, prepared.manifest.sourceConfig)
@@ -177,9 +180,18 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
         const stagedFiles: StagedFile[] = prepared.generatedFiles.map((file) => ({
             path: file.path,
             content: file.content,
+            sha256: sha256(file.content),
         }));
-        stagedFiles.push({ path: MAIN_PATH, content: prepared.mainFile.content });
-        stagedFiles.push({ path: MANIFEST_PATH, content: prepared.manifestText });
+        stagedFiles.push({
+            path: MAIN_PATH,
+            content: prepared.mainFile.content,
+            sha256: sha256(prepared.mainFile.content),
+        });
+        stagedFiles.push({
+            path: MANIFEST_PATH,
+            content: prepared.manifestText,
+            sha256: sha256(prepared.manifestText),
+        });
         writeStagedFiles(stagingDir, stagedFiles);
 
         const manifestFile = generatedPath(prepared.outputDir, MANIFEST_PATH);
@@ -190,11 +202,23 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             outputDir: prepared.outputDir,
             stagingDir,
             replacePaths: [
-                ...inspection.replacePaths,
-                ...(replaceManifest ? [{ path: MANIFEST_PATH, expected: manifestState }] : []),
+                ...inspection.replacePaths.map((operation) => ({
+                    ...operation,
+                    installedSha256: sha256(desiredManaged.get(operation.path)!.content),
+                })),
+                ...(replaceManifest ? [{
+                    path: MANIFEST_PATH,
+                    expected: manifestState,
+                    installedSha256: sha256(prepared.manifestText),
+                }] : []),
             ],
-            createOnlyPaths: mainExists ? [] : [{ path: MAIN_PATH, expected: mainState }],
+            createOnlyPaths: mainExists ? [] : [{
+                path: MAIN_PATH,
+                expected: mainState,
+                installedSha256: sha256(prepared.mainFile.content),
+            }],
             removePaths: inspection.stalePaths,
+            invariantPaths: mainExists ? [{ path: MAIN_PATH, expected: mainState }] : [],
         });
 
         return Object.freeze({
@@ -292,6 +316,7 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
         sourceConfig: portablePath(configFile),
     };
     return {
+        allowedAssetRtlPaths: catalogAssetRtlPaths(catalog),
         expectedFiles,
         generatedFiles,
         mainFile,
@@ -408,7 +433,8 @@ function inspectTarget(
             if (desired !== undefined) replacePaths.set(relativePath, { kind: 'missing' });
             continue;
         }
-        if (!fs.lstatSync(target).isFile()) {
+        const status = fs.lstatSync(target, { bigint: true });
+        if (!status.isFile()) {
             conflicts.push({
                 path: relativePath,
                 reason: desiredManaged.has(relativePath) ? 'modified-managed' : 'modified-stale',
@@ -418,9 +444,17 @@ function inspectTarget(
         const inspectedHash = sha256File(target);
         if (inspectedHash === oldRecord.sha256) {
             if (desired === undefined) {
-                stalePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
+                stalePaths.set(relativePath, {
+                    kind: 'regular-file',
+                    sha256: inspectedHash,
+                    identity: identityOf(status),
+                });
             } else if (oldRecord.sha256 !== sha256(desired.content)) {
-                replacePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
+                replacePaths.set(relativePath, {
+                    kind: 'regular-file',
+                    sha256: inspectedHash,
+                    identity: identityOf(status),
+                });
             }
             continue;
         }
@@ -428,7 +462,11 @@ function inspectTarget(
         if (reason === 'modified-stale' || adopting || !force) {
             conflicts.push({ path: relativePath, reason });
         } else {
-            replacePaths.set(relativePath, { kind: 'regular-file', sha256: inspectedHash });
+            replacePaths.set(relativePath, {
+                kind: 'regular-file',
+                sha256: inspectedHash,
+                identity: identityOf(status),
+            });
         }
     }
 
@@ -454,16 +492,23 @@ function inspectTarget(
 
 function inspectRegularTarget(target: string): InspectedTargetState {
     try {
-        const status = fs.lstatSync(target);
+        const status = fs.lstatSync(target, { bigint: true });
         if (!status.isFile()) throw new Error(`Generated target is not a regular file: ${target}`);
-        return { kind: 'regular-file', sha256: sha256File(target) };
+        return {
+            kind: 'regular-file',
+            sha256: sha256File(target),
+            identity: identityOf(status),
+        };
     } catch (error) {
         if (isMissingPathError(error)) return { kind: 'missing' };
         throw error;
     }
 }
 
-function readExistingManifest(outputDir: string): ExistingManifest | undefined {
+function readExistingManifest(
+    outputDir: string,
+    allowedAssetRtlPaths: ReadonlySet<string>,
+): ExistingManifest | undefined {
     const manifestFile = generatedPath(outputDir, MANIFEST_PATH);
     if (!fs.existsSync(manifestFile)) return undefined;
     try {
@@ -471,17 +516,25 @@ function readExistingManifest(outputDir: string): ExistingManifest | undefined {
         const content = fs.readFileSync(manifestFile);
         const value = JSON.parse(content.toString('utf8')) as unknown;
         return {
-            manifest: validateManifest(value),
-            state: { kind: 'regular-file', sha256: sha256(content) },
+            manifest: validateManifest(value, allowedAssetRtlPaths),
+            state: {
+                kind: 'regular-file',
+                sha256: sha256(content),
+                identity: identityOf(fs.lstatSync(manifestFile, { bigint: true })),
+            },
         };
     } catch (error) {
         throw diagnosticFailure('SOC_MANIFEST', error);
     }
 }
 
-function validateManifest(value: unknown): SocManifest {
+function validateManifest(
+    value: unknown,
+    allowedAssetRtlPaths: ReadonlySet<string>,
+): SocManifest {
     if (!isObject(value) || value.manifestVersion !== 1
         || typeof value.projectName !== 'string'
+        || !isIdentifier(value.projectName)
         || typeof value.sourceConfig !== 'string'
         || typeof value.generatorVersion !== 'string'
         || typeof value.resourceRevision !== 'string'
@@ -499,7 +552,8 @@ function validateManifest(value: unknown): SocManifest {
         }
         const recordPath = normalizeGeneratedPath(record.path);
         if (record.kind === 'scaffold/user-owned') {
-            if (recordPath !== MAIN_PATH || record.sha256 !== undefined) {
+            if (recordPath !== MAIN_PATH || record.sha256 !== undefined
+                || record.logicalSource !== 'templates/main.c.tpl') {
                 throw new Error('Existing user-owned scaffold record is invalid.');
             }
             return {
@@ -508,7 +562,10 @@ function validateManifest(value: unknown): SocManifest {
                 path: MAIN_PATH,
             };
         }
-        if (recordPath === MAIN_PATH || recordPath === MANIFEST_PATH || !isSha256(record.sha256)) {
+        if (recordPath === MAIN_PATH || recordPath === MANIFEST_PATH || !isSha256(record.sha256)
+            || !isAllowedManagedRecord(
+                record.kind, record.logicalSource, recordPath,
+                value.projectName as string, allowedAssetRtlPaths)) {
             throw new Error('Existing managed file record is invalid.');
         }
         return {
@@ -535,6 +592,60 @@ function validateManifest(value: unknown): SocManifest {
         resourceRevision: value.resourceRevision,
         sourceConfig: value.sourceConfig,
     };
+}
+
+function catalogAssetRtlPaths(catalog: ReturnType<typeof loadCatalog>): ReadonlySet<string> {
+    const paths = new Set<string>([
+        'rtl/cpu/MERC32_top.v',
+        'rtl/cpu/core.v',
+        'rtl/misc/div.v',
+        'rtl/misc/mul.v',
+        'rtl/misc/spram.v',
+        'rtl/debug/jtag_debug.v',
+        'rtl/bridge/lb2apb.v',
+    ]);
+    for (const descriptor of catalog.modules.values()) {
+        for (const rtlFile of descriptor.rtlFiles) paths.add(rtlFile);
+    }
+    for (const descriptor of catalog.protocols.values()) {
+        for (const rtlFile of descriptor.rtlFiles) paths.add(rtlFile);
+    }
+    return paths;
+}
+
+function isAllowedManagedRecord(
+    kind: string,
+    logicalSource: string,
+    recordPath: string,
+    projectName: string,
+    allowedAssetRtlPaths: ReadonlySet<string>,
+): boolean {
+    if (kind === 'asset/rtl') {
+        return logicalSource === recordPath && allowedAssetRtlPaths.has(recordPath);
+    }
+    const exact = new Map<string, readonly [string, string]>([
+        [`rtl/${projectName}.v`, ['generated/rtl', 'generator:renderSocTop']],
+        [`rtl/generated/${projectName}_plb_router.v`,
+            ['generated/rtl', 'generator:renderPlbRouter']],
+        [`rtl/generated/${projectName}_apb_interconnect.v`,
+            ['generated/rtl', 'generator:renderApbInterconnect']],
+        ['rtl/files.f', ['generated/rtl-file-list', 'generator:rtlFiles']],
+        [`software/include/${projectName}.h`,
+            ['generated/software-header', 'generator:renderSocHeader']],
+        [`config/${projectName}.resolved.json`,
+            ['generated/config', 'generator:renderResolvedConfig']],
+        ['address-map.json', ['generated/address-map', 'generator:renderAddressMap']],
+        ['README.md', ['generated/documentation', 'templates/README.md.tpl']],
+        ['LICENSE', ['asset/license', 'licenses/LICENSE']],
+    ]);
+    const expected = exact.get(recordPath);
+    if (expected !== undefined) {
+        return kind === expected[0] && logicalSource === expected[1];
+    }
+    const memory = /^memory\/(ilb|dlb)_([^/]+)$/.exec(recordPath);
+    return memory !== null && memory[2] !== '.' && memory[2] !== '..'
+        && kind === 'source/memory-init'
+        && logicalSource === `config:memory.${memory[1]}.initFile`;
 }
 
 function listOutputEntries(
@@ -690,6 +801,10 @@ function isManagedRecord(record: ManifestFileRecord): record is ManifestManagedR
 
 function isSha256(value: unknown): value is string {
     return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isIdentifier(value: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

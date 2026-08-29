@@ -5,6 +5,7 @@ import * as path from 'path';
 export interface StagedFile {
     path: string;
     content: Buffer;
+    sha256: string;
 }
 
 export interface ActivationPlan {
@@ -13,15 +14,22 @@ export interface ActivationPlan {
     replacePaths: readonly ActivationTarget[];
     createOnlyPaths: readonly ActivationTarget[];
     removePaths: readonly ActivationTarget[];
+    invariantPaths: readonly ActivationTarget[];
 }
 
 export type ExpectedTargetState =
     | { kind: 'missing' }
-    | { kind: 'regular-file'; sha256: string };
+    | { kind: 'regular-file'; sha256: string; identity: FileIdentity };
+
+export interface FileIdentity {
+    dev: bigint;
+    ino: bigint;
+}
 
 export interface ActivationTarget {
     path: string;
     expected: ExpectedTargetState;
+    installedSha256?: string;
 }
 
 export class ActivationRecoveryError extends Error {
@@ -86,7 +94,7 @@ export function writeStagedFiles(stagingDir: string, files: readonly StagedFile[
         const target = generatedPath(stagingDir, normalized);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, file.content);
-        if (sha256File(target) !== sha256(file.content)) {
+        if (file.sha256 !== sha256(file.content) || sha256File(target) !== file.sha256) {
             throw new Error(`Staged file verification failed: ${normalized}`);
         }
     }
@@ -98,9 +106,36 @@ export function writeStagedFiles(stagingDir: string, files: readonly StagedFile[
  */
 export function activateStagedFiles(plan: ActivationPlan): void {
     const backupRoot = path.join(plan.stagingDir, '.activation-backup');
-    const backups: { target: string; backup: string }[] = [];
-    const installed: { target: string; sha256: string }[] = [];
+    const backups: {
+        target: string;
+        backup: string;
+        identity: FileIdentity;
+        sha256?: string;
+        regular: boolean;
+    }[] = [];
+    const installed: {
+        target: string;
+        sha256: string;
+        identity: FileIdentity;
+    }[] = [];
     const createdDirectories: string[] = [];
+    let outputRootIdentity: FileIdentity | undefined;
+
+    const assertOutputRoot = (): void => {
+        assertPathHasNoLinks(plan.outputDir);
+        const status = fs.lstatSync(plan.outputDir, { bigint: true });
+        if (!status.isDirectory() || status.isSymbolicLink()) {
+            throw new Error(`Output root is not an ordinary directory: ${plan.outputDir}`);
+        }
+        const identity = identityOf(status);
+        if (outputRootIdentity === undefined) {
+            outputRootIdentity = identity;
+        } else if (!sameIdentity(identity, outputRootIdentity)) {
+            throw new Error(`Output root changed during activation: ${plan.outputDir}`);
+        }
+    };
+
+    if (fs.existsSync(plan.outputDir)) assertOutputRoot();
 
     const createParents = (target: string): void => {
         const missing: string[] = [];
@@ -115,77 +150,130 @@ export function activateStagedFiles(plan: ActivationPlan): void {
             fs.mkdirSync(directory);
             createdDirectories.push(directory);
         }
+        assertOutputRoot();
     };
 
-    const assertExpectedState = (operation: ActivationTarget): void => {
-        const target = generatedPath(plan.outputDir, operation.path);
-        assertPathHasNoLinks(target);
-        let actual: ExpectedTargetState;
-        try {
-            const status = fs.lstatSync(target);
-            actual = status.isFile()
-                ? { kind: 'regular-file', sha256: sha256File(target) }
-                : { kind: 'missing' };
-        } catch (error) {
-            if (isMissingPathError(error)) {
-                actual = { kind: 'missing' };
-            } else {
-                throw error;
+    const assertInvariants = (): void => {
+        for (const invariant of plan.invariantPaths) {
+            const target = generatedPath(plan.outputDir, invariant.path);
+            assertPathHasNoLinks(target);
+            if (invariant.expected.kind !== 'regular-file') {
+                throw new Error(`Activation invariant must be a regular file: ${invariant.path}`);
             }
-        }
-        if (actual.kind !== operation.expected.kind
-            || (actual.kind === 'regular-file' && operation.expected.kind === 'regular-file'
-                && actual.sha256 !== operation.expected.sha256)) {
-            throw new Error(`Generated target changed during staging: ${operation.path}`);
+            const status = fs.lstatSync(target, { bigint: true });
+            if (!status.isFile()
+                || !sameIdentity(identityOf(status), invariant.expected.identity)
+                || sha256File(target) !== invariant.expected.sha256) {
+                throw new Error(`Activation invariant changed: ${invariant.path}`);
+            }
         }
     };
 
     const backupExisting = (operation: ActivationTarget): void => {
         const relativePath = operation.path;
         const target = generatedPath(plan.outputDir, relativePath);
-        assertExpectedState(operation);
-        if (operation.expected.kind === 'missing') return;
+        if (operation.expected.kind === 'missing') {
+            if (fs.existsSync(target)) {
+                throw new Error(`Generated target appeared during staging: ${relativePath}`);
+            }
+            return;
+        }
         const backup = generatedPath(backupRoot, relativePath);
         fs.mkdirSync(path.dirname(backup), { recursive: true });
         fs.renameSync(target, backup);
-        backups.push({ target, backup });
+        const backupRecord = {
+            target,
+            backup,
+            identity: operation.expected.identity,
+            sha256: operation.expected.sha256 as string | undefined,
+            regular: true,
+        };
+        backups.push(backupRecord);
+        const captured = fs.lstatSync(backup, { bigint: true });
+        const capturedRegular = captured.isFile() && !captured.isSymbolicLink();
+        const capturedHash = capturedRegular ? sha256File(backup) : undefined;
+        backupRecord.identity = identityOf(captured);
+        backupRecord.sha256 = capturedHash;
+        backupRecord.regular = capturedRegular;
+        assertPathHasNoLinks(backup);
+        assertOutputRoot();
+        if (!capturedRegular
+            || !sameIdentity(identityOf(captured), operation.expected.identity)
+            || capturedHash !== operation.expected.sha256) {
+            throw new Error(`Generated target changed during capture: ${relativePath}`);
+        }
+        assertInvariants();
     };
 
-    const install = (operation: ActivationTarget, createOnly: boolean): void => {
+    const install = (operation: ActivationTarget): void => {
         const relativePath = operation.path;
         const target = generatedPath(plan.outputDir, relativePath);
-        if (createOnly) assertExpectedState(operation);
-        else backupExisting(operation);
+        backupExisting(operation);
         createParents(target);
         assertPathHasNoLinks(target);
         if (fs.existsSync(target)) {
             throw new Error(`Generated target appeared during activation: ${relativePath}`);
         }
+        const namespace = captureDirectoryChain(plan.outputDir, path.dirname(target));
         const staged = generatedPath(plan.stagingDir, relativePath);
         assertPathHasNoLinks(staged);
-        if (!fs.lstatSync(staged).isFile()) {
+        const stagedStatus = fs.lstatSync(staged, { bigint: true });
+        if (!stagedStatus.isFile() || stagedStatus.isSymbolicLink()) {
             throw new Error(`Staged target is not a regular file: ${relativePath}`);
         }
+        if (operation.installedSha256 === undefined) {
+            throw new Error(`Activation target has no intended digest: ${relativePath}`);
+        }
         const installedHash = sha256File(staged);
+        if (installedHash !== operation.installedSha256) {
+            throw new Error(`Staged target changed after write: ${relativePath}`);
+        }
         assertPathHasNoLinks(target);
         if (fs.existsSync(target)) {
             throw new Error(`Generated target appeared during activation: ${relativePath}`);
         }
-        fs.renameSync(staged, target);
-        installed.push({ target, sha256: installedHash });
+        fs.linkSync(staged, target);
+        const installedRecord = {
+            target,
+            sha256: operation.installedSha256,
+            identity: identityOf(stagedStatus),
+        };
+        installed.push(installedRecord);
+        const canonicalTarget = fs.realpathSync.native(target);
+        installedRecord.target = canonicalTarget;
+        assertDirectoryChain(namespace);
+        assertOutputRoot();
+        assertPathHasNoLinks(target);
+        const installedStatus = fs.lstatSync(target, { bigint: true });
+        if (!installedStatus.isFile()
+            || !sameIdentity(identityOf(installedStatus), identityOf(stagedStatus))
+            || sha256File(target) !== operation.installedSha256) {
+            throw new Error(`Installed target verification failed: ${relativePath}`);
+        }
+        assertInvariants();
+        fs.unlinkSync(staged);
+        assertOutputRoot();
+        assertInvariants();
     };
 
     try {
-        for (const operation of plan.replacePaths) install(operation, false);
-        for (const operation of plan.createOnlyPaths) install(operation, true);
+        assertInvariants();
+        for (const operation of plan.replacePaths) install(operation);
+        for (const operation of plan.createOnlyPaths) install(operation);
         for (const operation of plan.removePaths) backupExisting(operation);
+        removeEmptyManagedDirectories(
+            plan.outputDir, plan.removePaths.map((operation) => operation.path));
+        assertOutputRoot();
+        assertInvariants();
     } catch (error) {
         const recoveryFailures: Error[] = [];
         for (const installedFile of installed.reverse()) {
             try {
                 if (!fs.existsSync(installedFile.target)) continue;
                 assertPathHasNoLinks(installedFile.target);
-                if (!fs.lstatSync(installedFile.target).isFile()
+                const status = fs.lstatSync(installedFile.target, { bigint: true });
+                if (!status.isFile()
+                    || !sameIdentity(identityOf(status), installedFile.identity)
                     || sha256File(installedFile.target) !== installedFile.sha256) {
                     throw new Error(`Installed target changed before rollback: ${installedFile.target}`);
                 }
@@ -195,21 +283,47 @@ export function activateStagedFiles(plan: ActivationPlan): void {
                     recoveryError, `Failed to remove installed target ${installedFile.target}`));
             }
         }
-        for (const { target, backup } of backups.reverse()) {
+        for (const captured of backups.reverse()) {
             try {
+                const { target, backup } = captured;
                 if (!fs.existsSync(backup)) continue;
                 assertPathHasNoLinks(backup);
-                if (!fs.lstatSync(backup).isFile()) {
-                    throw new Error(`Backup is not a regular file: ${backup}`);
+                const backupStatus = fs.lstatSync(backup, { bigint: true });
+                if (!captured.regular || !backupStatus.isFile()
+                    || !sameIdentity(identityOf(backupStatus), captured.identity)
+                    || sha256File(backup) !== captured.sha256) {
+                    throw new Error(`Backup changed before restoration: ${backup}`);
                 }
                 assertPathHasNoLinks(target);
                 if (fs.existsSync(target)) {
                     throw new Error(`Target exists before backup restoration: ${target}`);
                 }
                 fs.mkdirSync(path.dirname(target), { recursive: true });
-                fs.renameSync(backup, target);
+                const namespace = captureDirectoryChain(plan.outputDir, path.dirname(target));
+                fs.linkSync(backup, target);
+                const canonicalTarget = fs.realpathSync.native(target);
+                try {
+                    assertDirectoryChain(namespace);
+                    const restored = fs.lstatSync(canonicalTarget, { bigint: true });
+                    if (!restored.isFile()
+                        || !sameIdentity(identityOf(restored), captured.identity)
+                        || sha256File(canonicalTarget) !== captured.sha256) {
+                        throw new Error(`Restored target verification failed: ${target}`);
+                    }
+                } catch (restoreError) {
+                    const escaped = fs.lstatSync(canonicalTarget, { bigint: true });
+                    if (!escaped.isFile()
+                        || !sameIdentity(identityOf(escaped), captured.identity)
+                        || sha256File(canonicalTarget) !== captured.sha256) {
+                        throw new Error(`Restored target changed before failed-install cleanup: ${canonicalTarget}`);
+                    }
+                    fs.rmSync(canonicalTarget, { force: true });
+                    throw restoreError;
+                }
+                fs.unlinkSync(backup);
             } catch (recoveryError) {
-                recoveryFailures.push(asError(recoveryError, `Failed to restore backup ${backup}`));
+                recoveryFailures.push(asError(
+                    recoveryError, `Failed to restore backup ${captured.backup}`));
             }
         }
         for (const directory of createdDirectories.reverse()) {
@@ -226,7 +340,47 @@ export function activateStagedFiles(plan: ActivationPlan): void {
         }
         throw error;
     }
-    removeEmptyManagedDirectories(plan.outputDir, plan.removePaths.map((operation) => operation.path));
+}
+
+export function identityOf(status: fs.BigIntStats): FileIdentity {
+    return { dev: status.dev, ino: status.ino };
+}
+
+export function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
+    return left.dev === right.dev && left.ino === right.ino;
+}
+
+interface DirectoryIdentity {
+    path: string;
+    identity: FileIdentity;
+}
+
+function captureDirectoryChain(root: string, directory: string): DirectoryIdentity[] {
+    assertPathContained(root, directory, 'Activation directory');
+    const relative = path.relative(path.resolve(root), path.resolve(directory));
+    const components = relative === '' ? [] : relative.split(path.sep);
+    const result: DirectoryIdentity[] = [];
+    let current = path.resolve(root);
+    for (const component of [undefined, ...components]) {
+        if (component !== undefined) current = path.join(current, component);
+        assertPathHasNoLinks(current);
+        const status = fs.lstatSync(current, { bigint: true });
+        if (!status.isDirectory() || status.isSymbolicLink()) {
+            throw new Error(`Activation directory is not an ordinary directory: ${current}`);
+        }
+        result.push({ path: current, identity: identityOf(status) });
+    }
+    return result;
+}
+
+function assertDirectoryChain(chain: readonly DirectoryIdentity[]): void {
+    for (const expected of chain) {
+        const status = fs.lstatSync(expected.path, { bigint: true });
+        if (!status.isDirectory() || status.isSymbolicLink()
+            || !sameIdentity(identityOf(status), expected.identity)) {
+            throw new Error(`Activation directory changed: ${expected.path}`);
+        }
+    }
 }
 
 function isMissingPathError(error: unknown): boolean {
