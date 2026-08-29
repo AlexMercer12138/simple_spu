@@ -60,6 +60,43 @@ try {
         /int x = VALUE;/,
     );
 
+    writeFile(root, 'comment-directive.c', [
+        '#define COMMENT /* begins a block comment',
+        '#include "missing.h"',
+        '*/',
+        '#define OK 9',
+        'int value = OK;',
+        '',
+    ].join('\n'));
+    assert.match(preprocessFile(root, 'comment-directive.c').code, /int value = 9;/);
+
+    writeFile(root, 'continued-directive.c', [
+        '#define VALUE 1 + \\',
+        '2',
+        'int x = VALUE;',
+        '',
+    ].join('\n'));
+    const continuedDirective = preprocessFile(root, 'continued-directive.c');
+    assert.match(continuedDirective.code, /int x = 1 \+ 2;/);
+    assert.deepStrictEqual(
+        continuedDirective.lineMap.map((location) => location.line),
+        [1, 2, 3, 4],
+    );
+
+    writeFile(root, 'continued-header.h', '#define FROM_CONTINUED_INCLUDE 12\n');
+    writeFile(root, 'continued-include.c', [
+        '#include "continued-\\',
+        'header.h"',
+        'int included = FROM_CONTINUED_INCLUDE;',
+        '',
+    ].join('\n'));
+    const continuedInclude = preprocessFile(root, 'continued-include.c');
+    assert.match(continuedInclude.code, /int included = 12;/);
+    assert.deepStrictEqual(
+        continuedInclude.lineMap.slice(0, 2).map((location) => location.line),
+        [1, 2],
+    );
+
     const injectedEntry = path.resolve(root, 'injected-main.c');
     const injectedHeader = path.resolve(root, 'injected.h');
     const injectedFiles = new Map([

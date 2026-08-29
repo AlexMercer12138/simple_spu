@@ -107,25 +107,56 @@ function processSource(
     let inBlockComment = false;
     const lines = source.split(/\r?\n/);
 
-    for (let index = 0; index < lines.length; index++) {
+    for (let index = 0; index < lines.length;) {
         const line = lines[index];
         const location = { file, line: index + 1 };
         const directive = !inBlockComment ? parseDirective(line) : undefined;
         const active = conditionals.every((frame) => frame.active);
 
         if (directive) {
-            handleDirective(directive.name, directive.body, location, active, conditionals, context, emit, processFile);
+            const directiveLines = [line];
+            while (hasLineContinuation(directiveLines[directiveLines.length - 1]) && index + directiveLines.length < lines.length) {
+                directiveLines.push(lines[index + directiveLines.length]);
+            }
+            const logicalDirective = parseDirective(joinLogicalLine(directiveLines));
+            if (!logicalDirective) {
+                throw preprocessorError('invalid preprocessor directive', location);
+            }
+
+            let directiveLinesEmitted = false;
+            const emitDirectiveLines = (): void => {
+                if (!directiveLinesEmitted) {
+                    directiveLines.forEach((_, offset) => emit('', { file, line: index + offset + 1 }));
+                    directiveLinesEmitted = true;
+                }
+            };
+            handleDirective(
+                logicalDirective.name,
+                logicalDirective.body,
+                location,
+                active,
+                conditionals,
+                context,
+                emitDirectiveLines,
+                processFile,
+            );
+            for (const directiveLine of directiveLines) {
+                inBlockComment = advanceBlockCommentState(directiveLine, inBlockComment);
+            }
+            index += directiveLines.length;
             continue;
         }
 
         if (!active) {
             emit('', location);
+            index++;
             continue;
         }
 
         const expanded = expandLine(line, context.macros, location, [], inBlockComment);
         emit(expanded.text, location);
         inBlockComment = expanded.inBlockComment;
+        index++;
     }
 
     if (conditionals.length !== 0) {
@@ -207,6 +238,20 @@ function handleDirective(
 function parseDirective(line: string): { name: string; body: string } | undefined {
     const match = line.match(/^\s*#\s*([A-Za-z_]\w*)([\s\S]*)$/);
     return match ? { name: match[1], body: match[2] } : undefined;
+}
+
+function hasLineContinuation(line: string): boolean {
+    let trailingBackslashes = 0;
+    for (let index = line.length - 1; index >= 0 && line[index] === '\\'; index--) {
+        trailingBackslashes++;
+    }
+    return trailingBackslashes % 2 === 1;
+}
+
+function joinLogicalLine(lines: readonly string[]): string {
+    return lines
+        .map((line, index) => index < lines.length - 1 && hasLineContinuation(line) ? line.slice(0, -1) : line)
+        .join('');
 }
 
 function parseSingleIdentifier(body: string, location: CSourceLocation, message: string): string {
@@ -302,6 +347,32 @@ function literalEnd(text: string, start: number): number {
         }
     }
     return Math.min(index, text.length);
+}
+
+function advanceBlockCommentState(text: string, initiallyInBlockComment: boolean): boolean {
+    let index = 0;
+    let inBlockComment = initiallyInBlockComment;
+    while (index < text.length) {
+        if (inBlockComment) {
+            const end = text.indexOf('*/', index);
+            if (end === -1) return true;
+            index = end + 2;
+            inBlockComment = false;
+            continue;
+        }
+        if (text.startsWith('/*', index)) {
+            index += 2;
+            inBlockComment = true;
+            continue;
+        }
+        if (text.startsWith('//', index)) return false;
+        if (text[index] === '"' || text[index] === "'") {
+            index = literalEnd(text, index);
+            continue;
+        }
+        index++;
+    }
+    return inBlockComment;
 }
 
 function preprocessorError(message: string, location: CSourceLocation): CPreprocessorError {
