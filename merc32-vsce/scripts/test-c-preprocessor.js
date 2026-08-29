@@ -169,19 +169,21 @@ try {
         '#endif /* true */',
         '#define COMMENTED_CROSS_LINE 9 /* directive comment begins',
         'this text @ is inside the directive comment and must not reach Tiny C',
-        '*/',
+        '*/ int after_directive_comment = COMMENTED_VALUE;',
         '#endif /* COMMENTED_H */',
         '',
     ].join('\n'));
     const commentedMain = writeFile(root, 'commented-main.c', [
         '#include "include/commented.h" // include comment',
         'int main(void) {',
-        '    return COMMENTED_SELECTED + COMMENTED_SUM + COMMENTED_CROSS_LINE;',
+        '    return COMMENTED_SELECTED + COMMENTED_SUM + COMMENTED_CROSS_LINE',
+        '        + after_directive_comment;',
         '}',
         '',
     ].join('\n'));
     const commentedPreprocessed = preprocessCFile(commentedMain);
-    assert.match(commentedPreprocessed.code, /return\s+7\s+\+\s+1\s+\+\s+2\s+\+\s+9\s*;/);
+    assert.match(commentedPreprocessed.code, /return\s+7\s+\+\s+1\s+\+\s+2\s+\+\s+9\s+\+\s+after_directive_comment\s*;/);
+    assert.match(commentedPreprocessed.code, /int after_directive_comment = 7\s*;/);
     assert.doesNotMatch(commentedPreprocessed.code, /this text @/);
     assert.ok(compileCFile(commentedMain, { moduleName: 'commented_header_test' }).assembly.length > 0);
     assert.ok(commentedPreprocessed.lineMap.some((location) => location.file === commentedHeader));

@@ -210,7 +210,14 @@ function processSource(
         if (!active) {
             emit('', location);
         } else if (suppressDirectiveComment) {
-            emit(scan.located.text, location);
+            const expanded = expandLine(
+                scan.located.text,
+                context.macros,
+                { file, line: index + 1, column: 1 },
+                [],
+                false,
+            );
+            emit(expanded.text, location);
         } else {
             const expanded = expandLine(
                 lines[index],
