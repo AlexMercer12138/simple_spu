@@ -29,8 +29,22 @@ export class CPreprocessorError extends Error {
     }
 }
 
+interface SourcePosition extends CSourceLocation {
+    column: number;
+}
+
+interface LocatedText {
+    text: string;
+    origins: readonly SourcePosition[];
+    end: SourcePosition;
+}
+
+interface MacroDefinition {
+    replacement: string;
+}
+
 interface PreprocessContext {
-    macros: Map<string, string>;
+    macros: Map<string, MacroDefinition>;
     includeStack: string[];
     output: string[];
     lineMap: CSourceLocation[];
@@ -44,26 +58,41 @@ interface ConditionalFrame {
     elseSeen: boolean;
 }
 
-interface ExpandedLine {
-    text: string;
+interface ScannedLine {
+    located: LocatedText;
     inBlockComment: boolean;
+}
+
+interface ParsedDirective {
+    name: string;
+    body: LocatedText;
+    hashLocation: SourcePosition;
 }
 
 const identifierStart = /[A-Za-z_]/;
 const identifierPart = /[A-Za-z0-9_]/;
 
 export function preprocessCFile(entryFile: string, options: CPreprocessOptions = {}): PreprocessedC {
+    const entryPath = path.resolve(entryFile);
+    const maxIncludeDepth = options.maxIncludeDepth ?? 32;
+    if (!Number.isSafeInteger(maxIncludeDepth) || maxIncludeDepth < 1 || maxIncludeDepth > 32) {
+        throw preprocessorError(
+            'maxIncludeDepth must be a finite safe integer in range 1..32',
+            { file: entryPath, line: 1, column: 1 },
+        );
+    }
+
     const context: PreprocessContext = {
         macros: new Map(),
         includeStack: [],
         output: [],
         lineMap: [],
-        maxIncludeDepth: Math.min(options.maxIncludeDepth ?? 32, 32),
+        maxIncludeDepth,
     };
     const readFile = options.readFile ?? ((file: string) => fs.readFileSync(file, 'utf8'));
     const realPath = options.realPath ?? ((file: string) => fs.realpathSync(file));
 
-    const resolveFile = (file: string, location: CSourceLocation): string => {
+    const resolveFile = (file: string, location: SourcePosition): string => {
         try {
             return realPath(path.resolve(file));
         } catch {
@@ -76,7 +105,7 @@ export function preprocessCFile(entryFile: string, options: CPreprocessOptions =
         context.lineMap.push(location);
     };
 
-    const processFile = (requestedFile: string, requestedAt: CSourceLocation): void => {
+    const processFile = (requestedFile: string, requestedAt: SourcePosition): void => {
         const file = resolveFile(requestedFile, requestedAt);
         if (context.includeStack.includes(file)) {
             throw preprocessorError('include cycle detected', requestedAt);
@@ -99,8 +128,7 @@ export function preprocessCFile(entryFile: string, options: CPreprocessOptions =
         }
     };
 
-    const entryPath = path.resolve(entryFile);
-    processFile(entryPath, { file: entryPath, line: 1 });
+    processFile(entryPath, { file: entryPath, line: 1, column: 1 });
     return { code: context.output.join('\n'), lineMap: context.lineMap };
 }
 
@@ -109,95 +137,124 @@ function processSource(
     source: string,
     context: PreprocessContext,
     emit: (text: string, location: CSourceLocation) => void,
-    processFile: (file: string, location: CSourceLocation) => void,
+    processFile: (file: string, location: SourcePosition) => void,
 ): void {
     const conditionals: ConditionalFrame[] = [];
     let inBlockComment = false;
+    let suppressDirectiveComment = false;
     const lines = source.split(/\r?\n/);
 
     for (let index = 0; index < lines.length;) {
-        const line = lines[index];
-        const location = { file, line: index + 1 };
-        const directive = !inBlockComment ? parseDirective(line) : undefined;
+        const startInBlockComment = inBlockComment;
+        const scan = scanComments(file, index + 1, lines[index], inBlockComment);
+        const hashIndex = directiveHashIndex(scan.located.text);
         const active = conditionals.every((frame) => frame.branchActive);
 
-        if (directive) {
-            const directiveLines = [line];
-            while (hasLineContinuation(directiveLines[directiveLines.length - 1]) && index + directiveLines.length < lines.length) {
-                directiveLines.push(lines[index + directiveLines.length]);
+        if (hashIndex !== undefined) {
+            const directiveLines = [lines[index]];
+            const scans = [scan];
+            let logicalInBlockComment = scan.inBlockComment;
+            while (hasLineContinuation(scans[scans.length - 1].located.text)) {
+                const continuedLineIndex = index + directiveLines.length;
+                if (continuedLineIndex >= lines.length) {
+                    const continued = scans[scans.length - 1].located;
+                    const backslashIndex = continued.text.length - 1;
+                    throw preprocessorError('unterminated directive continuation', continued.origins[backslashIndex]);
+                }
+                directiveLines.push(lines[continuedLineIndex]);
+                const continuedScan = scanComments(
+                    file,
+                    continuedLineIndex + 1,
+                    lines[continuedLineIndex],
+                    logicalInBlockComment,
+                );
+                scans.push(continuedScan);
+                logicalInBlockComment = continuedScan.inBlockComment;
             }
-            const logicalDirective = parseDirective(joinLogicalLine(directiveLines));
+
+            const logicalDirective = parseDirective(joinLogicalLine(scans.map((item) => item.located)));
             if (!logicalDirective) {
-                throw preprocessorError('invalid preprocessor directive', location);
+                throw preprocessorError(
+                    'invalid preprocessor directive',
+                    scan.located.origins[hashIndex] ?? { file, line: index + 1, column: hashIndex + 1 },
+                );
             }
 
             let directiveLinesEmitted = false;
             const emitDirectiveLines = (): void => {
-                if (!directiveLinesEmitted) {
-                    directiveLines.forEach((_, offset) => emit('', { file, line: index + offset + 1 }));
-                    directiveLinesEmitted = true;
-                }
+                if (directiveLinesEmitted) return;
+                directiveLines.forEach((line, offset) => {
+                    let emitted = '';
+                    if (offset === 0 && active && startInBlockComment && !suppressDirectiveComment) {
+                        emitted = line.slice(0, hashIndex);
+                    }
+                    emit(emitted, { file, line: index + offset + 1 });
+                });
+                directiveLinesEmitted = true;
             };
             handleDirective(
-                logicalDirective.name,
-                logicalDirective.body,
-                location,
+                logicalDirective,
                 active,
                 conditionals,
                 context,
                 emitDirectiveLines,
                 processFile,
             );
-            for (const directiveLine of directiveLines) {
-                inBlockComment = advanceBlockCommentState(directiveLine, inBlockComment);
-            }
+            inBlockComment = logicalInBlockComment;
+            suppressDirectiveComment = inBlockComment;
             index += directiveLines.length;
             continue;
         }
 
+        const location = { file, line: index + 1 };
         if (!active) {
             emit('', location);
-            inBlockComment = advanceBlockCommentState(line, inBlockComment);
-            index++;
-            continue;
+        } else if (suppressDirectiveComment) {
+            emit(scan.located.text, location);
+        } else {
+            const expanded = expandLine(
+                lines[index],
+                context.macros,
+                { file, line: index + 1, column: 1 },
+                [],
+                inBlockComment,
+            );
+            emit(expanded.text, location);
         }
-
-        const expanded = expandLine(line, context.macros, location, [], inBlockComment);
-        emit(expanded.text, location);
-        inBlockComment = expanded.inBlockComment;
+        inBlockComment = scan.inBlockComment;
+        if (!inBlockComment) suppressDirectiveComment = false;
         index++;
     }
 
     if (conditionals.length !== 0) {
-        throw preprocessorError('unterminated conditional', { file, line: lines.length });
+        throw preprocessorError('unterminated conditional', { file, line: lines.length, column: 1 });
     }
 }
 
 function handleDirective(
-    name: string,
-    body: string,
-    location: CSourceLocation,
+    directive: ParsedDirective,
     active: boolean,
     conditionals: ConditionalFrame[],
     context: PreprocessContext,
     emit: (text: string, location: CSourceLocation) => void,
-    processFile: (file: string, location: CSourceLocation) => void,
+    processFile: (file: string, location: SourcePosition) => void,
 ): void {
+    const { name, body, hashLocation } = directive;
     if (name === 'if') {
         const parentActive = active;
-        const condition = parentActive && evaluateIfExpression(body, context.macros, location) !== 0;
+        const condition = parentActive && evaluateIfExpression(body, context.macros) !== 0;
         conditionals.push({
             parentActive,
             branchActive: condition,
             branchTaken: condition,
             elseSeen: false,
         });
-        emit('', location);
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'ifdef' || name === 'ifndef') {
-        const macro = parseSingleIdentifier(body, location, `#${name} requires a macro name`);
+        const macro = parseSingleIdentifier(body, hashLocation, `#${name} requires a macro name`);
         const parentActive = active;
         const condition = name === 'ifdef' ? context.macros.has(macro) : !context.macros.has(macro);
         const branchActive = parentActive && condition;
@@ -207,102 +264,173 @@ function handleDirective(
             branchTaken: branchActive,
             elseSeen: false,
         });
-        emit('', location);
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'else') {
-        if (body.trim() !== '') {
-            throw preprocessorError('#else does not take arguments', location);
+        if (body.text.trim() !== '') {
+            throw preprocessorError('#else does not take arguments', firstNonWhitespaceLocation(body, hashLocation));
         }
         const frame = conditionals[conditionals.length - 1];
-        if (!frame) {
-            throw preprocessorError('unexpected #else', location);
-        }
-        if (frame.elseSeen) {
-            throw preprocessorError('duplicate #else', location);
-        }
+        if (!frame) throw preprocessorError('unexpected #else', hashLocation);
+        if (frame.elseSeen) throw preprocessorError('duplicate #else', hashLocation);
         frame.elseSeen = true;
         frame.branchActive = frame.parentActive && !frame.branchTaken;
         frame.branchTaken = true;
-        emit('', location);
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'endif') {
-        if (body.trim() !== '') {
-            throw preprocessorError('#endif does not take arguments', location);
+        if (body.text.trim() !== '') {
+            throw preprocessorError('#endif does not take arguments', firstNonWhitespaceLocation(body, hashLocation));
         }
-        if (conditionals.length === 0) {
-            throw preprocessorError('unexpected #endif', location);
-        }
+        if (conditionals.length === 0) throw preprocessorError('unexpected #endif', hashLocation);
         conditionals.pop();
-        emit('', location);
+        emit('', hashLocation);
         return;
     }
 
     if (!active) {
-        emit('', location);
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'define') {
-        const definition = body.match(/^\s*([A-Za-z_]\w*)([\s\S]*)$/);
-        if (!definition) {
-            throw preprocessorError('#define requires a macro name', location);
+        const start = skipWhitespace(body.text, 0);
+        if (start >= body.text.length || !identifierStart.test(body.text[start])) {
+            throw preprocessorError('#define requires a macro name', locationAt(body, start, hashLocation));
         }
-        if (definition[2].startsWith('(')) {
-            throw preprocessorError('function-style macros are not supported', location);
+        let end = start + 1;
+        while (end < body.text.length && identifierPart.test(body.text[end])) end++;
+        if (body.text[end] === '(') {
+            throw preprocessorError('function-style macros are not supported', locationAt(body, end, hashLocation));
         }
-        context.macros.set(definition[1], definition[2].trimStart());
-        emit('', location);
+        const replacementStart = skipWhitespace(body.text, end);
+        context.macros.set(body.text.slice(start, end), { replacement: body.text.slice(replacementStart) });
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'undef') {
-        context.macros.delete(parseSingleIdentifier(body, location, '#undef requires a macro name'));
-        emit('', location);
+        context.macros.delete(parseSingleIdentifier(body, hashLocation, '#undef requires a macro name'));
+        emit('', hashLocation);
         return;
     }
 
     if (name === 'include') {
-        const include = body.match(/^\s*"([^"]+)"\s*$/);
-        if (!include) {
-            throw preprocessorError('only quoted includes are supported', location);
+        const start = skipWhitespace(body.text, 0);
+        const includeLocation = locationAt(body, start, hashLocation);
+        if (body.text[start] !== '"') {
+            throw preprocessorError('only quoted includes are supported', includeLocation);
         }
-        emit('', location);
-        processFile(path.resolve(path.dirname(location.file), include[1]), location);
+        const end = body.text.indexOf('"', start + 1);
+        if (end === -1 || body.text.slice(end + 1).trim() !== '') {
+            throw preprocessorError('only quoted includes are supported', includeLocation);
+        }
+        const includePath = body.text.slice(start + 1, end);
+        emit('', hashLocation);
+        processFile(path.resolve(path.dirname(hashLocation.file), includePath), includeLocation);
         return;
     }
 
-    throw preprocessorError(`unsupported preprocessor directive '#${name}'`, location);
+    throw preprocessorError(`unsupported preprocessor directive '#${name}'`, hashLocation);
 }
 
-function parseDirective(line: string): { name: string; body: string } | undefined {
-    const match = line.match(/^\s*#\s*([A-Za-z_]\w*)([\s\S]*)$/);
-    return match ? { name: match[1], body: match[2] } : undefined;
-}
-
-function hasLineContinuation(line: string): boolean {
-    let trailingBackslashes = 0;
-    for (let index = line.length - 1; index >= 0 && line[index] === '\\'; index--) {
-        trailingBackslashes++;
+function scanComments(file: string, line: number, text: string, initiallyInBlockComment: boolean): ScannedLine {
+    const chars = [...text];
+    const origins = chars.map((_, index) => ({ file, line, column: index + 1 }));
+    let index = 0;
+    let inBlockComment = initiallyInBlockComment;
+    while (index < chars.length) {
+        if (inBlockComment) {
+            if (text.startsWith('*/', index)) {
+                chars[index] = ' ';
+                chars[index + 1] = ' ';
+                index += 2;
+                inBlockComment = false;
+            } else {
+                chars[index++] = ' ';
+            }
+            continue;
+        }
+        if (text.startsWith('/*', index)) {
+            chars[index] = ' ';
+            chars[index + 1] = ' ';
+            index += 2;
+            inBlockComment = true;
+            continue;
+        }
+        if (text.startsWith('//', index)) {
+            while (index < chars.length) chars[index++] = ' ';
+            break;
+        }
+        if (text[index] === '"' || text[index] === "'") {
+            index = literalEnd(text, index);
+            continue;
+        }
+        index++;
     }
+    return {
+        located: {
+            text: chars.join(''),
+            origins,
+            end: { file, line, column: text.length + 1 },
+        },
+        inBlockComment,
+    };
+}
+
+function directiveHashIndex(text: string): number | undefined {
+    const index = skipWhitespace(text, 0);
+    return text[index] === '#' ? index : undefined;
+}
+
+function parseDirective(line: LocatedText): ParsedDirective | undefined {
+    const hashIndex = directiveHashIndex(line.text);
+    if (hashIndex === undefined) return undefined;
+    let index = skipWhitespace(line.text, hashIndex + 1);
+    if (index >= line.text.length || !identifierStart.test(line.text[index])) return undefined;
+    const nameStart = index++;
+    while (index < line.text.length && identifierPart.test(line.text[index])) index++;
+    return {
+        name: line.text.slice(nameStart, index),
+        body: sliceLocated(line, index),
+        hashLocation: line.origins[hashIndex],
+    };
+}
+
+function hasLineContinuation(text: string): boolean {
+    let trailingBackslashes = 0;
+    for (let index = text.length - 1; index >= 0 && text[index] === '\\'; index--) trailingBackslashes++;
     return trailingBackslashes % 2 === 1;
 }
 
-function joinLogicalLine(lines: readonly string[]): string {
-    return lines
-        .map((line, index) => index < lines.length - 1 && hasLineContinuation(line) ? line.slice(0, -1) : line)
-        .join('');
+function joinLogicalLine(lines: readonly LocatedText[]): LocatedText {
+    let text = '';
+    const origins: SourcePosition[] = [];
+    for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        const continued = index < lines.length - 1 && hasLineContinuation(line.text);
+        const length = line.text.length - (continued ? 1 : 0);
+        text += line.text.slice(0, length);
+        origins.push(...line.origins.slice(0, length));
+    }
+    return { text, origins, end: lines[lines.length - 1].end };
 }
 
-function parseSingleIdentifier(body: string, location: CSourceLocation, message: string): string {
-    const match = body.match(/^\s*([A-Za-z_]\w*)\s*$/);
-    if (!match) {
-        throw preprocessorError(message, location);
+function parseSingleIdentifier(body: LocatedText, fallback: SourcePosition, message: string): string {
+    const start = skipWhitespace(body.text, 0);
+    if (start >= body.text.length || !identifierStart.test(body.text[start])) {
+        throw preprocessorError(message, locationAt(body, start, fallback));
     }
-    return match[1];
+    let end = start + 1;
+    while (end < body.text.length && identifierPart.test(body.text[end])) end++;
+    if (body.text.slice(end).trim() !== '') {
+        throw preprocessorError(message, firstNonWhitespaceLocation(sliceLocated(body, end), locationAt(body, end, fallback)));
+    }
+    return body.text.slice(start, end);
 }
 
 type IfTokenKind = 'number' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'end';
@@ -310,79 +438,100 @@ type IfTokenKind = 'number' | 'identifier' | 'operator' | 'leftParen' | 'rightPa
 interface IfToken {
     kind: IfTokenKind;
     text: string;
+    location: SourcePosition;
 }
 
-function evaluateIfExpression(expression: string, macros: Map<string, string>, location: CSourceLocation): number {
-    const protectedDefined = protectDefinedOperands(expression, location);
-    const expanded = expandLine(protectedDefined.text, macros, location, [], false).text;
-    const restored = restoreDefinedOperands(expanded, protectedDefined.operands);
-    return new IfExpressionParser(tokenizeIfExpression(restored, location), macros, location).parse();
+function evaluateIfExpression(expression: LocatedText, macros: Map<string, MacroDefinition>): number {
+    const rawTokens = tokenizeIfExpression(expression);
+    const expandedTokens = expandIfTokens(rawTokens.slice(0, -1), macros, []);
+    expandedTokens.push(rawTokens[rawTokens.length - 1]);
+    return new IfExpressionParser(expandedTokens, macros).parse();
 }
 
-function protectDefinedOperands(expression: string, location: CSourceLocation): { text: string; operands: string[] } {
-    const operands: string[] = [];
-    const text = expression.replace(/\bdefined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|\s+([A-Za-z_]\w*))/g, (_match, parenthesized, bare) => {
-        const operand = parenthesized ?? bare;
-        if (!operand) {
-            throw preprocessorError('defined requires a macro name', location);
+function expandIfTokens(
+    tokens: readonly IfToken[],
+    macros: Map<string, MacroDefinition>,
+    expansionStack: readonly string[],
+): IfToken[] {
+    const result: IfToken[] = [];
+    for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index];
+        if (token.kind === 'identifier' && token.text === 'defined') {
+            result.push(token);
+            const next = tokens[index + 1];
+            if (next?.kind === 'leftParen') {
+                result.push(next);
+                if (tokens[index + 2]) result.push(tokens[index + 2]);
+                if (tokens[index + 3]) result.push(tokens[index + 3]);
+                index += 3;
+            } else if (next) {
+                result.push(next);
+                index++;
+            }
+            continue;
         }
-        const index = operands.push(operand) - 1;
-        return `__MERC32_DEFINED_OPERAND_${index}__`;
-    });
-    if (/\bdefined\b/.test(text)) {
-        throw preprocessorError('defined requires a macro name', location);
+        if (token.kind !== 'identifier' || !macros.has(token.text)) {
+            result.push(token);
+            continue;
+        }
+        if (expansionStack.includes(token.text)) {
+            throw preprocessorError(`recursive macro expansion for '${token.text}'`, token.location);
+        }
+        if (expansionStack.length >= 64) {
+            throw preprocessorError('macro expansion depth exceeds 64', token.location);
+        }
+        const replacement = macros.get(token.text)!.replacement;
+        const replacementTokens = tokenizeIfExpression(locatedAtUse(replacement, token.location)).slice(0, -1);
+        result.push(...expandIfTokens(replacementTokens, macros, [...expansionStack, token.text]));
     }
-    return { text, operands };
+    return result;
 }
 
-function restoreDefinedOperands(text: string, operands: readonly string[]): string {
-    return text.replace(/__MERC32_DEFINED_OPERAND_(\d+)__/g, (_match, index) => `defined(${operands[Number(index)]})`);
-}
-
-function tokenizeIfExpression(expression: string, location: CSourceLocation): IfToken[] {
+function tokenizeIfExpression(expression: LocatedText): IfToken[] {
     const tokens: IfToken[] = [];
     let index = 0;
     const operators = ['&&', '||', '<<', '>>', '<=', '>=', '==', '!=', '*', '/', '%', '+', '-', '<', '>', '&', '^', '|', '!', '~'];
-    while (index < expression.length) {
-        if (/\s/.test(expression[index])) {
+    while (index < expression.text.length) {
+        if (/\s/.test(expression.text[index])) {
             index++;
             continue;
         }
-        if (identifierStart.test(expression[index])) {
+        const location = locationAt(expression, index, expression.end);
+        if (identifierStart.test(expression.text[index])) {
             const start = index++;
-            while (index < expression.length && identifierPart.test(expression[index])) index++;
-            tokens.push({ kind: 'identifier', text: expression.slice(start, index) });
+            while (index < expression.text.length && identifierPart.test(expression.text[index])) index++;
+            tokens.push({ kind: 'identifier', text: expression.text.slice(start, index), location });
             continue;
         }
-        if (/\d/.test(expression[index])) {
+        if (/\d/.test(expression.text[index])) {
             const start = index;
-            if (expression.startsWith('0x', index) || expression.startsWith('0X', index)) {
+            if (expression.text.startsWith('0x', index) || expression.text.startsWith('0X', index)) {
                 index += 2;
                 const digits = index;
-                while (index < expression.length && /[0-9a-fA-F]/.test(expression[index])) index++;
+                while (index < expression.text.length && /[0-9a-fA-F]/.test(expression.text[index])) index++;
                 if (index === digits) throw preprocessorError('invalid integer literal in #if expression', location);
             } else {
-                while (index < expression.length && /\d/.test(expression[index])) index++;
+                while (index < expression.text.length && /\d/.test(expression.text[index])) index++;
             }
-            tokens.push({ kind: 'number', text: expression.slice(start, index) });
+            tokens.push({ kind: 'number', text: expression.text.slice(start, index), location });
             continue;
         }
-        if (expression[index] === '(') {
-            tokens.push({ kind: 'leftParen', text: '(' });
+        if (expression.text[index] === '(') {
+            tokens.push({ kind: 'leftParen', text: '(', location });
             index++;
             continue;
         }
-        if (expression[index] === ')') {
-            tokens.push({ kind: 'rightParen', text: ')' });
+        if (expression.text[index] === ')') {
+            tokens.push({ kind: 'rightParen', text: ')', location });
             index++;
             continue;
         }
-        const operator = operators.find((candidate) => expression.startsWith(candidate, index));
-        if (!operator) throw preprocessorError(`invalid token '${expression[index]}' in #if expression`, location);
-        tokens.push({ kind: 'operator', text: operator });
+        const operator = operators.find((candidate) => expression.text.startsWith(candidate, index));
+        if (!operator) throw preprocessorError(`invalid token '${expression.text[index]}' in #if expression`, location);
+        tokens.push({ kind: 'operator', text: operator, location });
         index += operator.length;
     }
-    tokens.push({ kind: 'end', text: '' });
+    tokens.push({ kind: 'end', text: '', location: expression.end });
     return tokens;
 }
 
@@ -391,14 +540,13 @@ class IfExpressionParser {
 
     constructor(
         private readonly tokens: readonly IfToken[],
-        private readonly macros: Map<string, string>,
-        private readonly location: CSourceLocation,
+        private readonly macros: Map<string, MacroDefinition>,
     ) {}
 
     parse(): number {
         const value = this.parseBinary(0, false);
         if (this.current().kind !== 'end') {
-            throw preprocessorError('unexpected token in #if expression', this.location);
+            throw preprocessorError('unexpected token in #if expression', this.current().location);
         }
         return value;
     }
@@ -406,13 +554,13 @@ class IfExpressionParser {
     private parseBinary(minimumPrecedence: number, suppressErrors: boolean): number {
         let left = this.parseUnary(suppressErrors);
         while (this.current().kind === 'operator') {
-            const operator = this.current().text;
-            const precedence = binaryPrecedence(operator);
+            const operator = this.current();
+            const precedence = binaryPrecedence(operator.text);
             if (precedence < minimumPrecedence) break;
             this.index++;
-            const suppressRight = suppressErrors || (operator === '&&' && left === 0) || (operator === '||' && left !== 0);
+            const suppressRight = suppressErrors || (operator.text === '&&' && left === 0) || (operator.text === '||' && left !== 0);
             const right = this.parseBinary(precedence + 1, suppressRight);
-            left = applyIfBinaryOperator(operator, left, right, this.location, suppressErrors);
+            left = applyIfBinaryOperator(operator, left, right, suppressErrors);
         }
         return left;
     }
@@ -442,12 +590,12 @@ class IfExpressionParser {
             this.index++;
             const value = this.parseBinary(0, suppressErrors);
             if (this.current().kind !== 'rightParen') {
-                throw preprocessorError('expected closing parenthesis in #if expression', this.location);
+                throw preprocessorError('expected closing parenthesis in #if expression', this.current().location);
             }
             this.index++;
             return value;
         }
-        throw preprocessorError('expected expression in #if', this.location);
+        throw preprocessorError('expected expression in #if', token.location);
     }
 
     private parseDefined(): number {
@@ -455,14 +603,14 @@ class IfExpressionParser {
         if (this.current().kind === 'leftParen') {
             this.index++;
             const identifier = this.current();
-            if (identifier.kind !== 'identifier') throw preprocessorError('defined requires a macro name', this.location);
+            if (identifier.kind !== 'identifier') throw preprocessorError('defined requires a macro name', identifier.location);
             name = identifier.text;
             this.index++;
-            if (this.current().kind !== 'rightParen') throw preprocessorError('defined requires a macro name', this.location);
+            if (this.current().kind !== 'rightParen') throw preprocessorError('defined requires a macro name', this.current().location);
             this.index++;
         } else {
             const identifier = this.current();
-            if (identifier.kind !== 'identifier') throw preprocessorError('defined requires a macro name', this.location);
+            if (identifier.kind !== 'identifier') throw preprocessorError('defined requires a macro name', identifier.location);
             name = identifier.text;
             this.index++;
         }
@@ -502,19 +650,19 @@ function binaryPrecedence(operator: string): number {
     }
 }
 
-function applyIfBinaryOperator(operator: string, left: number, right: number, location: CSourceLocation, suppressErrors: boolean): number {
-    switch (operator) {
+function applyIfBinaryOperator(operator: IfToken, left: number, right: number, suppressErrors: boolean): number {
+    switch (operator.text) {
         case '*': return Math.imul(left, right);
         case '/':
             if (right === 0) {
                 if (suppressErrors) return 0;
-                throw preprocessorError('division by zero in #if expression', location);
+                throw preprocessorError('division by zero in #if expression', operator.location);
             }
             return (left / right) | 0;
         case '%':
             if (right === 0) {
                 if (suppressErrors) return 0;
-                throw preprocessorError('remainder by zero in #if expression', location);
+                throw preprocessorError('remainder by zero in #if expression', operator.location);
             }
             return left % right;
         case '+': return (left + right) | 0;
@@ -532,16 +680,22 @@ function applyIfBinaryOperator(operator: string, left: number, right: number, lo
         case '|': return left | right;
         case '&&': return left !== 0 && right !== 0 ? 1 : 0;
         case '||': return left !== 0 || right !== 0 ? 1 : 0;
-        default: throw preprocessorError('unsupported operator in #if expression', location);
+        default: throw preprocessorError('unsupported operator in #if expression', operator.location);
     }
+}
+
+interface ExpandedLine {
+    text: string;
+    inBlockComment: boolean;
 }
 
 function expandLine(
     text: string,
-    macros: Map<string, string>,
-    location: CSourceLocation,
+    macros: Map<string, MacroDefinition>,
+    location: SourcePosition,
     expansionStack: readonly string[],
     initiallyInBlockComment: boolean,
+    fixedUseLocation?: SourcePosition,
 ): ExpandedLine {
     let result = '';
     let index = 0;
@@ -550,27 +704,20 @@ function expandLine(
     while (index < text.length) {
         if (inBlockComment) {
             const end = text.indexOf('*/', index);
-            if (end === -1) {
-                return { text: result + text.slice(index), inBlockComment: true };
-            }
+            if (end === -1) return { text: result + text.slice(index), inBlockComment: true };
             result += text.slice(index, end + 2);
             index = end + 2;
             inBlockComment = false;
             continue;
         }
-
         if (text.startsWith('/*', index)) {
             const end = text.indexOf('*/', index + 2);
-            if (end === -1) {
-                return { text: result + text.slice(index), inBlockComment: true };
-            }
+            if (end === -1) return { text: result + text.slice(index), inBlockComment: true };
             result += text.slice(index, end + 2);
             index = end + 2;
             continue;
         }
-        if (text.startsWith('//', index)) {
-            return { text: result + text.slice(index), inBlockComment: false };
-        }
+        if (text.startsWith('//', index)) return { text: result + text.slice(index), inBlockComment: false };
         if (text[index] === '"' || text[index] === "'") {
             const end = literalEnd(text, index);
             result += text.slice(index, end);
@@ -579,12 +726,11 @@ function expandLine(
         }
         if (identifierStart.test(text[index])) {
             let end = index + 1;
-            while (end < text.length && identifierPart.test(text[end])) {
-                end++;
-            }
+            while (end < text.length && identifierPart.test(text[end])) end++;
             const name = text.slice(index, end);
+            const useLocation = fixedUseLocation ?? { ...location, column: location.column + index };
             result += macros.has(name)
-                ? expandMacro(name, macros, location, expansionStack)
+                ? expandMacro(name, macros, useLocation, expansionStack)
                 : name;
             index = end;
             continue;
@@ -597,8 +743,8 @@ function expandLine(
 
 function expandMacro(
     name: string,
-    macros: Map<string, string>,
-    location: CSourceLocation,
+    macros: Map<string, MacroDefinition>,
+    location: SourcePosition,
     expansionStack: readonly string[],
 ): string {
     if (expansionStack.includes(name)) {
@@ -607,48 +753,56 @@ function expandMacro(
     if (expansionStack.length >= 64) {
         throw preprocessorError('macro expansion depth exceeds 64', location);
     }
-    return expandLine(macros.get(name)!, macros, location, [...expansionStack, name], false).text;
+    return expandLine(
+        macros.get(name)!.replacement,
+        macros,
+        location,
+        [...expansionStack, name],
+        false,
+        location,
+    ).text;
 }
 
 function literalEnd(text: string, start: number): number {
     const quote = text[start];
     let index = start + 1;
     while (index < text.length) {
-        if (text[index] === '\\') {
-            index += 2;
-        } else if (text[index++] === quote) {
-            break;
-        }
+        if (text[index] === '\\') index += 2;
+        else if (text[index++] === quote) break;
     }
     return Math.min(index, text.length);
 }
 
-function advanceBlockCommentState(text: string, initiallyInBlockComment: boolean): boolean {
-    let index = 0;
-    let inBlockComment = initiallyInBlockComment;
-    while (index < text.length) {
-        if (inBlockComment) {
-            const end = text.indexOf('*/', index);
-            if (end === -1) return true;
-            index = end + 2;
-            inBlockComment = false;
-            continue;
-        }
-        if (text.startsWith('/*', index)) {
-            index += 2;
-            inBlockComment = true;
-            continue;
-        }
-        if (text.startsWith('//', index)) return false;
-        if (text[index] === '"' || text[index] === "'") {
-            index = literalEnd(text, index);
-            continue;
-        }
-        index++;
-    }
-    return inBlockComment;
+function locatedAtUse(text: string, location: SourcePosition): LocatedText {
+    return {
+        text,
+        origins: [...text].map(() => location),
+        end: location,
+    };
 }
 
-function preprocessorError(message: string, location: CSourceLocation): CPreprocessorError {
-    return new CPreprocessorError(message, location.file, location.line, 1);
+function sliceLocated(text: LocatedText, start: number, end = text.text.length): LocatedText {
+    return {
+        text: text.text.slice(start, end),
+        origins: text.origins.slice(start, end),
+        end: end < text.text.length ? text.origins[end] : text.end,
+    };
+}
+
+function locationAt(text: LocatedText, index: number, fallback: SourcePosition): SourcePosition {
+    return text.origins[index] ?? text.end ?? fallback;
+}
+
+function firstNonWhitespaceLocation(text: LocatedText, fallback: SourcePosition): SourcePosition {
+    return locationAt(text, skipWhitespace(text.text, 0), fallback);
+}
+
+function skipWhitespace(text: string, start: number): number {
+    let index = start;
+    while (index < text.length && /\s/.test(text[index])) index++;
+    return index;
+}
+
+function preprocessorError(message: string, location: SourcePosition): CPreprocessorError {
+    return new CPreprocessorError(message, location.file, location.line, location.column);
 }

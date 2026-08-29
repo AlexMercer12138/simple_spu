@@ -30,6 +30,17 @@ function preprocessFile(root, relativePath) {
     return preprocessCFile(path.join(root, relativePath));
 }
 
+function expectPreprocessorError(run, expected) {
+    assert.throws(run, (error) => {
+        assert.ok(error instanceof CPreprocessorError);
+        if (expected.message) assert.match(error.message, expected.message);
+        if (expected.file) assert.strictEqual(error.file, expected.file);
+        if (expected.line !== undefined) assert.strictEqual(error.line, expected.line);
+        if (expected.column !== undefined) assert.strictEqual(error.column, expected.column);
+        return true;
+    });
+}
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-cpp-'));
 try {
     writeFile(root, 'include/demo_soc.h', [
@@ -93,6 +104,33 @@ try {
     assert.match(result.code, /"UART0_BASE"/);
     assert.ok(result.lineMap.some((line) => line.file.endsWith('soc.h')));
 
+    const commentedHeader = writeFile(root, 'include/commented.h', [
+        '#ifndef COMMENTED_H /* conventional guard comment */',
+        '#define COMMENTED_H // guard definition',
+        '#define COMMENTED_VALUE 7 // trailing line comment',
+        '#define COMMENTED_SUM 1 /* inline block comment */ + 2',
+        '#if 1 /* true */',
+        '#define COMMENTED_SELECTED COMMENTED_VALUE /* trailing block comment */',
+        '#endif /* true */',
+        '#define COMMENTED_CROSS_LINE 9 /* directive comment begins',
+        'this text @ is inside the directive comment and must not reach Tiny C',
+        '*/',
+        '#endif /* COMMENTED_H */',
+        '',
+    ].join('\n'));
+    const commentedMain = writeFile(root, 'commented-main.c', [
+        '#include "include/commented.h" // include comment',
+        'int main(void) {',
+        '    return COMMENTED_SELECTED + COMMENTED_SUM + COMMENTED_CROSS_LINE;',
+        '}',
+        '',
+    ].join('\n'));
+    const commentedPreprocessed = preprocessCFile(commentedMain);
+    assert.match(commentedPreprocessed.code, /return\s+7\s+\+\s+1\s+\+\s+2\s+\+\s+9\s*;/);
+    assert.doesNotMatch(commentedPreprocessed.code, /this text @/);
+    assert.ok(compileCFile(commentedMain, { moduleName: 'commented_header_test' }).assembly.length > 0);
+    assert.ok(commentedPreprocessed.lineMap.some((location) => location.file === commentedHeader));
+
     const conditional = preprocess([
         '#define ENABLED 1',
         '#define IRQ_COUNT 3',
@@ -128,6 +166,19 @@ try {
     assert.match(definedAndUnknown, /int unknown_is_zero = 1;/);
     assert.match(definedAndUnknown, /int defined_operand_is_not_expanded = 1;/);
     assert.doesNotMatch(definedAndUnknown, /int wrong = 1;/);
+
+    const definedPlaceholderCollision = preprocess([
+        '#define __MERC32_DEFINED_OPERAND_0__ 0',
+        '#define NAME 1',
+        '#if defined(NAME)',
+        'int parenthesized_defined_collision_safe = 1;',
+        '#endif',
+        '#if defined NAME',
+        'int bare_defined_collision_safe = 1;',
+        '#endif',
+    ].join('\n'), {});
+    assert.match(definedPlaceholderCollision, /parenthesized_defined_collision_safe/);
+    assert.match(definedPlaceholderCollision, /bare_defined_collision_safe/);
 
     writeFile(root, 'inactive-branch.c', [
         '#if 0',
@@ -191,6 +242,25 @@ try {
         writeFile(root, `depth-33-${index}.h`, index === 32 ? 'int too_deep_include;\n' : `#include "depth-33-${index + 1}.h"\n`);
     }
     assert.throws(() => preprocessFile(root, 'depth-33-0.h'), /include depth exceeds 32/);
+
+    for (const invalidDepth of [
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        1.5,
+        0,
+        -1,
+        33,
+    ]) {
+        expectPreprocessorError(
+            () => preprocessCFile(path.join(root, 'main.c'), { maxIncludeDepth: invalidDepth }),
+            { message: /maxIncludeDepth must be a finite safe integer in range 1\.\.32/ },
+        );
+    }
+    assert.match(
+        preprocessCFile(path.join(root, 'depth-32-0.h'), { maxIncludeDepth: 32 }).code,
+        /int deepest_include;/,
+    );
 
     assert.match(preprocess('int x = VALUE;', { VALUE: '7' }), /int x = 7;/);
     assert.match(preprocess('char *s = "VALUE";', { VALUE: '7' }), /"VALUE"/);
@@ -267,6 +337,65 @@ try {
     assert.throws(
         () => preprocessCFile(path.join(root, 'missing.c')),
         (error) => error instanceof CPreprocessorError && /cannot read include/.test(error.message),
+    );
+
+    const indentedUnsupported = writeFile(root, 'indented-unsupported.c', '    #elif 1\n');
+    expectPreprocessorError(
+        () => preprocessCFile(indentedUnsupported),
+        { file: indentedUnsupported, line: 1, column: 5, message: /unsupported preprocessor directive '#elif'/ },
+    );
+
+    const recursiveMacroLine = 'int recursive =       FIRST;';
+    const recursiveMacro = writeFile(root, 'recursive-macro.c', [
+        '#define FIRST ( SECOND )',
+        '#define SECOND FIRST',
+        recursiveMacroLine,
+        '',
+    ].join('\n'));
+    expectPreprocessorError(
+        () => preprocessCFile(recursiveMacro),
+        {
+            file: recursiveMacro,
+            line: 3,
+            column: recursiveMacroLine.indexOf('FIRST') + 1,
+            message: /recursive macro expansion for 'FIRST'/,
+        },
+    );
+
+    const malformedIfLine = '   #if 1 + @';
+    const malformedIf = writeFile(root, 'malformed-if.c', `${malformedIfLine}\n#endif\n`);
+    expectPreprocessorError(
+        () => preprocessCFile(malformedIf),
+        {
+            file: malformedIf,
+            line: 1,
+            column: malformedIfLine.indexOf('@') + 1,
+            message: /invalid token '@' in #if expression/,
+        },
+    );
+
+    const unsupportedIncludeLine = '  #include <system.h>';
+    const unsupportedInclude = writeFile(root, 'unsupported-include.c', `${unsupportedIncludeLine}\n`);
+    expectPreprocessorError(
+        () => preprocessCFile(unsupportedInclude),
+        {
+            file: unsupportedInclude,
+            line: 1,
+            column: unsupportedIncludeLine.indexOf('<') + 1,
+            message: /only quoted includes are supported/,
+        },
+    );
+
+    const eofContinuationLine = '    #define VALUE \\';
+    const eofContinuation = writeFile(root, 'eof-continuation.c', eofContinuationLine);
+    expectPreprocessorError(
+        () => preprocessCFile(eofContinuation),
+        {
+            file: eofContinuation,
+            line: 1,
+            column: eofContinuationLine.length,
+            message: /unterminated directive continuation/,
+        },
     );
 } finally {
     fs.rmSync(root, { recursive: true, force: true });
