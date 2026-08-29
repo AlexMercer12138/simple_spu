@@ -18,6 +18,94 @@ const packagedAssetRoot = path.join(extensionRoot, 'resources');
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-soc-rtl-'));
 
+const guardedSyncMethods = new Map([
+    ['createReadStream', [0]], ['existsSync', [0]], ['linkSync', [0, 1]],
+    ['lstatSync', [0]], ['mkdirSync', [0]], ['mkdtempSync', [0]], ['openSync', [0]],
+    ['readFileSync', [0]], ['readdirSync', [0]], ['realpathSync', [0]],
+    ['renameSync', [0, 1]], ['rmdirSync', [0]], ['rmSync', [0]], ['statSync', [0]],
+    ['unlinkSync', [0]], ['writeFileSync', [0]],
+]);
+const guardedCallbackMethods = new Map([
+    ['readFile', [0]], ['writeFile', [0]],
+]);
+const guardedPromiseMethods = new Map([
+    ['open', [0]], ['readFile', [0]], ['writeFile', [0]],
+]);
+const guardedFileSystemApiTargets = [
+    [fs, 'fs', [...guardedSyncMethods.keys(), ...guardedCallbackMethods.keys()]],
+    [fs.promises, 'fs.promises', [...guardedPromiseMethods.keys()]],
+];
+
+function observableFunctionShape(value) {
+    const prototype = Object.getOwnPropertyDescriptor(value, 'prototype');
+    const native = Object.getOwnPropertyDescriptor(value, 'native');
+    return {
+        name: value.name,
+        length: value.length,
+        prototype: prototype === undefined ? undefined : {
+            writable: prototype.writable,
+            enumerable: prototype.enumerable,
+            configurable: prototype.configurable,
+        },
+        native: native === undefined ? undefined : {
+            writable: native.writable,
+            enumerable: native.enumerable,
+            configurable: native.configurable,
+            function: typeof native.value === 'function'
+                ? observableFunctionShape(native.value) : undefined,
+        },
+    };
+}
+
+function snapshotGuardedFileSystemApis() {
+    return guardedFileSystemApiTargets.flatMap(([owner, label, methods]) => methods
+        .filter((method) => typeof owner[method] === 'function')
+        .map((method) => ({
+            owner,
+            label: `${label}.${method}`,
+            method,
+            descriptor: Object.getOwnPropertyDescriptor(owner, method),
+            shape: observableFunctionShape(owner[method]),
+        })));
+}
+
+function assertGuardedApiCompatibility(snapshot) {
+    const mismatches = [];
+    for (const entry of snapshot) {
+        try {
+            assert.deepStrictEqual(observableFunctionShape(entry.owner[entry.method]), entry.shape);
+            const currentDescriptor = Object.getOwnPropertyDescriptor(entry.owner, entry.method);
+            assert.deepStrictEqual({
+                writable: currentDescriptor.writable,
+                enumerable: currentDescriptor.enumerable,
+                configurable: currentDescriptor.configurable,
+            }, {
+                writable: entry.descriptor.writable,
+                enumerable: entry.descriptor.enumerable,
+                configurable: entry.descriptor.configurable,
+            });
+        } catch {
+            mismatches.push(entry.label);
+        }
+    }
+    assert.deepStrictEqual(mismatches, [],
+        `filesystem guard API compatibility mismatches:\n${mismatches.join('\n')}`);
+}
+
+function assertGuardedApisRestored(snapshot) {
+    const mismatches = [];
+    for (const entry of snapshot) {
+        try {
+            assert.deepStrictEqual(Object.getOwnPropertyDescriptor(entry.owner, entry.method),
+                entry.descriptor);
+        } catch (error) {
+            mismatches.push(`${entry.label}: ${error.message}`);
+        }
+    }
+    assert.deepStrictEqual(mismatches, [],
+        `filesystem APIs not restored:\n${mismatches.join('\n')}`);
+}
+
 function denyRepositoryRtlAfterPreparation() {
     const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
     const originals = [];
@@ -26,121 +114,97 @@ function denyRepositoryRtlAfterPreparation() {
         if (typeof value === 'string') {
             decoded = value;
         } else if (Buffer.isBuffer(value)) {
-            try {
-                decoded = new TextDecoder('utf-8', { fatal: true }).decode(value);
-            } catch (error) {
-                throw new TypeError(`Unnormalizable filesystem path for ${operation}: invalid UTF-8 Buffer.`,
-                    { cause: error });
-            }
+            decoded = value.toString('utf8');
         } else if (value instanceof URL) {
             try {
                 decoded = fileURLToPath(value);
-            } catch (error) {
-                throw new TypeError(`Unnormalizable filesystem path for ${operation}: ${value.href}`,
-                    { cause: error });
+            } catch {
+                return undefined;
             }
         } else {
-            throw new TypeError(`Unnormalizable filesystem path for ${operation}: ${Object.prototype.toString.call(value)}.`);
+            return undefined;
         }
-        return path.resolve(decoded).toLowerCase();
+        try {
+            return path.resolve(decoded).toLowerCase();
+        } catch {
+            return undefined;
+        }
     };
     const deny = (value, operation) => {
         const normalized = normalizePathLike(value, operation);
-        if (normalized === repositoryRtlRoot
-            || normalized.startsWith(`${repositoryRtlRoot}${path.sep}`)) {
+        if (normalized !== undefined && (normalized === repositoryRtlRoot
+            || normalized.startsWith(`${repositoryRtlRoot}${path.sep}`))) {
             throw new Error(`repository-root RTL ${operation} after preparation: ${value}`);
         }
     };
     const guardArguments = (args, indices, operation) => {
         for (const index of indices) deny(args[index], operation);
     };
-    const replace = (owner, method, guarded) => {
-        const original = owner[method];
-        if (typeof original !== 'function') return;
-        originals.push({ owner, method, original });
-        owner[method] = guarded(original);
+    const replace = (owner, method, applyGuard, nativeApplyGuard) => {
+        const descriptor = Object.getOwnPropertyDescriptor(owner, method);
+        if (descriptor === undefined || typeof descriptor.value !== 'function') return;
+        const original = descriptor.value;
+        originals.push({ owner, method, descriptor });
+        let guardedNative;
+        const handler = {
+            apply(target, thisArgument, args) {
+                return applyGuard(target, thisArgument, args);
+            },
+        };
+        const nativeDescriptor = Object.getOwnPropertyDescriptor(original, 'native');
+        if (nativeApplyGuard !== undefined && nativeDescriptor !== undefined
+            && typeof nativeDescriptor.value === 'function') {
+            guardedNative = new Proxy(nativeDescriptor.value, {
+                apply(target, thisArgument, args) {
+                    return nativeApplyGuard(target, thisArgument, args);
+                },
+            });
+            handler.get = (target, property, receiver) => property === 'native'
+                ? guardedNative : Reflect.get(target, property, receiver);
+            handler.getOwnPropertyDescriptor = (target, property) => property === 'native'
+                ? { ...nativeDescriptor, value: guardedNative }
+                : Reflect.getOwnPropertyDescriptor(target, property);
+        }
+        Object.defineProperty(owner, method, {
+            ...descriptor,
+            value: new Proxy(original, handler),
+        });
     };
-    const syncMethods = new Map([
-        ['accessSync', [0]], ['copyFileSync', [0, 1]], ['cpSync', [0, 1]],
-        ['createReadStream', [0]], ['createWriteStream', [0]], ['existsSync', [0]],
-        ['linkSync', [0, 1]], ['lstatSync', [0]], ['mkdirSync', [0]],
-        ['mkdtempSync', [0]], ['openSync', [0]], ['opendirSync', [0]],
-        ['readFileSync', [0]], ['readdirSync', [0]], ['readlinkSync', [0]],
-        ['realpathSync', [0]], ['renameSync', [0, 1]], ['rmdirSync', [0]],
-        ['rmSync', [0]], ['statSync', [0]], ['unlinkSync', [0]],
-        ['writeFileSync', [0]],
-    ]);
-    for (const [method, indices] of syncMethods) {
-        replace(fs, method, (original) => {
-            const guarded = function deniedRepositoryRtlAccess(...args) {
+    for (const [method, indices] of guardedSyncMethods) {
+        replace(fs, method, (original, thisArgument, args) => {
+            guardArguments(args, indices, method);
+            return Reflect.apply(original, thisArgument, args);
+        }, method === 'realpathSync' ? (original, thisArgument, args) => {
+            guardArguments(args, indices, 'realpathSync.native');
+            return Reflect.apply(original, thisArgument, args);
+        } : undefined);
+    }
+    for (const [method, indices] of guardedCallbackMethods) {
+        replace(fs, method, (original, thisArgument, args) => {
+            try {
                 guardArguments(args, indices, method);
-                return original.apply(this, args);
-            };
-            if (method === 'realpathSync' && typeof original.native === 'function') {
-                guarded.native = function deniedNativeRealpath(...args) {
-                    guardArguments(args, indices, 'realpathSync.native');
-                    return original.native.apply(original, args);
-                };
+            } catch (error) {
+                const callback = args[args.length - 1];
+                if (typeof callback !== 'function') throw error;
+                process.nextTick(callback, error);
+                return undefined;
             }
-            return guarded;
+            return Reflect.apply(original, thisArgument, args);
         });
     }
-    const callbackMethods = new Map([
-        ['access', [0]], ['copyFile', [0, 1]], ['cp', [0, 1]], ['link', [0, 1]],
-        ['lstat', [0]], ['mkdir', [0]], ['mkdtemp', [0]], ['open', [0]],
-        ['opendir', [0]], ['readFile', [0]], ['readdir', [0]], ['readlink', [0]],
-        ['realpath', [0]], ['rename', [0, 1]], ['rmdir', [0]], ['rm', [0]],
-        ['stat', [0]], ['unlink', [0]], ['writeFile', [0]],
-    ]);
-    for (const [method, indices] of callbackMethods) {
-        replace(fs, method, (original) => {
-            const guarded = function deniedRepositoryRtlAccess(...args) {
-                try {
-                    guardArguments(args, indices, method);
-                } catch (error) {
-                    const callback = args[args.length - 1];
-                    if (typeof callback !== 'function') throw error;
-                    process.nextTick(callback, error);
-                    return undefined;
-                }
-                return original.apply(this, args);
-            };
-            if (method === 'realpath' && typeof original.native === 'function') {
-                guarded.native = function deniedNativeRealpath(...args) {
-                    try {
-                        guardArguments(args, indices, 'realpath.native');
-                    } catch (error) {
-                        const callback = args[args.length - 1];
-                        if (typeof callback !== 'function') throw error;
-                        process.nextTick(callback, error);
-                        return undefined;
-                    }
-                    return original.native.apply(original, args);
-                };
-            }
-            return guarded;
-        });
-    }
-    const promiseMethods = new Map([
-        ['access', [0]], ['copyFile', [0, 1]], ['cp', [0, 1]], ['link', [0, 1]],
-        ['lstat', [0]], ['mkdir', [0]], ['mkdtemp', [0]], ['open', [0]],
-        ['opendir', [0]], ['readFile', [0]], ['readdir', [0]], ['readlink', [0]],
-        ['realpath', [0]], ['rename', [0, 1]], ['rmdir', [0]], ['rm', [0]],
-        ['stat', [0]], ['unlink', [0]], ['writeFile', [0]],
-    ]);
-    for (const [method, indices] of promiseMethods) {
-        replace(fs.promises, method, (original) => function deniedRepositoryRtlAccess(...args) {
+    for (const [method, indices] of guardedPromiseMethods) {
+        replace(fs.promises, method, (original, thisArgument, args) => {
             try {
                 guardArguments(args, indices, `promises.${method}`);
             } catch (error) {
                 return Promise.reject(error);
             }
-            return original.apply(this, args);
+            return Reflect.apply(original, thisArgument, args);
         });
     }
     return () => {
-        for (const { owner, method, original } of originals.reverse()) {
-            owner[method] = original;
+        for (const { owner, method, descriptor } of originals.reverse()) {
+            Object.defineProperty(owner, method, descriptor);
         }
     };
 }
@@ -166,6 +230,10 @@ async function assertRepositoryRtlDenialCoverage() {
         () => fs.readFileSync(pathToFileURL(target)));
     expectSynchronousDenial('fs.readFileSync(Buffer)',
         () => fs.readFileSync(Buffer.from(target)));
+    expectSynchronousDenial('fs.linkSync(repository RTL source)',
+        () => fs.linkSync(target, path.join(temporaryRoot, 'denied-source-link')));
+    expectSynchronousDenial('fs.linkSync(repository RTL destination)',
+        () => fs.linkSync(path.join(temporaryRoot, 'missing-link-source'), target));
 
     const callbackError = await new Promise((resolve) => {
         fs.readFile(target, (error) => resolve(error));
@@ -181,6 +249,114 @@ async function assertRepositoryRtlDenialCoverage() {
 
     assert.deepStrictEqual(bypasses, [],
         `repository RTL denial bypasses: ${bypasses.join(', ')}`);
+}
+
+async function assertFileSystemContractCompatibility(apiSnapshot) {
+    const failures = [];
+    const check = async (label, operation) => {
+        try {
+            await operation();
+        } catch (error) {
+            failures.push(`${label}: ${error.message}`);
+        }
+    };
+    const compatibilityFile = path.join(temporaryRoot, 'filesystem-contract.txt');
+    fs.writeFileSync(compatibilityFile, 'descriptor data');
+
+    await check('fs.readFileSync(numeric fd)', () => {
+        const descriptor = fs.openSync(compatibilityFile, 'r');
+        try {
+            assert.strictEqual(fs.readFileSync(descriptor, 'utf8'), 'descriptor data');
+        } finally {
+            fs.closeSync(descriptor);
+        }
+    });
+    await check('fs.readFile(callback numeric fd)', async () => {
+        const descriptor = fs.openSync(compatibilityFile, 'r');
+        try {
+            const content = await new Promise((resolve, reject) => {
+                fs.readFile(descriptor, 'utf8', (error, value) => {
+                    if (error) reject(error);
+                    else resolve(value);
+                });
+            });
+            assert.strictEqual(content, 'descriptor data');
+        } finally {
+            fs.closeSync(descriptor);
+        }
+    });
+    await check('fs.writeFileSync(numeric fd)', () => {
+        const descriptor = fs.openSync(compatibilityFile, 'w');
+        try {
+            fs.writeFileSync(descriptor, 'sync descriptor write');
+        } finally {
+            fs.closeSync(descriptor);
+        }
+        assert.strictEqual(fs.readFileSync(compatibilityFile, 'utf8'),
+            'sync descriptor write');
+    });
+    await check('fs.writeFile(callback numeric fd)', async () => {
+        const descriptor = fs.openSync(compatibilityFile, 'w');
+        try {
+            await new Promise((resolve, reject) => {
+                fs.writeFile(descriptor, 'callback descriptor write', (error) => {
+                    if (error) reject(error);
+                    else resolve();
+                });
+            });
+        } finally {
+            fs.closeSync(descriptor);
+        }
+        assert.strictEqual(fs.readFileSync(compatibilityFile, 'utf8'),
+            'callback descriptor write');
+    });
+    await check('fs.promises.readFile(FileHandle)', async () => {
+        fs.writeFileSync(compatibilityFile, 'promise descriptor data');
+        const handle = await fs.promises.open(compatibilityFile, 'r');
+        try {
+            assert.strictEqual(await fs.promises.readFile(handle, 'utf8'),
+                'promise descriptor data');
+        } finally {
+            await handle.close();
+        }
+    });
+    await check('fs.promises.writeFile(FileHandle)', async () => {
+        const handle = await fs.promises.open(compatibilityFile, 'w');
+        try {
+            await fs.promises.writeFile(handle, 'promise descriptor write');
+        } finally {
+            await handle.close();
+        }
+        assert.strictEqual(fs.readFileSync(compatibilityFile, 'utf8'),
+            'promise descriptor write');
+    });
+    await check('fs.existsSync(unknown object)', () => {
+        const previousNoDeprecation = process.noDeprecation;
+        process.noDeprecation = true;
+        try {
+            assert.strictEqual(fs.existsSync({}), false);
+        } finally {
+            process.noDeprecation = previousNoDeprecation;
+        }
+    });
+    await check('fs.createReadStream(undefined, { fd })', async () => {
+        fs.writeFileSync(compatibilityFile, 'stream descriptor data');
+        const descriptor = fs.openSync(compatibilityFile, 'r');
+        try {
+            const stream = fs.createReadStream(undefined, { fd: descriptor, autoClose: false });
+            let content = '';
+            for await (const chunk of stream) content += chunk;
+            assert.strictEqual(content, 'stream descriptor data');
+        } finally {
+            fs.closeSync(descriptor);
+        }
+    });
+    await check('wrapped API observable properties', () => {
+        assertGuardedApiCompatibility(apiSnapshot);
+    });
+
+    assert.deepStrictEqual(failures, [],
+        `filesystem guard contract regressions:\n${failures.join('\n')}`);
 }
 
 const expectedPreparedRtl = [
@@ -674,12 +850,14 @@ endmodule
 }
 
 async function run() {
+    const guardedApiSnapshot = snapshotGuardedFileSystemApis();
     let restoreRepositoryRtlAccess = () => {};
     try {
         runPreparationContractTests();
         prepareResources();
         restoreRepositoryRtlAccess = denyRepositoryRtlAfterPreparation();
         await assertRepositoryRtlDenialCoverage();
+        await assertFileSystemContractCompatibility(guardedApiSnapshot);
         const catalog = loadCatalog(packagedAssetRoot);
         const minimal = readFixture('minimal.merc32.json');
         const multi = readFixture('multi-peripheral.merc32.json');
@@ -815,7 +993,11 @@ async function run() {
         console.log('MERC32 generated RTL matrix passed.');
     } finally {
         restoreRepositoryRtlAccess();
-        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+        try {
+            assertGuardedApisRestored(guardedApiSnapshot);
+        } finally {
+            fs.rmSync(temporaryRoot, { recursive: true, force: true });
+        }
     }
 }
 
