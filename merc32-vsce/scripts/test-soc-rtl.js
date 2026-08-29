@@ -16,7 +16,41 @@ const extensionRoot = path.resolve(__dirname, '..');
 const packagedAssetRoot = path.join(extensionRoot, 'resources');
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-soc-rtl-'));
-const catalogRoot = path.join(temporaryRoot, 'catalog-assets');
+
+function denyRepositoryRtlAfterPreparation() {
+    const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
+    const originals = new Map();
+    const deny = (value, operation) => {
+        if (typeof value !== 'string') return;
+        const normalized = path.resolve(value).toLowerCase();
+        if (normalized === repositoryRtlRoot
+            || normalized.startsWith(`${repositoryRtlRoot}${path.sep}`)) {
+            throw new Error(`repository-root RTL ${operation} after preparation: ${value}`);
+        }
+    };
+    for (const method of [
+        'accessSync', 'copyFileSync', 'cpSync', 'createReadStream', 'existsSync',
+        'lstatSync', 'openSync', 'readFileSync', 'readdirSync', 'readlinkSync',
+        'realpathSync', 'statSync',
+    ]) {
+        const original = fs[method];
+        originals.set(method, original);
+        const guarded = function deniedRepositoryRtlAccess(value, ...args) {
+            deny(value, method);
+            return original.call(fs, value, ...args);
+        };
+        if (method === 'realpathSync' && typeof original.native === 'function') {
+            guarded.native = function deniedNativeRealpath(value, ...args) {
+                deny(value, 'realpathSync.native');
+                return original.native.call(original, value, ...args);
+            };
+        }
+        fs[method] = guarded;
+    }
+    return () => {
+        for (const [method, original] of originals) fs[method] = original;
+    };
+}
 
 const expectedPreparedRtl = [
     'rtl/apb_can/apb_can.v',
@@ -186,30 +220,10 @@ function assembleAndElaborate(name, config) {
         fs.mkdirSync(path.dirname(initFile), { recursive: true });
         fs.writeFileSync(initFile, '00000000\n');
     }
-    const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
-    const priorReadFileSync = fs.readFileSync;
-    const priorCopyFileSync = fs.copyFileSync;
-    const denyRepositoryRtl = (value) => {
-        if (typeof value === 'string' && path.resolve(value).toLowerCase()
-            .startsWith(`${repositoryRtlRoot}${path.sep}`)) {
-            throw new Error(`${name}: repository-root RTL access after preparation: ${value}`);
-        }
-    };
-    fs.readFileSync = function checkedReadFileSync(file, ...args) {
-        denyRepositoryRtl(file);
-        return priorReadFileSync.call(fs, file, ...args);
-    };
-    fs.copyFileSync = function checkedCopyFileSync(source, ...args) {
-        denyRepositoryRtl(source);
-        return priorCopyFileSync.call(fs, source, ...args);
-    };
-    let generationResult;
-    try {
-        generationResult = generateSoc({ configFile: sourceFile, assetRoot: packagedAssetRoot });
-    } finally {
-        fs.readFileSync = priorReadFileSync;
-        fs.copyFileSync = priorCopyFileSync;
-    }
+    const generationResult = generateSoc({
+        configFile: sourceFile,
+        assetRoot: packagedAssetRoot,
+    });
 
     const rtlDirectory = path.join(generationResult.outputDir, 'rtl');
     const normalizedList = fs.readFileSync(path.join(rtlDirectory, 'files.f'), 'utf8')
@@ -528,14 +542,12 @@ endmodule
     console.log('  external_irq_reset_behavior: simulated');
 }
 
+let restoreRepositoryRtlAccess = () => {};
 try {
     runPreparationContractTests();
     prepareResources();
-    fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
-        path.join(catalogRoot, 'catalog'), { recursive: true });
-    fs.cpSync(path.join(repositoryRoot, 'rtl'), path.join(catalogRoot, 'rtl'),
-        { recursive: true });
-    const catalog = loadCatalog(catalogRoot);
+    restoreRepositoryRtlAccess = denyRepositoryRtlAfterPreparation();
+    const catalog = loadCatalog(packagedAssetRoot);
     const minimal = readFixture('minimal.merc32.json');
     const multi = readFixture('multi-peripheral.merc32.json');
     const all = readFixture('all-peripherals.merc32.json');
@@ -669,5 +681,6 @@ try {
     simulateExternalIrqReset(catalog);
     console.log('MERC32 generated RTL matrix passed.');
 } finally {
+    restoreRepositoryRtlAccess();
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
