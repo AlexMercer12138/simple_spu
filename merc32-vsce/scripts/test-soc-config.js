@@ -259,6 +259,39 @@ const trailingCommaResult = parseSocConfig(trailingCommaText, 'trailing.merc32.j
 assert.strictEqual(trailingCommaResult.config, undefined);
 assertDiagnostic(trailingCommaResult.diagnostics, 'SOC_JSON_SYNTAX', ['cpu']);
 
+const duplicateProjectText = minimalText.replace(
+    '    "name": "minimal_soc",',
+    '    "name": "shadow",\n    "name": "minimal_soc",',
+);
+const duplicateProjectResult = parseSocConfig(
+    duplicateProjectText, 'duplicate-project.merc32.json', catalog);
+assert.strictEqual(duplicateProjectResult.config, undefined);
+const duplicateProjectDiagnostic = assertDiagnostic(
+    duplicateProjectResult.diagnostics, 'SOC_JSON_DUPLICATE_KEY', ['project', 'name']);
+const firstProjectNameKey = duplicateProjectText.indexOf('"name"');
+const secondProjectNameKey = duplicateProjectText.indexOf('"name"', firstProjectNameKey + 1);
+assert.deepStrictEqual(duplicateProjectResult.sourceMap.rangeFor(duplicateProjectDiagnostic.path), {
+    offset: secondProjectNameKey,
+    length: '"name"'.length,
+});
+
+const duplicateArrayText = multiText.replace(
+    '      "name": "uart0",',
+    '      "name": "shadow",\n      "name": "uart0",',
+);
+const duplicateArrayResult = parseSocConfig(
+    duplicateArrayText, 'duplicate-array.merc32.json', catalog);
+assert.strictEqual(duplicateArrayResult.config, undefined);
+const duplicateArrayDiagnostic = assertDiagnostic(
+    duplicateArrayResult.diagnostics, 'SOC_JSON_DUPLICATE_KEY', ['peripherals', 0, 'name']);
+const peripheralsOffset = duplicateArrayText.indexOf('"peripherals"');
+const firstPeripheralNameKey = duplicateArrayText.indexOf('"name"', peripheralsOffset);
+const secondPeripheralNameKey = duplicateArrayText.indexOf('"name"', firstPeripheralNameKey + 1);
+assert.deepStrictEqual(duplicateArrayResult.sourceMap.rangeFor(duplicateArrayDiagnostic.path), {
+    offset: secondPeripheralNameKey,
+    length: '"name"'.length,
+});
+
 const extraFieldText = minimalText.replace('"debug": false', '"debug": false, "extra": true');
 const extraFieldResult = parseSocConfig(extraFieldText, 'extra.merc32.json', catalog);
 assert.strictEqual(extraFieldResult.config, undefined);
@@ -282,11 +315,19 @@ const badProjectName = clone(minimal);
 badProjectName.project.name = '1soc';
 assertDiagnostic(diagnosticsFor(badProjectName), 'SOC_IDENTIFIER', ['project', 'name']);
 
-for (const outputDir of ['', '.', '..', '../outside', path.resolve('outside')]) {
+for (const outputDir of [
+    '', '.', '..', '../outside', 'generated/../outside',
+    'C:escape', 'C:\\escape', '\\\\server\\share\\escape', '\\rooted', '/rooted',
+    path.resolve('outside'),
+]) {
     const badOutput = clone(minimal);
     badOutput.project.outputDir = outputDir;
     assertDiagnostic(diagnosticsFor(badOutput), 'SOC_PROJECT_OUTPUT', ['project', 'outputDir']);
 }
+const normalRelativeOutput = clone(minimal);
+normalRelativeOutput.project.outputDir = 'build/generated/demo_soc';
+assert.strictEqual(diagnosticsFor(normalRelativeOutput)
+    .some((diagnostic) => diagnostic.code === 'SOC_PROJECT_OUTPUT'), false);
 
 const duplicateName = clone(multi);
 duplicateName.externalInterfaces[0].name = 'uart0';

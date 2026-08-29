@@ -47,7 +47,7 @@ export function validateSocConfig(
     validateIdentifier(config.project?.name, ['project', 'name'], 'project name', add);
     if (!isSafeOutputDirectory(config.project?.outputDir)) {
         add('SOC_PROJECT_OUTPUT', ['project', 'outputDir'],
-            'Project outputDir must be a non-empty relative path without dot or parent segments.');
+            'Project outputDir must be a non-empty relative path without a root, drive, dot, or parent segment.');
     }
     validateMemory(config.memory?.ilb?.size, ['memory', 'ilb', 'size'], add);
     validateMemory(config.memory?.dlb?.size, ['memory', 'dlb', 'size'], add);
@@ -235,7 +235,7 @@ function validateIdentifier(
 
 function isSafeOutputDirectory(value: unknown): value is string {
     if (typeof value !== 'string' || value.trim() === ''
-        || pathModule.posix.isAbsolute(value) || pathModule.win32.isAbsolute(value)) {
+        || pathModule.posix.isAbsolute(value) || pathModule.win32.parse(value).root !== '') {
         return false;
     }
     const segments = value.split(/[\\/]+/);
