@@ -189,7 +189,8 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "prepare:resources": "node scripts/prepare-resources.js",
+    "vscode:prepublish": "npm run prepare:resources && npm run compile",
     "compile": "tsc -p ./",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
     "test:c:preprocessor": "npm run compile && node scripts/test-c-preprocessor.js",
@@ -199,7 +200,7 @@
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
     "test:soc:generator": "npm run compile && node scripts/test-soc-generator.js",
     "test:soc:rtl": "npm run compile && node scripts/test-soc-rtl.js",
-    "test:soc": "npm run test:soc:config && npm run test:soc:generator && npm run test:soc:rtl && npm run test:vsix:deps",
+    "test:soc": "npm run test:soc:config && node scripts/test-soc-generator.js && node scripts/test-soc-rtl.js",
     "test:vsix:deps": "node scripts/test-vsix-runtime-deps.js",
     "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"

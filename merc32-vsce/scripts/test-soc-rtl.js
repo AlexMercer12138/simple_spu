@@ -1,18 +1,142 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const {
-    loadCatalog, parseSocConfig, planSoc,
+    generateSoc, loadCatalog, parseSocConfig, planSoc,
     renderSocTop, renderPlbRouter, renderApbInterconnect,
 } = require('../out/soc');
+const { prepareResources } = require('./prepare-resources');
 
 const repositoryRoot = path.resolve(__dirname, '..', '..');
+const extensionRoot = path.resolve(__dirname, '..');
+const packagedAssetRoot = path.join(extensionRoot, 'resources');
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-soc-rtl-'));
 const catalogRoot = path.join(temporaryRoot, 'catalog-assets');
+
+const expectedPreparedRtl = [
+    'rtl/apb_can/apb_can.v',
+    'rtl/apb_gpio/apb_gpio.v',
+    'rtl/apb_i2c/apb_i2c.v',
+    'rtl/apb_intc/apb_intc.v',
+    'rtl/apb_qspi/apb_qspi.v',
+    'rtl/apb_sdio/apb_sdio.v',
+    'rtl/apb_timer/apb_timer.v',
+    'rtl/apb_uart/apb_uart.v',
+    'rtl/bridge/lb2apb.v',
+    'rtl/bridge/lb2avalon.v',
+    'rtl/bridge/lb2axi_lite.v',
+    'rtl/bridge/lb2drp.v',
+    'rtl/bridge/lb2wbc.v',
+    'rtl/cpu/MERC32_top.v',
+    'rtl/cpu/core.v',
+    'rtl/debug/jtag_debug.v',
+    'rtl/misc/div.v',
+    'rtl/misc/mul.v',
+    'rtl/misc/spram.v',
+];
+
+const expectedPreparedResources = [
+    ...expectedPreparedRtl,
+    'catalog/modules/apb_can.json',
+    'catalog/modules/apb_gpio.json',
+    'catalog/modules/apb_i2c.json',
+    'catalog/modules/apb_intc.json',
+    'catalog/modules/apb_qspi.json',
+    'catalog/modules/apb_sdio.json',
+    'catalog/modules/apb_timer.json',
+    'catalog/modules/apb_uart.json',
+    'catalog/protocols.json',
+    'licenses/LICENSE',
+    'schema/merc32.schema.json',
+    'templates/README.md.tpl',
+    'templates/main.c.tpl',
+].sort();
+
+function copyLogicalFile(sourceRoot, destinationRoot, logicalPath) {
+    const source = path.join(sourceRoot, ...logicalPath.split('/'));
+    const destination = path.join(destinationRoot, ...logicalPath.split('/'));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(source, destination);
+}
+
+function makePreparationFixture(name) {
+    const root = path.join(temporaryRoot, `prepare-${name}`);
+    const sourceRepository = path.join(root, 'repository');
+    const extensionRoot = path.join(root, 'merc32-vsce');
+    for (const logicalPath of expectedPreparedRtl) {
+        copyLogicalFile(repositoryRoot, sourceRepository, logicalPath);
+    }
+    fs.copyFileSync(path.join(repositoryRoot, 'LICENSE'), path.join(sourceRepository, 'LICENSE'));
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
+        path.join(extensionRoot, 'resources', 'catalog'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'templates'),
+        path.join(extensionRoot, 'resources', 'templates'), { recursive: true });
+    fs.mkdirSync(path.join(extensionRoot, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(extensionRoot, 'resources', 'keep.txt'), 'preserve\n');
+    return { sourceRepository, extensionRoot };
+}
+
+function runPreparationContractTests() {
+    const complete = makePreparationFixture('complete');
+    const result = prepareResources({
+        repositoryRoot: complete.sourceRepository,
+        extensionRoot: complete.extensionRoot,
+        socApi: require('../out/soc'),
+        sourceRevision: 'fixture-revision',
+    });
+    assert.deepStrictEqual(result.files, expectedPreparedResources,
+        'the prepared allowlist must contain every and only required packaged resource');
+    assert.ok(result.files.every((logicalPath) => !logicalPath.startsWith('rtl/sim/')),
+        'simulation RTL must not enter packaged resources');
+    assert.strictEqual(fs.readFileSync(
+        path.join(complete.extensionRoot, 'resources', 'keep.txt'), 'utf8'), 'preserve\n',
+    'preparation must not delete unrelated resource files or the extension root');
+    const manifest = JSON.parse(fs.readFileSync(path.join(
+        complete.extensionRoot, 'resources', 'resource-manifest.json'), 'utf8'));
+    assert.strictEqual(manifest.sourceRevision, 'fixture-revision');
+    assert.deepStrictEqual(manifest.files.map((record) => record.path), expectedPreparedResources);
+    for (const record of manifest.files) {
+        const resource = fs.readFileSync(path.join(complete.extensionRoot, 'resources',
+            ...record.path.split('/')));
+        assert.strictEqual(record.sha256,
+            crypto.createHash('sha256').update(resource).digest('hex'),
+        `resource manifest hash mismatch for ${record.path}`);
+    }
+    const preparedCatalog = require('../out/soc').loadCatalog(
+        path.join(complete.extensionRoot, 'resources'));
+    assert.strictEqual(fs.readFileSync(path.join(complete.extensionRoot, 'resources',
+        'schema', 'merc32.schema.json'), 'utf8'),
+    `${JSON.stringify(require('../out/soc').generateSocSchema(preparedCatalog), null, 2)}\n`,
+    'preparation must regenerate the schema from the prepared catalog');
+
+    const missing = makePreparationFixture('missing');
+    fs.unlinkSync(path.join(missing.sourceRepository, 'rtl', 'misc', 'mul.v'));
+    assert.throws(() => prepareResources({
+        repositoryRoot: missing.sourceRepository,
+        extensionRoot: missing.extensionRoot,
+        socApi: require('../out/soc'),
+        sourceRevision: 'fixture-revision',
+    }), /Missing resource.*rtl\/misc\/mul\.v/);
+
+    const wrongCase = makePreparationFixture('wrong-case');
+    const descriptorFile = path.join(wrongCase.extensionRoot, 'resources',
+        'catalog', 'modules', 'apb_uart.json');
+    const descriptor = JSON.parse(fs.readFileSync(descriptorFile, 'utf8'));
+    descriptor.rtlFiles = ['rtl/APB_UART/apb_uart.v'];
+    fs.writeFileSync(descriptorFile, `${JSON.stringify(descriptor, null, 2)}\n`);
+    assert.throws(() => prepareResources({
+        repositoryRoot: wrongCase.sourceRepository,
+        extensionRoot: wrongCase.extensionRoot,
+        socApi: require('../out/soc'),
+        sourceRevision: 'fixture-revision',
+    }), /Case mismatch.*rtl\/APB_UART\/apb_uart\.v/);
+    console.log(`MERC32 resource preparation contract passed (${result.files.length} files).`);
+}
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -43,61 +167,72 @@ function listVerilogFiles(root, relative = '') {
     return result.sort();
 }
 
-function assembleAndElaborate(name, config, catalog) {
-    const sourceFile = path.join(fixtureDirectory, `${name}.merc32.json`);
-    const parsed = parseSocConfig(`${JSON.stringify(config, null, 2)}\n`, sourceFile, catalog);
-    assert.ok(parsed.config, `${name} parse failed:\n${JSON.stringify(parsed.diagnostics, null, 2)}`);
-    const planned = planSoc(parsed.config, catalog);
-    assert.ok(planned.plan, `${name} planning failed:\n${JSON.stringify(planned.diagnostics, null, 2)}`);
-    const plan = planned.plan;
-
-    const rtlDirectory = path.join(temporaryRoot, name, 'rtl');
-    fs.mkdirSync(path.join(rtlDirectory, 'generated'), { recursive: true });
-    const fileList = [];
-    for (const logicalPath of plan.rtlFiles) {
-        assert.match(logicalPath, /^rtl\//);
-        const relativePath = logicalPath.slice('rtl/'.length);
-        const destination = path.join(rtlDirectory, ...relativePath.split('/'));
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.copyFileSync(path.join(repositoryRoot, ...logicalPath.split('/')), destination);
-        fileList.push(relativePath);
+function assembleAndElaborate(name, config) {
+    const projectRoot = path.join(temporaryRoot, name);
+    const sourceFile = path.join(projectRoot, `${name}.merc32.json`);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const generatedConfig = {
+        ...config,
+        project: { ...config.project, outputDir: 'generated' },
+    };
+    fs.writeFileSync(sourceFile, `${JSON.stringify(generatedConfig, null, 2)}\n`);
+    if (generatedConfig.memory.ilb.initFile !== undefined) {
+        const initFile = path.join(projectRoot, generatedConfig.memory.ilb.initFile);
+        fs.mkdirSync(path.dirname(initFile), { recursive: true });
+        fs.writeFileSync(initFile, '00000013\n');
+    }
+    if (generatedConfig.memory.dlb.initFile !== undefined) {
+        const initFile = path.join(projectRoot, generatedConfig.memory.dlb.initFile);
+        fs.mkdirSync(path.dirname(initFile), { recursive: true });
+        fs.writeFileSync(initFile, '00000000\n');
+    }
+    const repositoryRtlRoot = path.join(repositoryRoot, 'rtl').toLowerCase();
+    const priorReadFileSync = fs.readFileSync;
+    const priorCopyFileSync = fs.copyFileSync;
+    const denyRepositoryRtl = (value) => {
+        if (typeof value === 'string' && path.resolve(value).toLowerCase()
+            .startsWith(`${repositoryRtlRoot}${path.sep}`)) {
+            throw new Error(`${name}: repository-root RTL access after preparation: ${value}`);
+        }
+    };
+    fs.readFileSync = function checkedReadFileSync(file, ...args) {
+        denyRepositoryRtl(file);
+        return priorReadFileSync.call(fs, file, ...args);
+    };
+    fs.copyFileSync = function checkedCopyFileSync(source, ...args) {
+        denyRepositoryRtl(source);
+        return priorCopyFileSync.call(fs, source, ...args);
+    };
+    let generationResult;
+    try {
+        generationResult = generateSoc({ configFile: sourceFile, assetRoot: packagedAssetRoot });
+    } finally {
+        fs.readFileSync = priorReadFileSync;
+        fs.copyFileSync = priorCopyFileSync;
     }
 
-    const routerPath = `generated/${plan.topModule}_plb_router.v`;
-    fs.writeFileSync(path.join(rtlDirectory, ...routerPath.split('/')),
-        renderPlbRouter(plan));
-    fileList.push(routerPath);
-    const apb = renderApbInterconnect(plan);
-    if (apb !== undefined) {
-        const apbPath = `generated/${plan.topModule}_apb_interconnect.v`;
-        fs.writeFileSync(path.join(rtlDirectory, ...apbPath.split('/')), apb);
-        fileList.push(apbPath);
-    }
-    const topPath = `${plan.topModule}.v`;
-    fs.writeFileSync(path.join(rtlDirectory, topPath), renderSocTop(plan));
-    fileList.push(topPath);
-
-    const normalizedList = [...fileList].sort();
-    fs.writeFileSync(path.join(rtlDirectory, 'files.f'), `${normalizedList.join('\n')}\n`);
+    const rtlDirectory = path.join(generationResult.outputDir, 'rtl');
+    const normalizedList = fs.readFileSync(path.join(rtlDirectory, 'files.f'), 'utf8')
+        .trim().split(/\r?\n/).filter(Boolean).sort();
     assert.deepStrictEqual(listVerilogFiles(rtlDirectory), normalizedList,
-        `${name}: files.f must name every and only assembled Verilog file`);
+        `${name}: generated files.f must name every and only generated Verilog file`);
 
     const outputFile = path.join(temporaryRoot, name, 'soc.vvp');
     const args = [
         '-Wall', '-Wno-timescale', '-g2005',
-        '-s', plan.topModule,
+        '-s', generatedConfig.project.name,
         '-o', outputFile,
         '-f', 'files.f',
     ];
     assert.deepStrictEqual(args.filter((argument) => argument.endsWith('.v')), [],
         `${name}: elaboration source files must come only from files.f`);
-    const result = spawnSync('iverilog', args, { cwd: rtlDirectory, encoding: 'utf8' });
-    assert.strictEqual(result.status, 0,
-        `${name}: iverilog failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.strictEqual(result.stderr, '', `${name}: iverilog warnings:\n${result.stderr}`);
+    const compile = spawnSync('iverilog', args, { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(compile.status, 0,
+        `${name}: iverilog failed\nstdout:\n${compile.stdout}\nstderr:\n${compile.stderr}`);
+    assert.strictEqual(compile.stderr, '', `${name}: iverilog warnings:\n${compile.stderr}`);
     assert.ok(fs.existsSync(outputFile), `${name}: iverilog produced no output`);
     console.log(`  ${name}: ${normalizedList.length} files via rtl/files.f`);
-    return { plan, rtlDirectory };
+    return { rtlDirectory, topModule: generatedConfig.project.name };
 }
 
 function assertRejectedBeforeEmission(name, config, catalog, code, expectedPath) {
@@ -266,7 +401,7 @@ function simulateExternalIrqReset(catalog) {
             ],
         },
     };
-    const { rtlDirectory } = assembleAndElaborate('external_irq_reset', config, catalog);
+    const { rtlDirectory } = assembleAndElaborate('external_irq_reset', config);
     fs.writeFileSync(path.join(rtlDirectory, 'irq_reset_tb.v'), `
 module irq_reset_tb;
 reg clk;
@@ -394,6 +529,8 @@ endmodule
 }
 
 try {
+    runPreparationContractTests();
+    prepareResources();
     fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
         path.join(catalogRoot, 'catalog'), { recursive: true });
     fs.cpSync(path.join(repositoryRoot, 'rtl'), path.join(catalogRoot, 'rtl'),
@@ -526,7 +663,7 @@ try {
     ];
     console.log('MERC32 generated RTL matrix:');
     for (const [name, config] of matrix) {
-        assembleAndElaborate(name, config, catalog);
+        assembleAndElaborate(name, config);
     }
     simulateStatefulRouter();
     simulateExternalIrqReset(catalog);

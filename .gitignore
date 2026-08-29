@@ -40,6 +40,9 @@ xpr/
 merc32-vsce/node_modules/
 merc32-vsce/out/
 merc32-vsce/*.vsix
+merc32-vsce/resources/rtl/
+merc32-vsce/resources/licenses/
+merc32-vsce/resources/resource-manifest.json
 
 # OS
 .DS_Store
