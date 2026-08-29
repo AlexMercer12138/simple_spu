@@ -3,6 +3,7 @@ export * from './catalog';
 export * from './config';
 export * from './emitVerilog';
 export * from './emitSoftware';
+export * from './generator';
 export * from './model';
 export * from './planner';
 export * from './schema';

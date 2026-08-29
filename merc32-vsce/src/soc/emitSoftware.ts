@@ -91,7 +91,11 @@ export function renderSocHeader(plan: SocPlan): string {
 }
 
 /** Renders the top-level documentation without claiming files have already been generated. */
-export function renderGeneratedReadme(plan: SocPlan): string {
+export function renderGeneratedReadme(
+    plan: SocPlan,
+    template: string = readBundledTemplate('README.md.tpl'),
+    sourceIdentity: string = plan.sourceFile,
+): string {
     const parameters = [
         `- Debug: ${plan.cpu.debug ? 'enabled' : 'disabled'}`,
         `- JTAG ID code: \`${formatHex32(plan.cpu.jtagIdCode)}\``,
@@ -106,9 +110,9 @@ export function renderGeneratedReadme(plan: SocPlan): string {
     const identity = [
         `- Project: \`${plan.projectName}\``,
         `- Top module: \`${plan.topModule}\``,
-        `- Source configuration: \`${plan.sourceFile}\``,
+        `- Source configuration: \`${sourceIdentity}\``,
     ];
-    return applyTemplate('README.md.tpl', {
+    return applyTemplateContent(template, {
         FILES: files.join('\n'),
         IDENTITY: identity.join('\n'),
         PARAMETERS: parameters.join('\n'),
@@ -119,8 +123,11 @@ export function renderGeneratedReadme(plan: SocPlan): string {
 }
 
 /** Renders the intentionally minimal, user-owned application scaffold. */
-export function renderStarterMain(plan: SocPlan): string {
-    return applyTemplate('main.c.tpl', { HEADER_FILE: headerFileName(plan) });
+export function renderStarterMain(
+    plan: SocPlan,
+    template: string = readBundledTemplate('main.c.tpl'),
+): string {
+    return applyTemplateContent(template, { HEADER_FILE: headerFileName(plan) });
 }
 
 export function headerFileName(plan: SocPlan): string {
@@ -309,9 +316,12 @@ function renderJson(value: unknown): string {
     return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-function applyTemplate(name: string, values: Readonly<Record<string, string>>): string {
+function readBundledTemplate(name: string): string {
     const file = path.resolve(__dirname, '..', '..', 'resources', 'templates', name);
-    const template = fs.readFileSync(file, 'utf8');
+    return fs.readFileSync(file, 'utf8');
+}
+
+function applyTemplateContent(template: string, values: Readonly<Record<string, string>>): string {
     return template.replace(/{{([A-Z_]+)}}/g, (_match, key: string): string => {
         const value = values[key];
         if (value === undefined) throw new Error(`Missing template value: ${key}`);

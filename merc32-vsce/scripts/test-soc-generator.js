@@ -1,4 +1,5 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -23,6 +24,8 @@ assert.strictEqual(typeof soc.renderGeneratedReadme, 'function',
     'renderGeneratedReadme must be exported from the SoC package');
 assert.strictEqual(typeof soc.renderStarterMain, 'function',
     'renderStarterMain must be exported from the SoC package');
+assert.strictEqual(typeof soc.generateSoc, 'function',
+    'generateSoc must be exported from the SoC package');
 
 const repositoryRoot = path.resolve(__dirname, '..', '..');
 const fixtureDirectory = path.join(__dirname, 'fixtures', 'soc');
@@ -50,6 +53,431 @@ function assertSortedObjectKeys(value) {
     const keys = Object.keys(value);
     assert.deepStrictEqual(keys, [...keys].sort(), `generated object keys must be sorted: ${keys}`);
     Object.values(value).forEach(assertSortedObjectKeys);
+}
+
+function writeFile(file, content) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+}
+
+function writeGenerationConfig(directory, fileName, projectName, outputDir, transform = (value) => value) {
+    const config = transform({
+        schemaVersion: 1,
+        project: { name: projectName, outputDir },
+        cpu: { debug: false },
+        memory: {
+            ilb: { type: 'external_local_bus', size: '32KiB' },
+            dlb: { type: 'external_local_bus', size: '64KiB' },
+        },
+        peripherals: [],
+        externalInterfaces: [],
+        interrupt: { mode: 'none' },
+    });
+    const file = path.join(directory, fileName);
+    writeFile(file, `${JSON.stringify(config, null, 2)}\n`);
+    return file;
+}
+
+function prepareGenerationAssets(root, resourceRevision = 'test-resource-revision') {
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
+        path.join(root, 'catalog'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'templates'),
+        path.join(root, 'templates'), { recursive: true });
+    fs.appendFileSync(path.join(root, 'templates', 'README.md.tpl'), '\nAsset README template.\n');
+    fs.appendFileSync(path.join(root, 'templates', 'main.c.tpl'), '\n/* asset main template */\n');
+    for (const logicalPath of [
+        'rtl/cpu/MERC32_top.v', 'rtl/cpu/core.v',
+        'rtl/misc/div.v', 'rtl/misc/mul.v', 'rtl/misc/spram.v',
+        'rtl/debug/jtag_debug.v', 'rtl/bridge/lb2apb.v',
+        ...fs.readdirSync(path.join(__dirname, '..', 'resources', 'catalog', 'modules'))
+            .map((file) => JSON.parse(fs.readFileSync(path.join(
+                __dirname, '..', 'resources', 'catalog', 'modules', file), 'utf8')))
+            .flatMap((descriptor) => descriptor.rtlFiles),
+        ...JSON.parse(fs.readFileSync(path.join(
+            __dirname, '..', 'resources', 'catalog', 'protocols.json'), 'utf8'))
+            .flatMap((descriptor) => descriptor.rtlFiles),
+    ]) {
+        writeFile(path.join(root, ...logicalPath.split('/')),
+            `opaque ${logicalPath}\n`);
+    }
+    writeFile(path.join(root, 'licenses', 'LICENSE'), 'opaque generator license\n');
+    writeFile(path.join(root, 'resource-manifest.json'), `${JSON.stringify({
+        resourceRevision,
+    }, null, 2)}\n`);
+}
+
+function readManifest(outputDir) {
+    return JSON.parse(fs.readFileSync(path.join(outputDir, 'manifest.json'), 'utf8'));
+}
+
+function snapshotDirectory(root, relative = '') {
+    if (!fs.existsSync(root)) return [];
+    const directory = path.join(root, relative);
+    const result = [];
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name))) {
+        const child = path.join(relative, entry.name);
+        if (entry.isDirectory()) {
+            result.push(...snapshotDirectory(root, child));
+        } else {
+            const content = fs.readFileSync(path.join(root, child));
+            result.push({
+                path: child.replace(/\\/g, '/'),
+                sha256: crypto.createHash('sha256').update(content).digest('hex'),
+            });
+        }
+    }
+    return result;
+}
+
+function expectGenerationError(run, expectedConflictReason) {
+    let error;
+    try {
+        run();
+    } catch (caught) {
+        error = caught;
+    }
+    assert.ok(error instanceof soc.SocGenerationError,
+        `expected SocGenerationError, got ${error && error.stack}`);
+    if (expectedConflictReason !== undefined) {
+        assert.ok(error.conflicts.some((conflict) => conflict.reason === expectedConflictReason),
+            `missing ${expectedConflictReason}: ${JSON.stringify(error.conflicts, null, 2)}`);
+    }
+    return error;
+}
+
+function assertGenerationOrchestration() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-generate-soc-'));
+    try {
+        const assets = path.join(root, 'assets');
+        const project = path.join(root, 'project');
+        prepareGenerationAssets(assets);
+        const configFile = writeGenerationConfig(project, 'demo.merc32.json',
+            'demo_soc', 'generated/demo_soc');
+        const outputDir = path.join(project, 'generated', 'demo_soc');
+        writeFile(path.join(outputDir, 'unmanaged.txt'), 'keep unmanaged\n');
+
+        const first = soc.generateSoc({ configFile, assetRoot: assets });
+        const expectedFiles = [
+            'rtl/demo_soc.v', 'rtl/generated/demo_soc_plb_router.v',
+            'rtl/cpu/MERC32_top.v', 'rtl/cpu/core.v', 'rtl/misc/div.v',
+            'rtl/misc/mul.v', 'rtl/files.f', 'software/include/demo_soc.h',
+            'software/src/main.c', 'config/demo_soc.resolved.json',
+            'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
+        ];
+        assert.strictEqual(first.outputDir, outputDir);
+        assert.strictEqual(first.manifestFile, path.join(outputDir, 'manifest.json'));
+        assert.deepStrictEqual(first.files, expectedFiles);
+        assert.deepStrictEqual(first.warnings, []);
+        assert.deepStrictEqual(first.skippedUserFiles, []);
+        assert.ok(fs.existsSync(path.join(outputDir, 'software', 'src', 'main.c')));
+        assert.match(fs.readFileSync(path.join(outputDir, 'software', 'src', 'main.c'), 'utf8'),
+            /asset main template/);
+        assert.match(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'),
+            /Asset README template/);
+        assert.match(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'),
+            new RegExp(fs.realpathSync.native(configFile).replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.strictEqual(fs.readFileSync(path.join(outputDir, 'LICENSE'), 'utf8'),
+            'opaque generator license\n');
+        for (const logicalPath of [
+            'rtl/cpu/MERC32_top.v', 'rtl/cpu/core.v', 'rtl/misc/div.v', 'rtl/misc/mul.v',
+        ]) {
+            assert.deepStrictEqual(
+                fs.readFileSync(path.join(outputDir, ...logicalPath.split('/'))),
+                fs.readFileSync(path.join(assets, ...logicalPath.split('/'))),
+                `${logicalPath} must be copied byte-for-byte as an opaque asset`,
+            );
+        }
+        assert.deepStrictEqual(fs.readFileSync(path.join(outputDir, 'rtl', 'files.f'), 'utf8')
+            .trimEnd().split('\n'), [
+                'cpu/MERC32_top.v', 'cpu/core.v', 'demo_soc.v',
+                'generated/demo_soc_plb_router.v', 'misc/div.v', 'misc/mul.v',
+            ]);
+        assert.strictEqual(fs.readFileSync(path.join(outputDir, 'unmanaged.txt'), 'utf8'),
+            'keep unmanaged\n');
+
+        const firstManifest = readManifest(outputDir);
+        assert.deepStrictEqual(firstManifest.files.map((record) => record.path),
+            expectedFiles.filter((file) => file !== 'manifest.json'));
+        assert.strictEqual(firstManifest.projectName, 'demo_soc');
+        assert.strictEqual(firstManifest.sourceConfig,
+            fs.realpathSync.native(configFile).replace(/\\/g, '/'));
+        assert.strictEqual(firstManifest.generatorVersion, '2.0.0');
+        assert.strictEqual(firstManifest.resourceRevision, 'test-resource-revision');
+        assert.strictEqual(firstManifest.files.some((record) => record.path === 'manifest.json'), false,
+            'manifest.json must not claim a circular self hash');
+        assert.deepStrictEqual(new Set(firstManifest.files.map((record) => record.path.toLowerCase())).size,
+            firstManifest.files.length);
+        const managedRecords = firstManifest.files.filter((record) => record.kind !== 'scaffold/user-owned');
+        assert.ok(managedRecords.every((record) => /^[0-9a-f]{64}$/.test(record.sha256)
+            && typeof record.logicalSource === 'string' && record.logicalSource.length > 0
+            && typeof record.kind === 'string' && record.kind.length > 0));
+        for (const record of managedRecords) {
+            assert.strictEqual(record.sha256, crypto.createHash('sha256')
+                .update(fs.readFileSync(path.join(outputDir, ...record.path.split('/')))).digest('hex'));
+        }
+        assert.deepStrictEqual(firstManifest.files.find((record) => record.path === 'software/src/main.c'), {
+            kind: 'scaffold/user-owned',
+            logicalSource: 'templates/main.c.tpl',
+            path: 'software/src/main.c',
+        });
+        const firstInventory = snapshotDirectory(outputDir);
+        const repeat = soc.generateSoc({ configFile, assetRoot: assets });
+        assert.deepStrictEqual(repeat.skippedUserFiles, ['software/src/main.c']);
+        assert.deepStrictEqual(snapshotDirectory(outputDir), firstInventory,
+            'repeat generation must be byte-identical');
+
+        const configTimes = Object.fromEntries(readManifest(outputDir).files
+            .filter((record) => record.kind !== 'scaffold/user-owned')
+            .map((record) => [record.path, fs.statSync(path.join(
+                outputDir, ...record.path.split('/'))).mtimeMs]));
+        const changedConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+        changedConfig.cpu.jtagIdCode = '0x12345678';
+        fs.writeFileSync(configFile, `${JSON.stringify(changedConfig, null, 2)}\n`);
+        soc.generateSoc({ configFile, assetRoot: assets });
+        const changedManifest = readManifest(outputDir);
+        for (const record of changedManifest.files.filter((item) => item.kind !== 'scaffold/user-owned')) {
+            if (record.path === 'rtl/demo_soc.v' || record.path === 'config/demo_soc.resolved.json'
+                || record.path === 'README.md') continue;
+            assert.strictEqual(fs.statSync(path.join(outputDir, ...record.path.split('/'))).mtimeMs,
+                configTimes[record.path], `${record.path} should not be replaced when its bytes are unchanged`);
+        }
+        fs.writeFileSync(configFile, `${JSON.stringify({
+            ...changedConfig,
+            cpu: { debug: false },
+        }, null, 2)}\n`);
+        soc.generateSoc({ configFile, assetRoot: assets });
+
+        const mainFile = path.join(outputDir, 'software', 'src', 'main.c');
+        writeFile(mainFile, '/* user main */\n');
+        const userMainTime = new Date('2026-01-02T03:04:05.000Z');
+        fs.utimesSync(mainFile, userMainTime, userMainTime);
+        const managedFile = path.join(outputDir, 'rtl', 'demo_soc.v');
+        writeFile(managedFile, 'modified managed\n');
+        const beforeConflict = snapshotDirectory(outputDir);
+        expectGenerationError(() => soc.generateSoc({ configFile, assetRoot: assets }),
+            'modified-managed');
+        assert.deepStrictEqual(snapshotDirectory(outputDir), beforeConflict,
+            'conflict gate must not mutate the target');
+        const forced = soc.generateSoc({ configFile, assetRoot: assets, force: true });
+        assert.deepStrictEqual(forced.skippedUserFiles, ['software/src/main.c']);
+        assert.notStrictEqual(fs.readFileSync(managedFile, 'utf8'), 'modified managed\n');
+        assert.strictEqual(fs.readFileSync(mainFile, 'utf8'), '/* user main */\n');
+        assert.strictEqual(fs.statSync(mainFile).mtimeMs, userMainTime.getTime(),
+            'force must not touch main.c timestamp');
+
+        const unchangedStale = path.join(outputDir, 'rtl', 'obsolete.v');
+        writeFile(unchangedStale, 'obsolete generated\n');
+        const staleHash = crypto.createHash('sha256').update('obsolete generated\n').digest('hex');
+        const staleManifest = readManifest(outputDir);
+        staleManifest.files.push({
+            kind: 'generated/rtl', logicalSource: 'test:obsolete',
+            path: 'rtl/obsolete.v', sha256: staleHash,
+        });
+        staleManifest.files.sort((left, right) => left.path.localeCompare(right.path));
+        writeFile(path.join(outputDir, 'manifest.json'), `${JSON.stringify(staleManifest, null, 2)}\n`);
+        soc.generateSoc({ configFile, assetRoot: assets });
+        assert.strictEqual(fs.existsSync(unchangedStale), false,
+            'unchanged stale managed files must be removed');
+
+        writeFile(unchangedStale, 'user modified stale\n');
+        const modifiedStaleManifest = readManifest(outputDir);
+        modifiedStaleManifest.files.push({
+            kind: 'generated/rtl', logicalSource: 'test:obsolete',
+            path: 'rtl/obsolete.v', sha256: staleHash,
+        });
+        modifiedStaleManifest.files.sort((left, right) => left.path.localeCompare(right.path));
+        writeFile(path.join(outputDir, 'manifest.json'), `${JSON.stringify(modifiedStaleManifest, null, 2)}\n`);
+        const staleConflictSnapshot = snapshotDirectory(outputDir);
+        expectGenerationError(() => soc.generateSoc({ configFile, assetRoot: assets }),
+            'modified-stale');
+        assert.deepStrictEqual(snapshotDirectory(outputDir), staleConflictSnapshot,
+            'modified stale conflict must leave all managed files untouched');
+        assert.strictEqual(fs.readFileSync(unchangedStale, 'utf8'), 'user modified stale\n');
+        expectGenerationError(() => soc.generateSoc({
+            configFile, assetRoot: assets, force: true,
+        }), 'modified-stale');
+        assert.strictEqual(fs.readFileSync(unchangedStale, 'utf8'), 'user modified stale\n',
+            'force must not remove a modified stale file');
+
+        writeFile(unchangedStale, 'obsolete generated\n');
+        soc.generateSoc({ configFile, assetRoot: assets });
+
+        const activationSource = fs.readFileSync(configFile, 'utf8');
+        fs.writeFileSync(configFile, activationSource.replace('"debug": false', '"debug": true'));
+        const beforeActivationFailure = snapshotDirectory(outputDir);
+        const activationStaging = path.join(path.dirname(outputDir), '.demo_soc-staging-activation');
+        const originalMkdtempForActivation = fs.mkdtempSync;
+        const originalRenameForActivation = fs.renameSync;
+        fs.mkdtempSync = (prefix) => {
+            assert.strictEqual(prefix, path.join(path.dirname(outputDir), '.demo_soc-staging-'));
+            fs.mkdirSync(activationStaging);
+            return activationStaging;
+        };
+        let activationInstallCount = 0;
+        let activationFailureInjected = false;
+        fs.renameSync = (oldPath, newPath) => {
+            if (!activationFailureInjected
+                && path.resolve(oldPath).startsWith(`${path.resolve(activationStaging)}${path.sep}`)
+                && !path.resolve(oldPath).includes(`${path.sep}.activation-backup${path.sep}`)) {
+                activationInstallCount += 1;
+                if (activationInstallCount === 2) {
+                    activationFailureInjected = true;
+                    throw new Error('injected activation rename failure');
+                }
+            }
+            return originalRenameForActivation.call(fs, oldPath, newPath);
+        };
+        try {
+            expectGenerationError(() => soc.generateSoc({ configFile, assetRoot: assets }));
+        } finally {
+            fs.mkdtempSync = originalMkdtempForActivation;
+            fs.renameSync = originalRenameForActivation;
+        }
+        assert.deepStrictEqual(snapshotDirectory(outputDir), beforeActivationFailure,
+            'a narrow activation failure must roll back every prior managed-path change');
+        assert.strictEqual(fs.existsSync(activationStaging), false);
+        fs.writeFileSync(configFile, activationSource);
+
+        const renamedConfig = writeGenerationConfig(project, 'renamed.merc32.json',
+            'demo_soc', 'generated/demo_soc');
+        const ownedSnapshot = snapshotDirectory(outputDir);
+        expectGenerationError(() => soc.generateSoc({
+            configFile: renamedConfig, assetRoot: assets, force: true,
+        }), 'output-owned');
+        assert.deepStrictEqual(snapshotDirectory(outputDir), ownedSnapshot,
+            'force cannot bypass output ownership');
+        const adopted = soc.generateSoc({
+            configFile: renamedConfig, assetRoot: assets, adoptOutput: true,
+        });
+        assert.strictEqual(readManifest(outputDir).sourceConfig,
+            fs.realpathSync.native(renamedConfig).replace(/\\/g, '/'));
+        assert.strictEqual(adopted.outputDir, outputDir);
+
+        writeFile(managedFile, 'changed before adoption\n');
+        const thirdConfig = writeGenerationConfig(project, 'third.merc32.json',
+            'demo_soc', 'generated/demo_soc');
+        const beforeBadAdoption = snapshotDirectory(outputDir);
+        expectGenerationError(() => soc.generateSoc({
+            configFile: thirdConfig, assetRoot: assets, adoptOutput: true, force: true,
+        }), 'modified-managed');
+        assert.deepStrictEqual(snapshotDirectory(outputDir), beforeBadAdoption,
+            'adoption must verify old hashes before any mutation');
+        writeFile(managedFile, fs.readFileSync(path.join(assets, 'rtl', 'cpu', 'MERC32_top.v')));
+        // Restore exactly through the current owner before testing staged failures.
+        soc.generateSoc({ configFile: renamedConfig, assetRoot: assets, force: true });
+
+        const missingAsset = path.join(assets, 'rtl', 'misc', 'mul.v');
+        fs.renameSync(missingAsset, `${missingAsset}.missing`);
+        const beforeMissingAsset = snapshotDirectory(outputDir);
+        expectGenerationError(() => soc.generateSoc({ configFile: renamedConfig, assetRoot: assets }));
+        assert.deepStrictEqual(snapshotDirectory(outputDir), beforeMissingAsset,
+            'missing dependency must fail before target mutation');
+        fs.renameSync(`${missingAsset}.missing`, missingAsset);
+
+        const sourceText = fs.readFileSync(renamedConfig, 'utf8');
+        fs.writeFileSync(renamedConfig, sourceText.replace('"debug": false', '"debug": true'));
+        const failingStage = path.join(path.dirname(outputDir), '.demo_soc-staging-fixed');
+        const originalMkdtemp = fs.mkdtempSync;
+        const originalWrite = fs.writeFileSync;
+        fs.mkdtempSync = (prefix) => {
+            assert.strictEqual(prefix, path.join(path.dirname(outputDir), '.demo_soc-staging-'));
+            fs.mkdirSync(failingStage);
+            return failingStage;
+        };
+        fs.writeFileSync = (file, ...args) => {
+            if (path.resolve(file) === path.join(failingStage, 'rtl', 'generated',
+                'demo_soc_plb_router.v')) {
+                throw new Error('injected staging write failure');
+            }
+            return originalWrite.call(fs, file, ...args);
+        };
+        const beforeStageFailure = snapshotDirectory(outputDir);
+        try {
+            expectGenerationError(() => soc.generateSoc({
+                configFile: renamedConfig, assetRoot: assets,
+            }));
+        } finally {
+            fs.mkdtempSync = originalMkdtemp;
+            fs.writeFileSync = originalWrite;
+        }
+        assert.deepStrictEqual(snapshotDirectory(outputDir), beforeStageFailure,
+            'pre-activation staging failure must leave old output byte-for-byte unchanged');
+        assert.strictEqual(fs.existsSync(failingStage), false,
+            'only the exact staging directory must be removed in finally');
+
+        const warningProject = path.join(root, 'warning-project');
+        const warningConfig = writeGenerationConfig(warningProject, 'warning.merc32.json',
+            'warning_soc', 'generated/warning_soc', (value) => ({
+                ...value,
+                peripherals: [{
+                    type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000',
+                }],
+            }));
+        const warningResult = soc.generateSoc({ configFile: warningConfig, assetRoot: assets });
+        assert.deepStrictEqual(warningResult.warnings.map((warning) => warning.code),
+            ['SOC_IRQ_UNCONNECTED'], 'parse/planning warnings must not be duplicated');
+
+        const caseProject = path.join(root, 'case-project');
+        const caseConfig = writeGenerationConfig(caseProject, 'case.merc32.json',
+            'case_soc', 'generated/case_soc');
+        const caseOutput = path.join(caseProject, 'generated', 'case_soc');
+        writeFile(path.join(caseOutput, 'RTL', 'user.txt'), 'case sentinel\n');
+        const caseSnapshot = snapshotDirectory(caseOutput);
+        expectGenerationError(() => soc.generateSoc({
+            configFile: caseConfig, assetRoot: assets,
+        }), 'modified-managed');
+        assert.deepStrictEqual(snapshotDirectory(caseOutput), caseSnapshot,
+            'case-insensitive path collisions must be refused before activation');
+
+        const blockedProject = path.join(root, 'blocked-project');
+        const blockedConfig = writeGenerationConfig(blockedProject, 'blocked.merc32.json',
+            'blocked_soc', 'generated/blocked_soc');
+        const blockedOutput = path.join(blockedProject, 'generated', 'blocked_soc');
+        writeFile(path.join(blockedOutput, 'rtl'), 'unmanaged parent file\n');
+        const blockedSnapshot = snapshotDirectory(blockedOutput);
+        expectGenerationError(() => soc.generateSoc({
+            configFile: blockedConfig, assetRoot: assets,
+        }), 'modified-managed');
+        assert.deepStrictEqual(snapshotDirectory(blockedOutput), blockedSnapshot,
+            'a file blocking a managed directory must be rejected before activation');
+
+        const invalidProject = path.join(root, 'invalid-project');
+        const invalidConfig = writeGenerationConfig(invalidProject, 'invalid.merc32.json',
+            'invalid_soc', 'generated/invalid_soc');
+        const invalidOutput = path.join(invalidProject, 'generated', 'invalid_soc');
+        writeFile(path.join(invalidOutput, 'sentinel.txt'), 'validation sentinel\n');
+        fs.writeFileSync(invalidConfig, '{ invalid JSON\n');
+        const invalidSnapshot = snapshotDirectory(invalidOutput);
+        const invalidError = expectGenerationError(() => soc.generateSoc({
+            configFile: invalidConfig, assetRoot: assets,
+        }));
+        assert.ok(invalidError.diagnostics.some((diagnostic) => diagnostic.code === 'SOC_JSON_SYNTAX'));
+        assert.deepStrictEqual(snapshotDirectory(invalidOutput), invalidSnapshot,
+            'parse/validation failure must leave an existing output untouched');
+
+        const memoryProject = path.join(root, 'memory-project');
+        writeFile(path.join(memoryProject, 'boot', 'firmware.mem'), '11aa22bb\n');
+        writeFile(path.join(memoryProject, 'data', 'firmware.mem'), '33cc44dd\n');
+        const memoryConfig = writeGenerationConfig(memoryProject, 'memory.merc32.json',
+            'memory_soc', 'generated/memory_soc', (value) => ({
+                ...value,
+                memory: {
+                    ilb: { type: 'internal_ram', size: '32KiB', initFile: 'boot/firmware.mem' },
+                    dlb: { type: 'internal_ram', size: '64KiB', initFile: 'data/firmware.mem' },
+                },
+            }));
+        const memoryResult = soc.generateSoc({ configFile: memoryConfig, assetRoot: assets });
+        assert.deepStrictEqual(memoryResult.files.filter((file) => file.startsWith('memory/')), [
+            'memory/ilb_firmware.mem', 'memory/dlb_firmware.mem',
+        ]);
+        assert.strictEqual(fs.readFileSync(path.join(memoryResult.outputDir,
+            'memory', 'ilb_firmware.mem'), 'utf8'), '11aa22bb\n');
+        assert.strictEqual(fs.readFileSync(path.join(memoryResult.outputDir,
+            'memory', 'dlb_firmware.mem'), 'utf8'), '33cc44dd\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 }
 
 let catalog;
@@ -299,7 +727,9 @@ try {
     assert.match(reservedRouter, /ENDPOINT_NONE\b/);
     assert.match(reservedRouter, /ENDPOINT_TARGET_NONE\b/);
 
-    console.log('MERC32 SoC Verilog emitter structural tests passed.');
+    assertGenerationOrchestration();
+
+    console.log('MERC32 SoC emitter and safe generation tests passed.');
 } finally {
     fs.rmSync(assetRoot, { recursive: true, force: true });
 }
