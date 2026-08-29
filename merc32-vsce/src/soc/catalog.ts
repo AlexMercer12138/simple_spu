@@ -47,6 +47,9 @@ export function loadCatalog(assetRoot: string): ModuleCatalog {
         modules.set(module.type, module);
     }
 
+    if (!fileExistsWithExactCase(assetRoot, 'catalog/protocols.json')) {
+        throw new Error('Missing catalog protocols file or case mismatch: catalog/protocols.json');
+    }
     const protocolsPath = resolveAssetPath(assetRoot, 'catalog/protocols.json');
     const protocolsData = readJson(protocolsPath, 'catalog/protocols.json');
     if (!Array.isArray(protocolsData)) {
@@ -353,7 +356,9 @@ function immutableMap<Key, Value>(source: Map<Key, Value>): ReadonlyMap<Key, Val
         entries: map.entries.bind(map),
         keys: map.keys.bind(map),
         values: map.values.bind(map),
-        forEach: map.forEach.bind(map),
+        forEach(callbackfn, thisArg): void {
+            map.forEach((value, key) => callbackfn.call(thisArg, value, key, readonly));
+        },
         [Symbol.iterator]: map[Symbol.iterator].bind(map),
     };
     return Object.freeze(readonly);

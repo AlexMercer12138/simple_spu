@@ -80,3 +80,17 @@ The committed catalog names packaged `rtl/...` logical paths. Those asset files
 are intentionally absent until the later resource-preparation task. Tests use
 temporary opaque assets to exercise the current loader; Task 8 will populate
 the real packaged resource tree and test it end-to-end.
+
+## Fix Round 1
+
+RED: the focused catalog suite first failed because the DRP descriptor exposed
+`addr/en/we/rdy/in/out`, rather than `lb2drp`'s public
+`drp_addr/drp_en/drp_we/drp_rdy/drp_in/drp_out` ports. Independent runtime
+probes then recorded `CS_MAX=undefined`, `FOREACH_CLEAR=function`, and
+`PROTOCOLS_CASE=ACCEPTED` for the remaining three reported defects.
+
+GREEN: DRP descriptors now use the exact public port names, QSPI `CS_COUNT` is
+restricted to 1..16, the map facade passes itself (without `clear`/`set`) as
+the `forEach` callback map and preserves eight modules, and
+`catalog/protocols.json` is checked component-by-component for exact casing
+before it is read. The regression suite includes assertions for all four.

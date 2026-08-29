@@ -92,12 +92,12 @@
     "alignment": 4,
     "addressWidthParameter": "DRP_ADDR_WIDTH",
     "ports": [
-      { "name": "addr", "direction": "output", "width": { "parameter": "DRP_ADDR_WIDTH" } },
-      { "name": "en", "direction": "output", "width": 1 },
-      { "name": "we", "direction": "output", "width": 1 },
-      { "name": "rdy", "direction": "input", "width": 1 },
-      { "name": "in", "direction": "output", "width": 32 },
-      { "name": "out", "direction": "input", "width": 32 }
+      { "name": "drp_addr", "direction": "output", "width": { "parameter": "DRP_ADDR_WIDTH" } },
+      { "name": "drp_en", "direction": "output", "width": 1 },
+      { "name": "drp_we", "direction": "output", "width": 1 },
+      { "name": "drp_rdy", "direction": "input", "width": 1 },
+      { "name": "drp_in", "direction": "output", "width": 32 },
+      { "name": "drp_out", "direction": "input", "width": 32 }
     ]
   }
 ]

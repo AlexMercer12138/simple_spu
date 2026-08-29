@@ -6,7 +6,7 @@
   "addressSize": 4096,
   "alignment": 4096,
   "parameters": {
-    "CS_COUNT": { "type": "integer", "minimum": 1, "default": 4 },
+    "CS_COUNT": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
     "FIFO_DEPTH": { "type": "powerOfTwo", "minimum": 8, "maximum": 128, "default": 16 }
   },
   "ports": [

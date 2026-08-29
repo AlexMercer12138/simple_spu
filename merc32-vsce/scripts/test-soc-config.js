@@ -42,9 +42,22 @@ assert.strictEqual(catalog.protocols.get('axi4_lite').addressWidthParameter,
     'AXI_ADDR_WIDTH');
 assert.strictEqual(catalog.protocols.get('apb').ports
     .find((port) => port.name === 'm_apb_paddr').width.parameter, 'APB_ADDR_WIDTH');
+assert.deepStrictEqual(catalog.protocols.get('drp').ports.map((port) => port.name), [
+    'drp_addr', 'drp_en', 'drp_we', 'drp_rdy', 'drp_in', 'drp_out',
+]);
+assert.deepStrictEqual(catalog.modules.get('apb_qspi').parameters.CS_COUNT, {
+    type: 'integer', minimum: 1, maximum: 16, default: 4,
+});
 assert.strictEqual(Object.isFrozen(catalog.modules), true);
 assert.strictEqual(Object.isFrozen(catalog.modules.get('apb_uart')), true);
 assert.strictEqual(typeof catalog.modules.set, 'undefined');
+catalog.modules.forEach((module, type, callbackMap) => {
+    assert.strictEqual(callbackMap, catalog.modules);
+    assert.strictEqual(typeof callbackMap.clear, 'undefined');
+    assert.strictEqual(typeof callbackMap.set, 'undefined');
+    assert.strictEqual(catalog.modules.get(type), module);
+});
+assert.strictEqual(catalog.modules.size, 8);
 
 function withCatalogAssets(moduleDescriptors, protocols, test) {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-catalog-'));
@@ -114,6 +127,18 @@ try {
     assert.throws(() => loadCatalog(caseRoot), /case.*match/i);
 } finally {
     fs.rmSync(caseRoot, { recursive: true, force: true });
+}
+
+const protocolsCaseRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-protocols-case-'));
+try {
+    fs.cpSync(catalogAssetRoot, protocolsCaseRoot, { recursive: true });
+    fs.renameSync(
+        path.join(protocolsCaseRoot, 'catalog', 'protocols.json'),
+        path.join(protocolsCaseRoot, 'catalog', 'Protocols.json'),
+    );
+    assert.throws(() => loadCatalog(protocolsCaseRoot), /case.*match/i);
+} finally {
+    fs.rmSync(protocolsCaseRoot, { recursive: true, force: true });
 }
 
 assert.strictEqual(parseU32('0xFFFFFFFF'), 0xffffffffn);
