@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { preprocessCFile, CPreprocessorError } = require('../out/cPreprocessor');
-const { compileCFile, CompilerError } = require('../out/cCompiler');
+const { compileC, compileCFile, CompilerError } = require('../out/cCompiler');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
 function writeFile(root, relativePath, contents) {
@@ -80,8 +80,63 @@ try {
         },
     );
 
+    function expectIncludedCompilerError(relativePath, source, expected) {
+        const header = writeFile(root, relativePath, source);
+        const main = writeFile(
+            root,
+            `${path.basename(relativePath)}.main.c`,
+            `#include "${relativePath}"\nint main(void) { return 0; }\n`,
+        );
+        assert.throws(
+            () => compileCFile(main),
+            (error) => {
+                assert.ok(error instanceof CompilerError);
+                assert.strictEqual(error.sourceFile, header);
+                assert.strictEqual(error.line, expected.line);
+                assert.strictEqual(error.column, expected.column);
+                assert.strictEqual(
+                    error.message,
+                    `${header}:${expected.line}:${expected.column}: ${expected.detail}`,
+                );
+                return true;
+            },
+        );
+    }
+
+    expectIncludedCompilerError(
+        'include/parser-error.h',
+        'int parser_error(void) { return 1 }\n',
+        { line: 1, column: 35, detail: "expected ';'" },
+    );
+    expectIncludedCompilerError(
+        'include/unknown-variable.h',
+        'int unknown_variable(void) { return missing_name; }\n',
+        { line: 1, column: 37, detail: "unknown variable 'missing_name'" },
+    );
+    expectIncludedCompilerError(
+        'include/type-error.h',
+        'int type_error(void) { return "text" * 2; }\n',
+        { line: 1, column: 38, detail: "operator '*' does not accept pointer operands" },
+    );
+    expectIncludedCompilerError(
+        'include/call-error.h',
+        'int call_error(void) { return missing_call(); }\n',
+        { line: 1, column: 31, detail: "unknown function 'missing_call'" },
+    );
+
     assert.strictEqual(new CompilerError('legacy location', 7, 9).message, '7:9: legacy location');
     assert.strictEqual(new CompilerError('legacy no location').message, 'legacy no location');
+
+    for (const [source, message] of [
+        ['int main(void) { return missing_name; }', "unknown variable 'missing_name'"],
+        ['int main(void) { return "text" * 2; }', "operator '*' does not accept pointer operands"],
+        ['int main(void) { return missing_call(); }', "unknown function 'missing_call'"],
+    ]) {
+        assert.throws(
+            () => compileC(source),
+            (error) => error instanceof CompilerError && error.message === message,
+        );
+    }
 
     writeFile(root, 'soc.h', [
         '#ifndef DEMO_SOC_H',

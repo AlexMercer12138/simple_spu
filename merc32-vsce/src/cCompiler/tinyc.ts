@@ -17,10 +17,13 @@ export class CompilerError extends Error {
         readonly line?: number,
         readonly column?: number,
         readonly sourceFile?: string,
+        includeLocationInMessage = sourceFile !== undefined || (line !== undefined && column !== undefined),
     ) {
-        super(sourceFile !== undefined && line !== undefined && column !== undefined
+        super(includeLocationInMessage && sourceFile !== undefined && line !== undefined && column !== undefined
             ? `${sourceFile}:${line}:${column}: ${message}`
-            : line !== undefined && column !== undefined ? `${line}:${column}: ${message}` : message);
+            : includeLocationInMessage && line !== undefined && column !== undefined
+                ? `${line}:${column}: ${message}`
+                : message);
         this.detail = message;
         this.name = 'CompilerError';
     }
@@ -211,6 +214,8 @@ type Expr =
 interface NumberExpr {
     kind: 'number';
     value: number;
+    line: number;
+    column: number;
 }
 
 interface StringExpr {
@@ -223,12 +228,16 @@ interface StringExpr {
 interface VarExpr {
     kind: 'varref';
     name: string;
+    line: number;
+    column: number;
 }
 
 interface AssignExpr {
     kind: 'assign';
     target: Expr;
     value: Expr;
+    line: number;
+    column: number;
 }
 
 interface CompoundAssignExpr {
@@ -263,24 +272,32 @@ interface BinaryExpr {
     op: string;
     left: Expr;
     right: Expr;
+    line: number;
+    column: number;
 }
 
 interface UnaryExpr {
     kind: 'unary';
     op: string;
     expr: Expr;
+    line: number;
+    column: number;
 }
 
 interface CallExpr {
     kind: 'call';
     name: string;
     args: Expr[];
+    line: number;
+    column: number;
 }
 
 interface IndexExpr {
     kind: 'index';
     target: Expr;
     index: Expr;
+    line: number;
+    column: number;
 }
 
 interface CastExpr {
@@ -953,11 +970,18 @@ class Parser {
 
     private parseAssignment(): Expr {
         const left = this.parseConditional();
-        if (this.match('=')) {
+        if (this.is('=')) {
+            const token = this.advance();
             if (!this.isAssignable(left)) {
                 throw this.error('left side of assignment must be a variable or dereference');
             }
-            return { kind: 'assign', target: left, value: this.parseAssignment() };
+            return {
+                kind: 'assign',
+                target: left,
+                value: this.parseAssignment(),
+                line: token.line,
+                column: token.column,
+            };
         }
         const operator = COMPOUND_ASSIGNMENT_OPERATORS.get(this.current().text);
         if (operator) {
@@ -1047,8 +1071,15 @@ class Parser {
     private parseBinary(next: () => Expr, ops: string[]): Expr {
         let expr = next();
         while (ops.includes(this.current().text)) {
-            const op = this.advance().text;
-            expr = { kind: 'binary', op, left: expr, right: next() };
+            const token = this.advance();
+            expr = {
+                kind: 'binary',
+                op: token.text,
+                left: expr,
+                right: next(),
+                line: token.line,
+                column: token.column,
+            };
         }
         return expr;
     }
@@ -1074,19 +1105,33 @@ class Parser {
             };
         }
         if (['+', '-', '!', '~', '*', '&'].includes(this.current().text)) {
-            const op = this.advance().text;
+            const token = this.advance();
+            const op = token.text;
             const expr = this.parseUnary();
-            return op === '+' ? expr : { kind: 'unary', op, expr };
+            return op === '+' ? expr : {
+                kind: 'unary',
+                op,
+                expr,
+                line: token.line,
+                column: token.column,
+            };
         }
         return this.parsePostfix();
     }
 
     private parsePostfix(): Expr {
         let expr = this.parsePrimary();
-        while (this.match('[')) {
+        while (this.is('[')) {
+            const token = this.advance();
             const index = this.parseExpression();
             this.expect(']');
-            expr = { kind: 'index', target: expr, index };
+            expr = {
+                kind: 'index',
+                target: expr,
+                index,
+                line: token.line,
+                column: token.column,
+            };
         }
         if (this.current().text === '++' || this.current().text === '--') {
             const token = this.advance();
@@ -1129,7 +1174,12 @@ class Parser {
         }
         if (this.current().kind === 'number') {
             const token = this.advance();
-            return { kind: 'number', value: token.value || 0 };
+            return {
+                kind: 'number',
+                value: token.value || 0,
+                line: token.line,
+                column: token.column,
+            };
         }
         if (this.current().kind === 'string') {
             const firstToken = this.current();
@@ -1147,7 +1197,8 @@ class Parser {
             };
         }
         if (this.current().kind === 'identifier') {
-            const name = this.advance().text;
+            const token = this.advance();
+            const name = token.text;
             if (this.match('(')) {
                 const args: Expr[] = [];
                 if (!this.match(')')) {
@@ -1156,9 +1207,20 @@ class Parser {
                     } while (this.match(','));
                     this.expect(')');
                 }
-                return { kind: 'call', name, args };
+                return {
+                    kind: 'call',
+                    name,
+                    args,
+                    line: token.line,
+                    column: token.column,
+                };
             }
-            return { kind: 'varref', name };
+            return {
+                kind: 'varref',
+                name,
+                line: token.line,
+                column: token.column,
+            };
         }
         throw this.error(`unexpected token '${this.current().text}'`);
     }
@@ -1398,6 +1460,10 @@ class CodeGenerator {
         this.moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
         this.tempSlots = options.tempSlots ?? 32;
         this.nextGlobalAddress = this.dataBase;
+    }
+
+    private errorAt(message: string, node: { line: number; column: number }): CompilerError {
+        return new CompilerError(message, node.line, node.column, undefined, false);
     }
 
     generate(): string {
@@ -1788,15 +1854,15 @@ class CodeGenerator {
             if (isScalarType(operandType)) {
                 return;
             }
-            throw new CompilerError("operator '!' requires a scalar operand");
+            throw this.errorAt("operator '!' requires a scalar operand", expr);
         }
         if (isIntegerType(operandType)) {
             return;
         }
         if (operandType.pointerDepth > 0) {
-            throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+            throw this.errorAt(`operator '${expr.op}' does not accept pointer operands`, expr);
         }
-        throw new CompilerError(`operator '${expr.op}' requires an integer operand`);
+        throw this.errorAt(`operator '${expr.op}' requires an integer operand`, expr);
     }
 
     private validateBinaryOperands(expr: BinaryExpr): void {
@@ -1816,7 +1882,7 @@ class CodeGenerator {
             if (isScalarType(leftType) && isScalarType(rightType)) {
                 return;
             }
-            throw new CompilerError(`operator '${expr.op}' requires scalar operands`);
+            throw this.errorAt(`operator '${expr.op}' requires scalar operands`, expr);
         }
 
         if (expr.op === '==' || expr.op === '!=') {
@@ -1829,14 +1895,14 @@ class CodeGenerator {
                     return;
                 }
             }
-            throw new CompilerError(`operator '${expr.op}' requires compatible scalar operands`);
+            throw this.errorAt(`operator '${expr.op}' requires compatible scalar operands`, expr);
         }
 
         if (['<', '<=', '>', '>='].includes(expr.op)) {
             if (bothInteger || (leftIsPointer && rightIsPointer)) {
                 return;
             }
-            throw new CompilerError(`operator '${expr.op}' requires compatible scalar operands`);
+            throw this.errorAt(`operator '${expr.op}' requires compatible scalar operands`, expr);
         }
 
         if (expr.op === '+') {
@@ -1845,9 +1911,9 @@ class CodeGenerator {
                 return;
             }
             if (leftIsPointer && rightIsPointer) {
-                throw new CompilerError("operator '+' cannot add two pointers");
+                throw this.errorAt("operator '+' cannot add two pointers", expr);
             }
-            throw new CompilerError("operator '+' requires integer operands or one pointer and one integer");
+            throw this.errorAt("operator '+' requires integer operands or one pointer and one integer", expr);
         }
         if (expr.op === '-') {
             if (bothInteger || (leftIsPointer && isIntegerType(rightType))) {
@@ -1857,7 +1923,7 @@ class CodeGenerator {
                 this.pointerDifferenceElementSize(leftType, rightType);
                 return;
             }
-            throw new CompilerError("operator '-' requires a pointer left operand and pointer or integer right operand");
+            throw this.errorAt("operator '-' requires a pointer left operand and pointer or integer right operand", expr);
         }
 
         if (['*', '/', '%', '&', '|', '^', '<<', '>>'].includes(expr.op)) {
@@ -1865,12 +1931,12 @@ class CodeGenerator {
                 return;
             }
             if (leftIsPointer || rightIsPointer) {
-                throw new CompilerError(`operator '${expr.op}' does not accept pointer operands`);
+                throw this.errorAt(`operator '${expr.op}' does not accept pointer operands`, expr);
             }
-            throw new CompilerError(`operator '${expr.op}' requires integer operands`);
+            throw this.errorAt(`operator '${expr.op}' requires integer operands`, expr);
         }
 
-        throw new CompilerError(`unsupported binary operator '${expr.op}'`);
+        throw this.errorAt(`unsupported binary operator '${expr.op}'`, expr);
     }
 
     private evalConstant(expr: Expr): number {
@@ -2542,12 +2608,12 @@ class CodeGenerator {
                 this.loadImm(target, this.staticStringAddress(expr));
                 return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
-                if (isArrayType(this.lookupVar(expr.name).type)) {
+                if (isArrayType(this.lookupVar(expr.name, expr).type)) {
                     this.emitLValueAddress(expr, target);
-                    return arrayDecayType(this.lookupVar(expr.name).type);
+                    return arrayDecayType(this.lookupVar(expr.name, expr).type);
                 }
                 this.loadVar(expr.name, target);
-                return this.lookupVar(expr.name).type;
+                return this.lookupVar(expr.name, expr).type;
             case 'assign': {
                 this.emitExpr(expr.value, 'r7');
                 const type = this.lvalueType(expr.target);
@@ -2881,7 +2947,7 @@ class CodeGenerator {
 
         const fn = this.functionMap.get(expr.name);
         if (!fn) {
-            throw new CompilerError(`unknown function '${expr.name}'`);
+            throw this.errorAt(`unknown function '${expr.name}'`, expr);
         }
 
         const ctx = this.ctx();
@@ -3025,7 +3091,7 @@ class CodeGenerator {
 
     private emitLValueAddress(expr: Expr, target: string): CType {
         if (expr.kind === 'varref') {
-            const slot = this.lookupVar(expr.name);
+            const slot = this.lookupVar(expr.name, expr);
             if (slot.globalAddress !== undefined) {
                 this.loadImm(target, slot.globalAddress);
                 return slot.type;
@@ -3051,7 +3117,7 @@ class CodeGenerator {
         throw new CompilerError('address-of requires a variable or dereference');
     }
 
-    private lookupVar(name: string): Slot {
+    private lookupVar(name: string, location?: { line: number; column: number }): Slot {
         const local = this.current?.layout.slots.get(name);
         if (local) {
             return local;
@@ -3060,12 +3126,15 @@ class CodeGenerator {
         if (global) {
             return global;
         }
+        if (location) {
+            throw this.errorAt(`unknown variable '${name}'`, location);
+        }
         throw new CompilerError(`unknown variable '${name}'`);
     }
 
     private lvalueType(expr: Expr): CType {
         if (expr.kind === 'varref') {
-            return this.lookupVar(expr.name).type;
+            return this.lookupVar(expr.name, expr).type;
         }
         if (expr.kind === 'unary' && expr.op === '*') {
             return derefType(this.exprType(expr.expr));
@@ -3083,7 +3152,7 @@ class CodeGenerator {
             case 'string':
                 return pointerTo({ base: 'char', pointerDepth: 0, volatile: false });
             case 'varref':
-                return arrayDecayType(this.lookupVar(expr.name).type);
+                return arrayDecayType(this.lookupVar(expr.name, expr).type);
             case 'assign':
                 return this.lvalueType(expr.target);
             case 'compound-assign':
