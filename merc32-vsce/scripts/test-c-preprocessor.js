@@ -107,6 +107,22 @@ try {
     assert.match(inactiveBranch, /int active_after_inactive = 1;/);
     assert.doesNotMatch(inactiveBranch, /nested_wrong/);
 
+    writeFile(root, 'inactive-comment-directives.c', [
+        '#if 0',
+        '/*',
+        '#else',
+        '#endif',
+        '*/',
+        '#else',
+        'int selected_after_inactive_comment = 1;',
+        '#endif',
+        '',
+    ].join('\n'));
+    assert.match(
+        preprocessFile(root, 'inactive-comment-directives.c').code,
+        /int selected_after_inactive_comment = 1;/,
+    );
+
     assert.match(preprocess('#define PRESENT 1\n#ifdef PRESENT\nint ifdef_selected = 1;\n#endif', {}), /ifdef_selected/);
     assert.match(preprocess('#ifndef ABSENT\nint ifndef_selected = 1;\n#endif', {}), /ifndef_selected/);
     assert.throws(() => preprocess('#else\n', {}), /unexpected #else/);
@@ -124,11 +140,15 @@ try {
     writeFile(root, 'cycle-main.c', '#include "cycle-a.h"\n');
     assert.throws(() => preprocessFile(root, 'cycle-main.c'), /include cycle/);
 
-    for (let index = 0; index < 33; index++) {
-        writeFile(root, `depth-${index}.h`, index === 32 ? 'int deepest_include;\n' : `#include "depth-${index + 1}.h"\n`);
+    for (let index = 0; index < 32; index++) {
+        writeFile(root, `depth-32-${index}.h`, index === 31 ? 'int deepest_include;\n' : `#include "depth-32-${index + 1}.h"\n`);
     }
-    writeFile(root, 'depth-main.c', '#include "depth-0.h"\n');
-    assert.throws(() => preprocessFile(root, 'depth-main.c'), /include depth exceeds 32/);
+    assert.match(preprocessFile(root, 'depth-32-0.h').code, /int deepest_include;/);
+
+    for (let index = 0; index < 33; index++) {
+        writeFile(root, `depth-33-${index}.h`, index === 32 ? 'int too_deep_include;\n' : `#include "depth-33-${index + 1}.h"\n`);
+    }
+    assert.throws(() => preprocessFile(root, 'depth-33-0.h'), /include depth exceeds 32/);
 
     assert.match(preprocess('int x = VALUE;', { VALUE: '7' }), /int x = 7;/);
     assert.match(preprocess('char *s = "VALUE";', { VALUE: '7' }), /"VALUE"/);

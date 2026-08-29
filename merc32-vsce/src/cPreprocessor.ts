@@ -81,7 +81,7 @@ export function preprocessCFile(entryFile: string, options: CPreprocessOptions =
         if (context.includeStack.includes(file)) {
             throw preprocessorError('include cycle detected', requestedAt);
         }
-        if (context.includeStack.length > context.maxIncludeDepth) {
+        if (context.includeStack.length >= context.maxIncludeDepth) {
             throw preprocessorError(`include depth exceeds ${context.maxIncludeDepth}`, requestedAt);
         }
         let source: string;
@@ -157,6 +157,7 @@ function processSource(
 
         if (!active) {
             emit('', location);
+            inBlockComment = advanceBlockCommentState(line, inBlockComment);
             index++;
             continue;
         }
