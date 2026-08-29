@@ -22,11 +22,25 @@
   "activationEvents": [
     "onLanguage:merc32-asm",
     "onLanguage:c",
+    "onCustomEditor:merc32.socConfigEditor",
+    "onView:merc32-toolchain.configurations",
+    "onView:merc32-toolchain.generate",
     "onView:merc32-toolchain.build",
+    "onView:merc32-toolchain.artifacts",
     "onCommand:merc32-asm.compile",
     "onCommand:merc32-asm.assembleActive",
     "onCommand:merc32-asm.compileCToAsm",
-    "onCommand:merc32-asm.buildCToRom"
+    "onCommand:merc32-asm.buildCToRom",
+    "onCommand:merc32.soc.createConfig",
+    "onCommand:merc32.soc.openConfig",
+    "onCommand:merc32.soc.autoAssign",
+    "onCommand:merc32.soc.validate",
+    "onCommand:merc32.soc.generate",
+    "onCommand:merc32.soc.forceGenerate",
+    "onCommand:merc32.soc.adoptOutput",
+    "onCommand:merc32.soc.openArtifact",
+    "onCommand:merc32.soc.reopenAsText",
+    "onCommand:merc32.soc.refresh"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -96,6 +110,56 @@
         "command": "merc32-asm.selectCompileMode",
         "title": "MERC32: Select Compile Mode",
         "icon": "$(chevron-down)"
+      },
+      {
+        "command": "merc32.soc.createConfig",
+        "title": "MERC32 SoC: Create Configuration",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "merc32.soc.openConfig",
+        "title": "MERC32 SoC: Open Configuration",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "merc32.soc.autoAssign",
+        "title": "MERC32 SoC: Auto-assign Addresses",
+        "icon": "$(symbol-ruler)"
+      },
+      {
+        "command": "merc32.soc.validate",
+        "title": "MERC32 SoC: Validate",
+        "icon": "$(check)"
+      },
+      {
+        "command": "merc32.soc.generate",
+        "title": "MERC32 SoC: Generate",
+        "icon": "$(play)"
+      },
+      {
+        "command": "merc32.soc.forceGenerate",
+        "title": "MERC32 SoC: Force Generate",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "merc32.soc.adoptOutput",
+        "title": "MERC32 SoC: Adopt Output",
+        "icon": "$(folder-active)"
+      },
+      {
+        "command": "merc32.soc.openArtifact",
+        "title": "MERC32 SoC: Open Artifact",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "merc32.soc.reopenAsText",
+        "title": "MERC32 SoC: Reopen as Text",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "merc32.soc.refresh",
+        "title": "MERC32 SoC: Refresh",
+        "icon": "$(refresh)"
       }
     ],
     "viewsContainers": {
@@ -110,11 +174,41 @@
     "views": {
       "merc32-toolchain": [
         {
+          "id": "merc32-toolchain.configurations",
+          "name": "SoC Configurations"
+        },
+        {
+          "id": "merc32-toolchain.generate",
+          "name": "Generate"
+        },
+        {
           "id": "merc32-toolchain.build",
           "name": "Toolchain"
+        },
+        {
+          "id": "merc32-toolchain.artifacts",
+          "name": "Artifacts"
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "merc32.socConfigEditor",
+        "displayName": "MERC32 SoC Configurator",
+        "selector": [
+          {
+            "filenamePattern": "*.merc32.json"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "jsonValidation": [
+      {
+        "fileMatch": "*.merc32.json",
+        "url": "./resources/schema/merc32.schema.json"
+      }
+    ],
     "menus": {
       "editor/title": [
         {
@@ -131,6 +225,45 @@
           "when": "resourceExtname == .asm",
           "command": "merc32-asm.selectCompileMode",
           "group": "navigation@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "merc32.soc.createConfig",
+          "when": "view == merc32-toolchain.configurations",
+          "group": "navigation@1"
+        },
+        {
+          "command": "merc32.soc.refresh",
+          "when": "view == merc32-toolchain.configurations",
+          "group": "navigation@2"
+        },
+        {
+          "command": "merc32.soc.refresh",
+          "when": "view == merc32-toolchain.artifacts",
+          "group": "navigation@1"
+        }
+      ],
+      "customEditor/title": [
+        {
+          "command": "merc32.soc.validate",
+          "when": "activeCustomEditorId == merc32.socConfigEditor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "merc32.soc.autoAssign",
+          "when": "activeCustomEditorId == merc32.socConfigEditor",
+          "group": "navigation@2"
+        },
+        {
+          "command": "merc32.soc.generate",
+          "when": "activeCustomEditorId == merc32.socConfigEditor",
+          "group": "navigation@3"
+        },
+        {
+          "command": "merc32.soc.forceGenerate",
+          "when": "activeCustomEditorId == merc32.socConfigEditor",
+          "group": "navigation@4"
         }
       ]
     },
@@ -198,6 +331,7 @@
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
+    "test:soc:vsce:unit": "npm run compile && node scripts/test-soc-vsce-unit.js",
     "test:soc:generator": "npm run compile && node scripts/test-soc-generator.js",
     "test:soc:rtl": "npm run compile && node scripts/test-soc-rtl.js",
     "test:soc": "npm run test:soc:config && node scripts/test-soc-generator.js && node scripts/test-soc-rtl.js && npm run test:vsix:deps",

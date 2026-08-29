@@ -16,3 +16,26 @@ export const COMMANDS = {
     openLastArtifact: 'merc32-asm.openLastArtifact',
     refreshExplorer: 'merc32-asm.refreshExplorer',
 } as const;
+
+export const SOC_CONFIG_SUFFIX = '.merc32.json';
+export const SOC_EDITOR_VIEW_TYPE = 'merc32.socConfigEditor';
+
+export const SOC_VIEW_IDS = {
+    configurations: 'merc32-toolchain.configurations',
+    generate: 'merc32-toolchain.generate',
+    build: 'merc32-toolchain.build',
+    artifacts: 'merc32-toolchain.artifacts',
+} as const;
+
+export const SOC_COMMANDS = {
+    createConfig: 'merc32.soc.createConfig',
+    openConfig: 'merc32.soc.openConfig',
+    autoAssign: 'merc32.soc.autoAssign',
+    validate: 'merc32.soc.validate',
+    generate: 'merc32.soc.generate',
+    forceGenerate: 'merc32.soc.forceGenerate',
+    adoptOutput: 'merc32.soc.adoptOutput',
+    openArtifact: 'merc32.soc.openArtifact',
+    reopenAsText: 'merc32.soc.reopenAsText',
+    refresh: 'merc32.soc.refresh',
+} as const;
