@@ -97,6 +97,20 @@ function assembleAndElaborate(name, config, catalog) {
     assert.strictEqual(result.stderr, '', `${name}: iverilog warnings:\n${result.stderr}`);
     assert.ok(fs.existsSync(outputFile), `${name}: iverilog produced no output`);
     console.log(`  ${name}: ${normalizedList.length} files via rtl/files.f`);
+    return { plan, rtlDirectory };
+}
+
+function assertRejectedBeforeEmission(name, config, catalog, code, expectedPath) {
+    const sourceFile = path.join(fixtureDirectory, `${name}.merc32.json`);
+    const parsed = parseSocConfig(`${JSON.stringify(config, null, 2)}\n`, sourceFile, catalog);
+    assert.ok(parsed.config, `${name} parse failed:\n${JSON.stringify(parsed.diagnostics, null, 2)}`);
+    const planned = planSoc(parsed.config, catalog);
+    assert.strictEqual(planned.plan, undefined, `${name} unexpectedly produced an RTL plan`);
+    assert.ok(planned.diagnostics.some((diagnostic) => diagnostic.code === code
+        && JSON.stringify(diagnostic.path) === JSON.stringify(expectedPath)),
+        `${name} missing ${code} at ${JSON.stringify(expectedPath)}:\n${JSON.stringify(planned.diagnostics, null, 2)}`);
+    assert.strictEqual(fs.existsSync(path.join(temporaryRoot, name)), false,
+        `${name} created RTL output before validation completed`);
 }
 
 function simulateStatefulRouter() {
@@ -230,6 +244,155 @@ endmodule
     console.log('  router_stateful_behavior: simulated');
 }
 
+function simulateExternalIrqReset(catalog) {
+    const config = {
+        schemaVersion: 1,
+        project: { name: 'irq_reset_soc', outputDir: 'generated/irq_reset_soc' },
+        cpu: { debug: false },
+        memory: {
+            ilb: { type: 'external_local_bus', size: '32KiB' },
+            dlb: { type: 'external_local_bus', size: '64KiB' },
+        },
+        peripherals: [{
+            type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+        }],
+        externalInterfaces: [],
+        interrupt: {
+            mode: 'controller', controller: 'intc0', sources: [
+                { source: 'external.active_low', id: 0, trigger: 'low' },
+                { source: 'external.rise', id: 1, trigger: 'rising' },
+                { source: 'external.fall', id: 2, trigger: 'falling' },
+                { source: 'external.high', id: 3, trigger: 'high' },
+            ],
+        },
+    };
+    const { rtlDirectory } = assembleAndElaborate('external_irq_reset', config, catalog);
+    fs.writeFileSync(path.join(rtlDirectory, 'irq_reset_tb.v'), `
+module irq_reset_tb;
+reg clk;
+reg rst_n;
+wire ilb_rden;
+wire ilb_wren;
+wire [12:0] ilb_addr;
+wire [3:0] ilb_strb;
+wire [31:0] ilb_wdata;
+reg [31:0] ilb_rdata;
+reg ilb_ack;
+wire dlb_rden;
+wire dlb_wren;
+wire [13:0] dlb_addr;
+wire [3:0] dlb_strb;
+wire [31:0] dlb_wdata;
+reg [31:0] dlb_rdata;
+reg dlb_ack;
+reg external_active_low;
+reg external_rise;
+reg external_fall;
+reg external_high;
+
+irq_reset_soc dut (
+    .clk(clk), .rst_n(rst_n),
+    .ilb_rden(ilb_rden), .ilb_wren(ilb_wren), .ilb_addr(ilb_addr),
+    .ilb_strb(ilb_strb), .ilb_wdata(ilb_wdata),
+    .ilb_rdata(ilb_rdata), .ilb_ack(ilb_ack),
+    .dlb_rden(dlb_rden), .dlb_wren(dlb_wren), .dlb_addr(dlb_addr),
+    .dlb_strb(dlb_strb), .dlb_wdata(dlb_wdata),
+    .dlb_rdata(dlb_rdata), .dlb_ack(dlb_ack),
+    .external_active_low(external_active_low),
+    .external_rise(external_rise),
+    .external_fall(external_fall),
+    .external_high(external_high)
+);
+
+always #5 clk = ~clk;
+
+task expect_sources;
+    input [3:0] expected;
+    begin
+        if (dut.intc0_irq_sources !== expected) begin
+            $display("IRQ SOURCE FAIL expected=%b actual=%b", expected, dut.intc0_irq_sources);
+            $finish(1);
+        end
+    end
+endtask
+
+initial begin
+    clk = 1'b0;
+    rst_n = 1'b0;
+    ilb_rdata = 32'b0;
+    ilb_ack = 1'b0;
+    dlb_rdata = 32'b0;
+    dlb_ack = 1'b0;
+    external_active_low = 1'b1;
+    external_rise = 1'b1;
+    external_fall = 1'b0;
+    external_high = 1'b0;
+
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0101);
+    @(negedge clk);
+    rst_n = 1'b1;
+    repeat (4) begin
+        @(posedge clk);
+        #1 expect_sources(4'b0101);
+    end
+
+    @(negedge clk);
+    external_active_low = 1'b0;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0100);
+    @(negedge clk);
+    external_active_low = 1'b1;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0101);
+
+    @(negedge clk);
+    external_rise = 1'b0;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0101);
+    @(negedge clk);
+    external_rise = 1'b1;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0111);
+    @(negedge clk);
+    external_rise = 1'b0;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0101);
+
+    @(negedge clk);
+    external_fall = 1'b1;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0101);
+    @(negedge clk);
+    external_fall = 1'b0;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b0001);
+
+    @(negedge clk);
+    external_high = 1'b1;
+    repeat (3) @(posedge clk);
+    #1 expect_sources(4'b1001);
+
+    $display("external_irq_reset_behavior: PASS");
+    $finish;
+end
+endmodule
+`);
+    const compile = spawnSync('iverilog', [
+        '-Wall', '-Wno-timescale', '-g2005', '-s', 'irq_reset_tb',
+        '-o', 'irq_reset.vvp', '-f', 'files.f', 'irq_reset_tb.v',
+    ], { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(compile.status, 0,
+        `external IRQ reset compile failed:\n${compile.stdout}\n${compile.stderr}`);
+    assert.strictEqual(compile.stderr, '', `external IRQ reset warnings:\n${compile.stderr}`);
+    const simulation = spawnSync('vvp', ['irq_reset.vvp'],
+        { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(simulation.status, 0,
+        `external IRQ reset simulation failed:\n${simulation.stdout}\n${simulation.stderr}`);
+    assert.match(simulation.stdout, /external_irq_reset_behavior: PASS/);
+    console.log('  external_irq_reset_behavior: simulated');
+}
+
 try {
     fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
         path.join(catalogRoot, 'catalog'), { recursive: true });
@@ -269,6 +432,87 @@ try {
     const debugOff = withProject(clone(multi), 'debug_disabled');
     debugOff.cpu.debug = false;
 
+    const nearCollisions = clone(minimal);
+    nearCollisions.project = { name: 'module_soc', outputDir: 'generated/module_soc' };
+    nearCollisions.peripherals = [{
+        type: 'apb_intc', name: 'cpu0', baseAddress: '0x10000000',
+    }];
+    nearCollisions.externalInterfaces = [{
+        type: 'local_bus', name: 'm0', baseAddress: '0x10001000',
+        windowSize: '4KiB', addressWidth: 32,
+    }];
+    nearCollisions.interrupt = {
+        mode: 'controller', controller: 'cpu0', sources: [
+            { source: 'external.foo', id: 0, trigger: 'high' },
+            { source: 'external.foo_sync0', id: 1, trigger: 'low' },
+        ],
+    };
+
+    const reservedProject = clone(minimal);
+    reservedProject.project.name = 'module';
+    assertRejectedBeforeEmission('reserved_project_name', reservedProject, catalog,
+        'SOC_VERILOG_RESERVED', ['project', 'name']);
+
+    const packagedModuleProject = clone(minimal);
+    packagedModuleProject.project.name = 'MERC32_top';
+    assertRejectedBeforeEmission('packaged_module_project_name', packagedModuleProject, catalog,
+        'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
+
+    const routerMasterCollision = clone(minimal);
+    routerMasterCollision.externalInterfaces = [{
+        type: 'local_bus', name: 'm', baseAddress: '0x10000000',
+        windowSize: '4KiB', addressWidth: 32,
+    }];
+    assertRejectedBeforeEmission('router_master_symbol_collision', routerMasterCollision, catalog,
+        'SOC_VERILOG_SYMBOL_COLLISION', ['externalInterfaces', 0, 'name']);
+
+    const cpuInstanceCollision = clone(minimal);
+    cpuInstanceCollision.peripherals = [{
+        type: 'apb_uart', name: 'cpu', baseAddress: '0x10000000',
+    }];
+    assertRejectedBeforeEmission('cpu_instance_symbol_collision', cpuInstanceCollision, catalog,
+        'SOC_VERILOG_SYMBOL_COLLISION', ['peripherals', 0, 'name']);
+
+    const synchronizerCollision = clone(minimal);
+    synchronizerCollision.peripherals = [{
+        type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+    }];
+    synchronizerCollision.interrupt = {
+        mode: 'controller', controller: 'intc0', sources: [
+            { source: 'external.foo', id: 0, trigger: 'high' },
+            { source: 'external.foo_sync', id: 1, trigger: 'low' },
+        ],
+    };
+    assertRejectedBeforeEmission('synchronizer_symbol_collision', synchronizerCollision, catalog,
+        'SOC_VERILOG_SYMBOL_COLLISION', ['interrupt', 'sources', 1, 'source']);
+
+    const generatedModuleDescriptors = new Map(catalog.modules);
+    generatedModuleDescriptors.set('collision_fixture', {
+        ...catalog.modules.get('apb_uart'),
+        type: 'collision_fixture',
+        module: 'minimal_soc_plb_router',
+    });
+    generatedModuleDescriptors.set('apb_collision_fixture', {
+        ...catalog.modules.get('apb_uart'),
+        type: 'apb_collision_fixture',
+        module: 'generated_apb_soc_apb_interconnect',
+    });
+    const generatedModuleCatalog = {
+        modules: generatedModuleDescriptors,
+        protocols: catalog.protocols,
+    };
+    assertRejectedBeforeEmission('generated_module_name_collision', minimal,
+        generatedModuleCatalog, 'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
+
+    const generatedApbNameCollision = clone(minimal);
+    generatedApbNameCollision.project.name = 'generated_apb_soc';
+    generatedApbNameCollision.peripherals = [{
+        type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000',
+    }];
+    assertRejectedBeforeEmission('generated_apb_module_name_collision',
+        generatedApbNameCollision, generatedModuleCatalog,
+        'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
+
     const matrix = [
         ['minimal_external_memory_no_irq', withProject(clone(minimal), 'minimal_external_memory_no_irq')],
         ['internal_memories', internal],
@@ -278,12 +522,14 @@ try {
         ['downstream_address_widths', widths],
         ['debug_disabled', debugOff],
         ['all_bundled_peripherals', all],
+        ['collision_adjacent_names', nearCollisions],
     ];
     console.log('MERC32 generated RTL matrix:');
     for (const [name, config] of matrix) {
         assembleAndElaborate(name, config, catalog);
     }
     simulateStatefulRouter();
+    simulateExternalIrqReset(catalog);
     console.log('MERC32 generated RTL matrix passed.');
 } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true });

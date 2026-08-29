@@ -315,6 +315,85 @@ const badProjectName = clone(minimal);
 badProjectName.project.name = '1soc';
 assertDiagnostic(diagnosticsFor(badProjectName), 'SOC_IDENTIFIER', ['project', 'name']);
 
+for (const reservedWord of ['module', 'wire', 'always', 'generate', 'uwire']) {
+    const reservedProjectName = clone(minimal);
+    reservedProjectName.project.name = reservedWord;
+    assertDiagnostic(diagnosticsFor(reservedProjectName), 'SOC_VERILOG_RESERVED',
+        ['project', 'name']);
+    assert.strictEqual(planSoc(reservedProjectName, catalog).plan, undefined);
+}
+
+for (const packagedModuleName of ['MERC32_top', 'apb_uart', 'lb2apb']) {
+    const collidingProject = clone(minimal);
+    collidingProject.project.name = packagedModuleName;
+    assertDiagnostic(diagnosticsFor(collidingProject), 'SOC_VERILOG_MODULE_COLLISION',
+        ['project', 'name']);
+    assert.strictEqual(planSoc(collidingProject, catalog).plan, undefined);
+}
+
+for (const legalProjectName of ['module_soc', 'MERC32_topper', 'wireless']) {
+    const legalProject = clone(minimal);
+    legalProject.project.name = legalProjectName;
+    assert.strictEqual(withoutWarnings(diagnosticsFor(legalProject)).length, 0,
+        `${legalProjectName} should remain a legal project module name`);
+}
+
+const routerMasterCollision = clone(minimal);
+routerMasterCollision.externalInterfaces = [{
+    type: 'local_bus', name: 'm', baseAddress: '0x10000000',
+    windowSize: '4KiB', addressWidth: 32,
+}];
+assertDiagnostic(diagnosticsFor(routerMasterCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
+    ['externalInterfaces', 0, 'name']);
+assert.strictEqual(planSoc(routerMasterCollision, catalog).plan, undefined);
+
+const cpuInstanceCollision = clone(minimal);
+cpuInstanceCollision.peripherals = [{
+    type: 'apb_uart', name: 'cpu', baseAddress: '0x10000000',
+}];
+assertDiagnostic(diagnosticsFor(cpuInstanceCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
+    ['peripherals', 0, 'name']);
+assert.strictEqual(planSoc(cpuInstanceCollision, catalog).plan, undefined);
+
+const synchronizerCollision = clone(minimal);
+synchronizerCollision.peripherals = [{
+    type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
+}];
+synchronizerCollision.interrupt = {
+    mode: 'controller', controller: 'intc0', sources: [
+        { source: 'external.foo', id: 0, trigger: 'high' },
+        { source: 'external.foo_sync', id: 1, trigger: 'low' },
+    ],
+};
+assertDiagnostic(diagnosticsFor(synchronizerCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
+    ['interrupt', 'sources', 1, 'source']);
+assert.strictEqual(planSoc(synchronizerCollision, catalog).plan, undefined);
+
+const generatedNameModules = new Map(catalog.modules);
+generatedNameModules.set('collision_fixture', {
+    ...validModule,
+    type: 'collision_fixture',
+    module: 'minimal_soc_plb_router',
+});
+generatedNameModules.set('apb_collision_fixture', {
+    ...validModule,
+    type: 'apb_collision_fixture',
+    module: 'generated_apb_soc_apb_interconnect',
+});
+const generatedNameCatalog = { modules: generatedNameModules, protocols: catalog.protocols };
+assertDiagnostic(validateSocConfig(minimal, generatedNameCatalog),
+    'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
+assert.strictEqual(planSoc(minimal, generatedNameCatalog).plan, undefined);
+
+const generatedApbNameCollision = clone(minimal);
+generatedApbNameCollision.project.name = 'generated_apb_soc';
+generatedApbNameCollision.peripherals = [{
+    type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000',
+}];
+assertDiagnostic(validateSocConfig(generatedApbNameCollision, generatedNameCatalog),
+    'SOC_VERILOG_MODULE_COLLISION', ['project', 'name']);
+assert.strictEqual(planSoc(generatedApbNameCollision, generatedNameCatalog).plan, undefined);
+
 for (const outputDir of [
     '', '.', '..', '../outside', 'generated/../outside',
     'C:escape', 'C:\\escape', '\\\\server\\share\\escape', '\\rooted', '/rooted',

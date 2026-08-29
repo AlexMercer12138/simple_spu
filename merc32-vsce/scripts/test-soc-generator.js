@@ -60,6 +60,10 @@ try {
     assert.match(top, /\.IRQ_MODE\s*\(64'he4\)/);
     assert.match(top, /reg external_wake_meta/);
     assert.match(top, /reg external_wake_sync/);
+    assert.match(top, /reg \[1:0\] external_wake_history_valid/);
+    assert.match(top, /reg external_wake_conditioned/);
+    assert.match(top, /reg external_wake_armed/);
+    assert.match(top, /intc0_irq_sources\[3\] = external_wake_conditioned/);
     assert.match(top, /\.interrupt\s*\(intc0_interrupt\)/);
     assert.match(router, /32'h2000_0000/);
     assert.match(router, /active_endpoint/);

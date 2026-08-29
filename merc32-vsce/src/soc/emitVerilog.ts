@@ -255,23 +255,57 @@ function emitExternalInterruptSynchronizers(writer: VerilogWriter, plan: SocPlan
     if (plan.interrupt.mode !== 'controller') {
         return;
     }
-    const externalSources = [...new Set(plan.interrupt.sources
-        .filter((source) => source.topPort !== undefined)
-        .map((source) => source.topPort!))].sort();
-    for (const port of externalSources) {
+    const externalSources = plan.interrupt.sources
+        .filter((source): source is typeof source & { topPort: string } => source.topPort !== undefined)
+        .sort((left, right) => left.topPort.localeCompare(right.topPort));
+    for (const source of externalSources) {
+        const port = source.topPort;
+        const inactive = source.trigger === 'low' || source.trigger === 'falling'
+            ? "1'b1"
+            : "1'b0";
         writer.line(`reg ${port}_meta;`);
         writer.line(`reg ${port}_sync;`);
+        writer.line(`reg [1:0] ${port}_history_valid;`);
         writer.block('always @(posedge clk) begin', () => {
             writer.block('if (!rst_n) begin', () => {
                 writer.line(`${port}_meta <= 1'b0;`);
                 writer.line(`${port}_sync <= 1'b0;`);
+                writer.line(`${port}_history_valid <= 2'b00;`);
             }, 'end else begin');
             writer.indent(() => {
                 writer.line(`${port}_meta <= ${port};`);
                 writer.line(`${port}_sync <= ${port}_meta;`);
+                writer.line(`${port}_history_valid <= {${port}_history_valid[0], 1'b1};`);
             });
             writer.line('end');
         });
+        if (source.trigger === 'rising' || source.trigger === 'falling') {
+            writer.line(`reg ${port}_conditioned;`);
+            writer.line(`reg ${port}_armed;`);
+            writer.block('always @(posedge clk) begin', () => {
+                writer.block('if (!rst_n) begin', () => {
+                    writer.line(`${port}_conditioned <= ${inactive};`);
+                    writer.line(`${port}_armed <= 1'b0;`);
+                }, `end else if (!${port}_history_valid[1]) begin`);
+                writer.indent(() => {
+                    writer.line(`${port}_conditioned <= ${inactive};`);
+                    writer.line(`${port}_armed <= 1'b0;`);
+                });
+                writer.block(`end else if (!${port}_armed) begin`, () => {
+                    writer.line(`${port}_conditioned <= ${inactive};`);
+                    writer.block(`if (${port}_sync == ${inactive}) begin`, () => {
+                        writer.line(`${port}_armed <= 1'b1;`);
+                    });
+                }, 'end else begin');
+                writer.indent(() => {
+                    writer.line(`${port}_conditioned <= ${port}_sync;`);
+                });
+                writer.line('end');
+            });
+        } else {
+            writer.line(`wire ${port}_conditioned;`);
+            writer.line(`assign ${port}_conditioned = ${port}_history_valid[1] ? ${port}_sync : ${inactive};`);
+        }
         writer.line();
     }
 }
@@ -491,7 +525,7 @@ function cpuInterruptSignal(plan: SocPlan): string {
 
 function interruptSourceSignal(source: string, topPort: string | undefined, synchronized: boolean): string {
     if (topPort !== undefined) {
-        return synchronized ? `${topPort}_sync` : topPort;
+        return synchronized ? `${topPort}_conditioned` : topPort;
     }
     const match = /^([A-Za-z_][A-Za-z0-9_]*)\.interrupt$/.exec(source);
     if (match === null) {

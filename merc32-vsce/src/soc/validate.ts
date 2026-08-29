@@ -16,6 +16,30 @@ const PLB_BASE = 0x10000000n;
 const MAX_U32 = 0xffffffffn;
 const MAX_MEMORY_BYTES = 1n << 27n;
 const IRQ_TRIGGERS = new Set(['high', 'low', 'rising', 'falling']);
+const VERILOG_RESERVED_WORDS = new Set([
+    'always', 'and', 'assign', 'automatic', 'begin', 'buf', 'bufif0', 'bufif1',
+    'case', 'casex', 'casez', 'cell', 'cmos', 'config', 'deassign', 'default',
+    'defparam', 'design', 'disable', 'edge', 'else', 'end', 'endcase',
+    'endconfig', 'endfunction', 'endgenerate', 'endmodule', 'endprimitive',
+    'endspecify', 'endtable', 'endtask', 'event', 'for', 'force', 'forever',
+    'fork', 'function', 'generate', 'genvar', 'highz0', 'highz1', 'if',
+    'ifnone', 'incdir', 'include', 'initial', 'inout', 'input', 'instance',
+    'integer', 'join', 'large', 'liblist', 'library', 'localparam',
+    'macromodule', 'medium', 'module', 'nand', 'negedge', 'nmos', 'nor',
+    'noshowcancelled', 'not', 'notif0', 'notif1', 'or', 'output', 'parameter',
+    'pmos', 'posedge', 'primitive', 'pull0', 'pull1', 'pulldown', 'pullup',
+    'pulsestyle_ondetect', 'pulsestyle_onevent', 'rcmos', 'real', 'realtime',
+    'reg', 'release', 'repeat', 'rnmos', 'rpmos', 'rtran', 'rtranif0',
+    'rtranif1', 'scalared', 'showcancelled', 'signed', 'small', 'specify',
+    'specparam', 'strong0', 'strong1', 'supply0', 'supply1', 'table', 'task',
+    'time', 'tran', 'tranif0', 'tranif1', 'tri', 'tri0', 'tri1', 'triand',
+    'trior', 'trireg', 'unsigned', 'use', 'uwire', 'vectored', 'wait', 'wand', 'weak0',
+    'weak1', 'while', 'wire', 'wor', 'xnor', 'xor',
+]);
+const FIXED_PACKAGED_MODULES = new Set([
+    'MERC32_top', 'merc32_core', 'div', 'mul', 'jtag_debug', 'spram',
+    'lb2apb', 'lb2axi_lite', 'lb2wbc', 'lb2avalon', 'lb2drp',
+]);
 
 interface PeripheralRecord {
     source: PeripheralSource;
@@ -44,7 +68,11 @@ export function validateSocConfig(
         diagnostics.push({ severity, code, path: [...path], message });
     };
 
-    validateIdentifier(config.project?.name, ['project', 'name'], 'project name', add);
+    const projectNameValid = validateIdentifier(
+        config.project?.name, ['project', 'name'], 'project name', add);
+    if (projectNameValid) {
+        validateGeneratedModuleNames(config, catalog, add);
+    }
     if (!isSafeOutputDirectory(config.project?.outputDir)) {
         add('SOC_PROJECT_OUTPUT', ['project', 'outputDir'],
             'Project outputDir must be a non-empty relative path without a root, drive, dot, or parent segment.');
@@ -217,7 +245,209 @@ export function validateSocConfig(
         recordTopPort,
         add,
     );
+    validateGeneratedVerilogSymbols(config, catalog, add);
     return diagnostics;
+}
+
+function validateGeneratedModuleNames(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+    add: DiagnosticAdder,
+): void {
+    const projectName = config.project.name;
+    if (VERILOG_RESERVED_WORDS.has(projectName)) {
+        add('SOC_VERILOG_RESERVED', ['project', 'name'],
+            `Project module name ${projectName} is a Verilog-2005 reserved word.`);
+        return;
+    }
+    const packagedModules = new Set(FIXED_PACKAGED_MODULES);
+    for (const descriptor of catalog.modules.values()) {
+        packagedModules.add(descriptor.module);
+    }
+    const generatedModules = [projectName, `${projectName}_plb_router`];
+    if ((config.peripherals?.length ?? 0) > 0) {
+        generatedModules.push(`${projectName}_apb_interconnect`);
+    }
+    const collision = generatedModules.find((name) => packagedModules.has(name));
+    if (collision !== undefined) {
+        add('SOC_VERILOG_MODULE_COLLISION', ['project', 'name'],
+            `Generated module name ${collision} collides with a packaged RTL module.`);
+    }
+}
+
+function validateGeneratedVerilogSymbols(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+    add: DiagnosticAdder,
+): void {
+    type ScopeName = 'top' | 'router' | 'APB interconnect';
+    const scopes: Record<ScopeName, Map<string, string>> = {
+        top: new Map(),
+        router: new Map(),
+        'APB interconnect': new Map(),
+    };
+    const reportedPaths = new Set<string>();
+    const reserve = (scope: ScopeName, names: readonly string[]): void => {
+        for (const name of names) {
+            scopes[scope].set(name, 'internal generator symbol');
+        }
+    };
+    const record = (
+        scope: ScopeName,
+        names: readonly string[],
+        sourcePath: readonly (string | number)[],
+    ): void => {
+        const pathKey = JSON.stringify(sourcePath);
+        for (const name of names) {
+            const existing = scopes[scope].get(name);
+            if (existing !== undefined && !reportedPaths.has(pathKey)) {
+                add('SOC_VERILOG_SYMBOL_COLLISION', sourcePath,
+                    `Generated Verilog symbol ${name} collides in the ${scope} module.`);
+                reportedPaths.add(pathKey);
+            } else if (existing === undefined) {
+                scopes[scope].set(name, pathKey);
+            }
+        }
+    };
+
+    reserve('top', [
+        'clk', 'rst_n', 'cpu_inst', 'plb_router_inst',
+        'cpu_ilb_rden', 'cpu_ilb_wren', 'cpu_ilb_addr', 'cpu_ilb_strb',
+        'cpu_ilb_wdata', 'cpu_ilb_rdata', 'cpu_ilb_ack',
+        'cpu_dlb_rden', 'cpu_dlb_wren', 'cpu_dlb_addr', 'cpu_dlb_strb',
+        'cpu_dlb_wdata', 'cpu_dlb_rdata', 'cpu_dlb_ack',
+        'cpu_plb_rden', 'cpu_plb_wren', 'cpu_plb_addr', 'cpu_plb_strb',
+        'cpu_plb_wdata', 'cpu_plb_rdata', 'cpu_plb_ack',
+    ]);
+    if (config.cpu?.debug ?? false) {
+        reserve('top', ['tck', 'tms', 'tdi', 'tdo']);
+    } else {
+        reserve('top', ['cpu_tdo_unused']);
+    }
+    for (const prefix of ['ilb', 'dlb'] as const) {
+        if (config.memory?.[prefix]?.type === 'internal_ram') {
+            reserve('top', [`${prefix.toUpperCase()}_INIT_FILE`, `${prefix}_ram_inst`]);
+        } else {
+            reserve('top', [
+                `${prefix}_rden`, `${prefix}_wren`, `${prefix}_addr`,
+                `${prefix}_strb`, `${prefix}_wdata`, `${prefix}_rdata`, `${prefix}_ack`,
+            ]);
+        }
+    }
+    if ((config.peripherals?.length ?? 0) > 0) {
+        reserve('top', [
+            'builtin_apb_lb_rden', 'builtin_apb_lb_wren',
+            'builtin_apb_lb_rdata', 'builtin_apb_lb_valid',
+            'builtin_apb_psel', 'builtin_apb_penable', 'builtin_apb_paddr',
+            'builtin_apb_pwrite', 'builtin_apb_pwdata', 'builtin_apb_pstrb',
+            'builtin_apb_prdata', 'builtin_apb_pready',
+            'builtin_apb_bridge_inst', 'apb_interconnect_inst',
+        ]);
+    }
+    reserve('router', [
+        'clk', 'rst_n', 'm_rden', 'm_wren', 'm_addr', 'm_strb', 'm_wdata',
+        'm_rdata', 'm_ack', 'ACTIVE_WIDTH', 'ENDPOINT_NONE', 'active_endpoint',
+        'decoded_endpoint', 'response_rdata', 'response_ack', 'start_request',
+    ]);
+    reserve('APB interconnect', [
+        'm_psel', 'm_penable', 'm_paddr', 'm_prdata', 'm_pready',
+        'response_rdata', 'response_ready',
+    ]);
+
+    const recordEndpointSymbols = (
+        name: unknown,
+        sourcePath: readonly (string | number)[],
+    ): void => {
+        if (typeof name !== 'string' || !IDENTIFIER.test(name)) {
+            return;
+        }
+        record('top', [
+            `${name}_router_rden`, `${name}_router_wren`, `${name}_router_addr`,
+            `${name}_router_strb`, `${name}_router_wdata`, `${name}_router_rdata`,
+            `${name}_router_ack`,
+        ], sourcePath);
+        record('router', [
+            `${name}_rden`, `${name}_wren`, `${name}_addr`, `${name}_strb`,
+            `${name}_wdata`, `${name}_rdata`, `${name}_ack`,
+            `ENDPOINT_TARGET_${name.toUpperCase()}`,
+        ], sourcePath);
+    };
+
+    for (let index = 0; index < (config.peripherals?.length ?? 0); index += 1) {
+        const peripheral = config.peripherals[index];
+        const sourcePath: readonly (string | number)[] = ['peripherals', index, 'name'];
+        if (typeof peripheral.name !== 'string' || !IDENTIFIER.test(peripheral.name)) {
+            continue;
+        }
+        const name = peripheral.name;
+        recordEndpointSymbols(name, sourcePath);
+        record('top', [
+            `${name}_psel`, `${name}_pready`, `${name}_pslverr`,
+            `${name}_prdata`, `${name}_interrupt`, `${name}_inst`,
+        ], sourcePath);
+        record('APB interconnect', [
+            `${name}_psel`, `${name}_prdata`, `${name}_pready`,
+        ], sourcePath);
+        const descriptor = catalog.modules.get(peripheral.type);
+        if (descriptor !== undefined) {
+            record('top', descriptor.ports.map((port) => `${name}_${port.name}`), sourcePath);
+            if (descriptor.type === 'apb_intc') {
+                record('top', [`${name}_irq_sources`], sourcePath);
+            }
+        }
+    }
+
+    for (let index = 0; index < (config.externalInterfaces?.length ?? 0); index += 1) {
+        const endpoint = config.externalInterfaces[index];
+        const sourcePath: readonly (string | number)[] = ['externalInterfaces', index, 'name'];
+        if (typeof endpoint.name !== 'string' || !IDENTIFIER.test(endpoint.name)) {
+            continue;
+        }
+        const name = endpoint.name;
+        recordEndpointSymbols(name, sourcePath);
+        const protocol = catalog.protocols.get(endpoint.type);
+        if (protocol !== undefined) {
+            record('top', protocol.ports.map((port) => `${name}_${port.name}`), sourcePath);
+        }
+        if (endpoint.type !== 'local_bus') {
+            record('top', [
+                `${name}_bridge_rdata`, `${name}_bridge_valid`, `${name}_inst`,
+            ], sourcePath);
+        }
+    }
+
+    const interrupt = config.interrupt;
+    const sources = interrupt?.mode === 'direct'
+        ? [{ source: interrupt.source, trigger: undefined, path: ['interrupt', 'source'] as const }]
+        : interrupt?.mode === 'controller'
+            ? (interrupt.sources ?? []).map((source, index) => ({
+                source: source.source,
+                trigger: source.trigger,
+                path: ['interrupt', 'sources', index, 'source'] as const,
+            }))
+            : [];
+    const externalPorts = new Set<string>();
+    for (const source of sources) {
+        const match = typeof source.source === 'string'
+            ? /^external\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.source)
+            : null;
+        if (match === null || externalPorts.has(match[1])) {
+            continue;
+        }
+        externalPorts.add(match[1]);
+        const port = `external_${match[1]}`;
+        record('top', [port], source.path);
+        if (interrupt.mode === 'controller') {
+            const names = [
+                `${port}_meta`, `${port}_sync`, `${port}_history_valid`,
+                `${port}_conditioned`,
+            ];
+            if (source.trigger === 'rising' || source.trigger === 'falling') {
+                names.push(`${port}_armed`);
+            }
+            record('top', names, source.path);
+        }
+    }
 }
 
 function validateIdentifier(
