@@ -288,6 +288,28 @@ mov r0, 1           // 行尾注释
 
 `src/cCompiler` 实现了一个 C 语言子集编译器，可将 `.c` 源码编译为 MERC32 汇编，再由内置汇编器输出 ROM。
 
+### Tiny C 预处理
+
+文件编译会先运行一个最小化预处理器。它支持：
+
+- 相对于包含文件解析的引号包含：`#include "path/to/header.h"`
+- 对象式 `#define` 和 `#undef`
+- `#if`、`#ifdef`、`#ifndef`、`#else` 和 `#endif` 条件编译
+- 常规包含守卫，以及原始源文件、行和列的错误诊断
+
+例如，头文件可只用受支持的指令编写包含守卫：
+
+```c
+#ifndef BOARD_REGS_H
+#define BOARD_REGS_H
+
+#define UART0_BASE 0x10000000
+
+#endif
+```
+
+这不是完整的 C 预处理器。函数式宏、尖括号/系统头文件、记号粘贴、字符串化、可变参数宏和标准库均不受支持。
+
 ### 支持的 C 子集
 
 | 类别 | 支持内容 |
@@ -355,7 +377,7 @@ Tiny C 是面向 MERC32 裸机程序的明确子集，并非完整的标准 C �
 - `struct`、`union`、`enum` 及其初始化，`long` 和浮点类型
 - 通用标量花括号初始化、数组参数语法和 `void *`
 - `const`、只读存储区和运行时写保护
-- `sizeof`、`typedef`、预处理器、标准库和运行时库
+- `sizeof`、`typedef` 和运行时库
 - 整数字面量类型后缀（例如 `U`、`L`、`UL`）
 - `switch` 跳转表优化；当前固定使用顺序比较
 

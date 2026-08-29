@@ -72,7 +72,7 @@ MERC32/
 **Local Bus 接口**
 
 `MERC32_top` 固定提供三组 Local Bus。ILB 和 DLB 可直接连接 `spram.v`
-或 FPGA RAM IP；PLB 用于连接外设。协议桥由生成的 SoC 在 CPU 包装器之外实例化。
+或 FPGA RAM IP；PLB 用于连接外设。协议桥应在 CPU 包装器之外实现。
 
 | ILB 信号 | 方向 | 位宽 | 描述 |
 |----------|------|------|------|
@@ -106,6 +106,11 @@ MERC32/
 ## 🛠️ VSCode 工具链扩展
 
 项目提供 `merc32-vsce` VSCode 扩展，集成了 MERC32 汇编器与 Tiny C 编译器，并通过活动栏侧边栏组织构建命令与产物。打开 `.asm` / `.c` 文件时，扩展会提供语法高亮、代码片段以及右上角的一键编译按钮，支持正常、打印、调试三种编译模式，并可将结果输出为 Verilog、COE、MIF、Intel HEX、Binary 或 `$readmemh` 内存文件。
+
+Tiny C 在文件编译前会处理相对路径的引号 `#include`、对象式 `#define`/
+`#undef` 和 `#if`、`#ifdef`、`#ifndef`、`#else`、`#endif` 条件指令；包含守卫可使用
+这组指令。诊断会定位到原始源文件、行和列。完整的支持范围与限制见
+[merc32-vsce/README.md](merc32-vsce/README.md#tiny-c-compiler)。
 
 详细安装、使用方法与配置项见 [merc32-vsce/README.md](merc32-vsce/README.md)。
 
