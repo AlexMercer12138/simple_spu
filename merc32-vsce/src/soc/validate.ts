@@ -249,7 +249,7 @@ function validateMemory(
 ): void {
     try {
         const size = parseByteSize(value as number | string);
-        if (size < 4n || size > MAX_MEMORY_BYTES || size % 4n !== 0n || !isPowerOfTwo(size)) {
+        if (size < 8n || size > MAX_MEMORY_BYTES || size % 4n !== 0n || !isPowerOfTwo(size)) {
             throw new RangeError('invalid memory size');
         }
         const wordCount = size / 4n;
@@ -258,7 +258,7 @@ function validateMemory(
         }
     } catch {
         add('SOC_MEMORY_SIZE', path,
-            'Memory size must be a power of two, divisible by four, and no larger than 128 MiB.');
+            'Memory size must be a power of two from 8 bytes through 128 MiB.');
     }
 }
 

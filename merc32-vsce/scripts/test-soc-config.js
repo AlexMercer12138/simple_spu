@@ -339,15 +339,38 @@ macroCollision.peripherals[1].name = 'UART0';
 assertDiagnostic(diagnosticsFor(macroCollision), 'SOC_MACRO_COLLISION',
     ['peripherals', 1, 'name']);
 
-for (const size of [2, 6, '129MiB', 'not-a-size']) {
+for (const size of [2, 4, 6, '129MiB', 'not-a-size']) {
     const badMemory = clone(minimal);
     badMemory.memory.ilb.size = size;
     assertDiagnostic(diagnosticsFor(badMemory), 'SOC_MEMORY_SIZE', ['memory', 'ilb', 'size']);
 }
+const oneWordMemories = clone(minimal);
+oneWordMemories.memory.ilb = { type: 'internal_ram', size: 4 };
+oneWordMemories.memory.dlb = { type: 'external_local_bus', size: 4 };
+assertDiagnostic(diagnosticsFor(oneWordMemories), 'SOC_MEMORY_SIZE', ['memory', 'ilb', 'size']);
+assertDiagnostic(diagnosticsFor(oneWordMemories), 'SOC_MEMORY_SIZE', ['memory', 'dlb', 'size']);
+const oneWordPlanResult = planSoc(oneWordMemories, catalog);
+assert.strictEqual(oneWordPlanResult.plan, undefined);
+assertDiagnostic(oneWordPlanResult.diagnostics, 'SOC_MEMORY_SIZE', ['memory', 'ilb', 'size']);
+assertDiagnostic(oneWordPlanResult.diagnostics, 'SOC_MEMORY_SIZE', ['memory', 'dlb', 'size']);
+
+const minimumMemories = clone(minimal);
+minimumMemories.memory.ilb = { type: 'internal_ram', size: 8 };
+minimumMemories.memory.dlb = { type: 'external_local_bus', size: 8 };
+const minimumMemoryPlan = planSoc(minimumMemories, catalog).plan;
+assert.ok(minimumMemoryPlan);
+assert.strictEqual(minimumMemoryPlan.memory.ilb.wordAddressWidth, 1);
+assert.strictEqual(minimumMemoryPlan.memory.dlb.wordAddressWidth, 1);
+
 const maximumMemory = clone(minimal);
-maximumMemory.memory.ilb.size = '128MiB';
+maximumMemory.memory.ilb = { type: 'internal_ram', size: '128MiB' };
+maximumMemory.memory.dlb = { type: 'external_local_bus', size: '128MiB' };
 assert.strictEqual(diagnosticsFor(maximumMemory)
     .some((item) => item.code === 'SOC_MEMORY_SIZE'), false);
+const maximumMemoryPlan = planSoc(maximumMemory, catalog).plan;
+assert.ok(maximumMemoryPlan);
+assert.strictEqual(maximumMemoryPlan.memory.ilb.wordAddressWidth, 25);
+assert.strictEqual(maximumMemoryPlan.memory.dlb.wordAddressWidth, 25);
 
 const unknownModule = clone(multi);
 unknownModule.peripherals[0].type = 'missing_module';
