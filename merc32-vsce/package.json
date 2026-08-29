@@ -196,6 +196,8 @@
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
+    "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
+    "test:soc": "npm run test:soc:config",
     "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"
   }
