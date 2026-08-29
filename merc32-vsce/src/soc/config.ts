@@ -1,4 +1,5 @@
 import Ajv, { ErrorObject, ValidateFunction } from 'ajv';
+import * as path from 'path';
 import {
     findNodeAtLocation,
     getLocation,
@@ -15,6 +16,7 @@ import {
     SocJsonRange,
     SocSourceConfig,
     SocSourceMap,
+    SOC_SOURCE_FILE,
 } from './model';
 import { generateSocSchema } from './schema';
 import { validateSocConfig } from './validate';
@@ -99,11 +101,21 @@ export function parseSocConfig(
     }
 
     const config = value as SocSourceConfig;
+    Object.defineProperty(config, SOC_SOURCE_FILE, {
+        value: pathForPlanning(file),
+        enumerable: false,
+        configurable: false,
+        writable: false,
+    });
     return {
         config,
         sourceMap,
         diagnostics: validateSocConfig(config, catalog),
     };
+}
+
+function pathForPlanning(file: string): string {
+    return path.resolve(file);
 }
 
 function validatorFor(catalog: ModuleCatalog): ValidateFunction {

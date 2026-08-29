@@ -6,7 +6,7 @@ const path = require('path');
 const {
     parseU32, parseByteSize, formatHex32, rangeEnd, alignUp,
     loadCatalog, parseSocConfig, validateSocConfig, assignMissingAddresses,
-    generateSocSchema,
+    generateSocSchema, planSoc,
 } = require('../out/soc');
 
 const catalogResources = path.resolve(__dirname, '..', 'resources', 'catalog');
@@ -580,5 +580,109 @@ assert.deepStrictEqual(unsafeResult.assignments, []);
 assert.strictEqual(JSON.stringify(unsafeResult.config), unsafeBefore);
 assertDiagnostic(unsafeResult.diagnostics, 'SOC_ADDRESS_OVERLAP',
     ['peripherals', 1, 'baseAddress']);
+
+const multiFixtureFile = path.join(fixtureDirectory, 'multi-peripheral.merc32.json');
+const plannedMultiResult = planSoc(
+    parseSocConfig(multiText, multiFixtureFile, catalog).config,
+    catalog,
+);
+assert.ok(plannedMultiResult.plan);
+assert.deepStrictEqual(withoutWarnings(plannedMultiResult.diagnostics), []);
+const plan = plannedMultiResult.plan;
+assert.strictEqual(plan.sourceFile, multiFixtureFile);
+assert.strictEqual(plan.projectName, 'demo_soc');
+assert.strictEqual(plan.outputDir, path.join(fixtureDirectory, 'generated', 'demo_soc'));
+assert.strictEqual(plan.topModule, 'demo_soc');
+assert.deepStrictEqual(plan.cpu, { debug: true, jtagIdCode: 0x4d320001n });
+assert.deepStrictEqual(plan.memory.ilb, {
+    type: 'internal_ram',
+    sizeBytes: 32768n,
+    wordAddressWidth: 13,
+    initFile: {
+        source: path.join(fixtureDirectory, 'firmware.mem'),
+        outputName: 'firmware.mem',
+    },
+});
+assert.deepStrictEqual(plan.memory.dlb, {
+    type: 'external_local_bus', sizeBytes: 65536n, wordAddressWidth: 14,
+});
+assert.deepStrictEqual(plan.endpoints.map((item) => item.name),
+    ['uart0', 'uart1', 'gpio0', 'intc0', 'apb_ext0', 'axi0']);
+assert.strictEqual(plan.endpoints[0].baseAddress, 0x10000000n);
+assert.strictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext0').addressWidth, 12);
+assert.deepStrictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext0').parameters,
+    { APB_ADDR_WIDTH: 12 });
+assert.strictEqual(plan.topPorts.find((item) => item.name === 'apb_ext0_m_apb_paddr').width, 12);
+assert.strictEqual(plan.topPorts.find((item) => item.name === 'external_wake').direction, 'input');
+assert.deepStrictEqual(plan.interrupt.sources.map((item) => [item.id, item.source]), [
+    [0, 'uart0.interrupt'], [1, 'uart1.interrupt'], [2, 'gpio0.interrupt'],
+    [3, 'external.wake'],
+]);
+assert.deepStrictEqual(plan.interrupt.sources.map((item) => [item.id, item.trigger]), [
+    [0, 'high'], [1, 'low'], [2, 'rising'], [3, 'falling'],
+]);
+assert.strictEqual(plan.interrupt.irqCount, 4);
+assert.strictEqual(plan.interrupt.irqMode & 0xffn, 0xe4n);
+assert.deepStrictEqual(plan.peripherals.find((item) => item.name === 'intc0').parameters,
+    { IRQ_COUNT: 4, IRQ_MODE: 0xe4n });
+assert.ok(plan.rtlFiles.includes('rtl/apb_intc/apb_intc.v'));
+assert.ok(plan.rtlFiles.includes('rtl/misc/spram.v'));
+assert.ok(plan.rtlFiles.includes('rtl/debug/jtag_debug.v'));
+assert.deepStrictEqual(plan.rtlFiles, [...plan.rtlFiles].sort());
+
+function assertDeeplyFrozen(value) {
+    if (!value || typeof value !== 'object') {
+        return;
+    }
+    assert.strictEqual(Object.isFrozen(value), true);
+    for (const child of Object.values(value)) {
+        assertDeeplyFrozen(child);
+    }
+}
+assertDeeplyFrozen(plan);
+
+const plannedMinimal = planSoc(minimal, catalog).plan;
+assert.ok(plannedMinimal);
+assert.deepStrictEqual(plannedMinimal.cpu, { debug: false, jtagIdCode: 0x4d320001n });
+assert.strictEqual(plannedMinimal.topPorts.find((item) => item.name === 'ilb_addr').width, 13);
+assert.strictEqual(plannedMinimal.topPorts.find((item) => item.name === 'dlb_addr').width, 14);
+assert.strictEqual(plannedMinimal.topPorts.some((item) => item.name === 'tck'), false);
+assert.strictEqual(plannedMinimal.rtlFiles.includes('rtl/misc/spram.v'), false);
+assert.strictEqual(plannedMinimal.rtlFiles.includes('rtl/debug/jtag_debug.v'), false);
+
+const physicalPorts = clone(minimal);
+physicalPorts.peripherals = [
+    {
+        type: 'apb_qspi', name: 'qspi0', baseAddress: '0x10000000',
+        parameters: { CS_COUNT: 16 },
+    },
+    { type: 'apb_sdio', name: 'sdio0', baseAddress: '0x10001000' },
+];
+const physicalPlan = planSoc(physicalPorts, catalog).plan;
+assert.ok(physicalPlan);
+assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'qspi0_qspi_cs_n'),
+    { name: 'qspi0_qspi_cs_n', direction: 'output', width: 16 });
+assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'sdio0_sd_dat_i'),
+    { name: 'sdio0_sd_dat_i', direction: 'input', width: 8 });
+assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'sdio0_dma_tx_dout'),
+    { name: 'sdio0_dma_tx_dout', direction: 'input', width: 32 });
+assert.deepStrictEqual(physicalPlan.topPorts.find((item) => item.name === 'sdio0_dma_rx_din'),
+    { name: 'sdio0_dma_rx_din', direction: 'output', width: 32 });
+
+const invalidPlanResult = planSoc(overlap, catalog);
+assert.strictEqual(invalidPlanResult.plan, undefined);
+assertDiagnostic(invalidPlanResult.diagnostics, 'SOC_ADDRESS_OVERLAP',
+    ['peripherals', 1, 'baseAddress']);
+
+const parsedForAssignment = parseSocConfig(multiText, multiFixtureFile, catalog).config;
+for (const endpoint of [...parsedForAssignment.peripherals, ...parsedForAssignment.externalInterfaces]) {
+    delete endpoint.baseAddress;
+}
+const assignedWithSource = assignMissingAddresses(parsedForAssignment, catalog);
+const assignedPlan = planSoc(assignedWithSource.config, catalog).plan;
+assert.ok(assignedPlan);
+assert.strictEqual(assignedPlan.sourceFile, multiFixtureFile);
+assert.strictEqual(assignedPlan.memory.ilb.initFile.source,
+    path.join(fixtureDirectory, 'firmware.mem'));
 
 console.log('MERC32 SoC configuration tests passed.');

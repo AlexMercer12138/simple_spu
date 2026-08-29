@@ -48,6 +48,8 @@ export type InterruptSource =
     };
 
 export interface SocSourceConfig {
+    /** Non-JSON provenance attached by parseSocConfig. */
+    readonly [SOC_SOURCE_FILE]?: string;
     schemaVersion: 1;
     project: ProjectSource;
     cpu: CpuSource;
@@ -56,6 +58,8 @@ export interface SocSourceConfig {
     externalInterfaces: readonly ExternalInterfaceSource[];
     interrupt: InterruptSource;
 }
+
+export const SOC_SOURCE_FILE: unique symbol = Symbol('merc32.socSourceFile');
 
 export interface SocDiagnostic {
     severity: 'error' | 'warning';
@@ -140,7 +144,7 @@ export interface PlannedRange {
 export interface PlannedPeripheral extends PlannedRange {
     kind: 'peripheral';
     module: string;
-    parameters: Readonly<Record<string, number | string | boolean>>;
+    parameters: Readonly<Record<string, PlannedParameterValue>>;
     ports: readonly PlannedPort[];
     interrupts: readonly string[];
 }
@@ -148,8 +152,15 @@ export interface PlannedPeripheral extends PlannedRange {
 export interface PlannedExternalInterface extends PlannedRange {
     kind: 'external';
     addressWidth: number;
-    parameters: Readonly<Record<string, number | string | boolean>>;
+    parameters: Readonly<Record<string, PlannedParameterValue>>;
     ports: readonly PlannedPort[];
+}
+
+export type PlannedParameterValue = number | string | boolean | bigint;
+
+export interface SocPlanResult {
+    plan?: SocPlan;
+    diagnostics: readonly SocDiagnostic[];
 }
 
 export interface PlannedInterruptSource {

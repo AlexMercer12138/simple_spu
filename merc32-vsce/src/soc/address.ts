@@ -266,9 +266,12 @@ function cloneJson<T>(value: T): T {
         return value.map((item) => cloneJson(item)) as T;
     }
     if (value !== null && typeof value === 'object') {
-        const clone: Record<string, unknown> = {};
+        const clone: Record<PropertyKey, unknown> = {};
         for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
             clone[key] = cloneJson(item);
+        }
+        for (const key of Object.getOwnPropertySymbols(value)) {
+            clone[key] = cloneJson((value as Record<PropertyKey, unknown>)[key]);
         }
         return clone as T;
     }
