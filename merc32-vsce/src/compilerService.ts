@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileC } from './cCompiler';
+import { compileCFile } from './cCompiler';
 import { assembleFile } from './assemblyService';
 import { getAssemblerSettings } from './configuration';
 import { CompileMode, FileAssemblyResult, ToolchainArtifact } from './types';
@@ -16,11 +16,10 @@ export interface CBuildResult extends CCompileResult {
 }
 
 export function compileCFileToAssembly(sourceFile: string): CCompileResult {
-    const sourceCode = fs.readFileSync(sourceFile, 'utf-8');
     const settings = getAssemblerSettings(sourceFile);
     const baseName = path.basename(sourceFile, path.extname(sourceFile));
     const assemblyFile = path.join(settings.outputDir, `${baseName}.asm`);
-    const result = compileC(sourceCode, {
+    const result = compileCFile(sourceFile, {
         dataBase: settings.cDataBase,
         dlbAddrWidth: settings.cDlbAddrWidth,
         moduleName: baseName,

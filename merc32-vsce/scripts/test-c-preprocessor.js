@@ -3,6 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { preprocessCFile, CPreprocessorError } = require('../out/cPreprocessor');
+const { compileCFile, CompilerError } = require('../out/cCompiler');
+const { SimpleCPUAssembler } = require('../out/assembler');
 
 function writeFile(root, relativePath, contents) {
     const file = path.join(root, relativePath);
@@ -30,6 +32,46 @@ function preprocessFile(root, relativePath) {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-cpp-'));
 try {
+    writeFile(root, 'include/demo_soc.h', [
+        '#ifndef DEMO_SOC_H',
+        '#define DEMO_SOC_H',
+        '#define DEMO_SOC_UART0_BASE 0x10000000',
+        '#define DEMO_SOC_UART0_IRQ 0',
+        '#endif',
+        '',
+    ].join('\n'));
+    const generatedMain = writeFile(root, 'generated/main.c', [
+        '#include "../include/demo_soc.h"',
+        'int main(void) {',
+        '    volatile unsigned int *uart =',
+        '        (volatile unsigned int *)DEMO_SOC_UART0_BASE;',
+        '    return DEMO_SOC_UART0_IRQ + (*uart & 0);',
+        '}',
+        '',
+    ].join('\n'));
+    const generatedResult = compileCFile(generatedMain, { moduleName: 'demo_main' });
+    assert.match(generatedResult.assembly, /mov r7, 0x1000\r?\nmov r7, r7 << 16/);
+    assert.ok(new SimpleCPUAssembler().assemble(generatedResult.assembly, {
+        sourceFileName: 'demo_main.asm',
+    }).machineCodes.length > 0);
+
+    const brokenHeader = writeFile(root, 'include/broken.h', 'int broken = @;\n');
+    const brokenMain = writeFile(root, 'broken-main.c', '#include "include/broken.h"\nint main(void) { return 0; }\n');
+    assert.throws(
+        () => compileCFile(brokenMain),
+        (error) => {
+            assert.ok(error instanceof CompilerError);
+            assert.strictEqual(error.sourceFile, brokenHeader);
+            assert.strictEqual(error.line, 1);
+            assert.strictEqual(error.column, 14);
+            assert.strictEqual(error.message, `${brokenHeader}:1:14: unexpected character '@'`);
+            return true;
+        },
+    );
+
+    assert.strictEqual(new CompilerError('legacy location', 7, 9).message, '7:9: legacy location');
+    assert.strictEqual(new CompilerError('legacy no location').message, 'legacy no location');
+
     writeFile(root, 'soc.h', [
         '#ifndef DEMO_SOC_H',
         '#define DEMO_SOC_H',

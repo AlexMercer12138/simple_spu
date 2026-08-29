@@ -10,8 +10,18 @@ export interface CompileResult {
 }
 
 export class CompilerError extends Error {
-    constructor(message: string, readonly line?: number, readonly column?: number) {
-        super(line !== undefined && column !== undefined ? `${line}:${column}: ${message}` : message);
+    readonly detail: string;
+
+    constructor(
+        message: string,
+        readonly line?: number,
+        readonly column?: number,
+        readonly sourceFile?: string,
+    ) {
+        super(sourceFile !== undefined && line !== undefined && column !== undefined
+            ? `${sourceFile}:${line}:${column}: ${message}`
+            : line !== undefined && column !== undefined ? `${line}:${column}: ${message}` : message);
+        this.detail = message;
         this.name = 'CompilerError';
     }
 }
