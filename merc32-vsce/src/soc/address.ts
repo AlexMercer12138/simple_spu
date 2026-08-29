@@ -44,6 +44,9 @@ export function parseByteSize(value: JsonUnsignedInteger): bigint {
         }
         return BigInt(value);
     }
+    if (typeof value !== 'string') {
+        throw new TypeError('byte size must be a number or string');
+    }
 
     const match = /^([0-9]+)(KiB|MiB)?$/i.exec(value);
     if (!match) {

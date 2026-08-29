@@ -21,6 +21,15 @@ assert.throws(() => parseByteSize(0), /positive byte size/);
 assert.throws(() => parseByteSize(-1), /positive byte size/);
 assert.throws(() => parseByteSize(1.5), /positive byte size/);
 assert.throws(() => parseByteSize('1KB'), /KiB or MiB/);
+for (const invalidByteSize of [
+    1n,
+    true,
+    null,
+    {},
+    { toString: () => '32KiB' },
+]) {
+    assert.throws(() => parseByteSize(invalidByteSize), /number or string/);
+}
 assert.throws(() => formatHex32(-1n), /32-bit unsigned/);
 assert.throws(() => rangeEnd(0xfffff000n, 8192n), /overflows/);
 assert.throws(() => rangeEnd(0n, 0n), /positive size/);
