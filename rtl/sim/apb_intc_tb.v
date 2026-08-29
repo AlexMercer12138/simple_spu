@@ -220,6 +220,8 @@ module apb_intc_tb;
         check_value(read_main, 32'h0000_0000, "ACTIVE is invalid after reset");
         apb_read(8'h20, read_main, read_one, read_full);
         check_value(read_main, 32'he4e4_e4e4, "MODE_LO exposes sources 0 through 15");
+        check_value(read_main & 32'h0000_00ff, 32'h0000_00e4,
+                    "MODE_LO packs high/low/rising/falling as 0xE4");
         check_value(read_one, 32'h0000_0003, "IRQ_COUNT=1 masks unused MODE_LO fields");
         check_value(read_full, 32'he4e4_e4e4, "IRQ_COUNT=32 exposes complete MODE_LO");
         apb_read(8'h24, read_main, read_one, read_full);

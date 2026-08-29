@@ -514,7 +514,8 @@ defaults left unresolved. Warnings remain in `diagnostics`.
 
 - [ ] **Step 1: Add normalized-plan assertions**
 
-For the multi fixture assert:
+For the multi fixture, assign known IDs `0` through `3` the trigger modes high,
+low, rising, and falling, respectively, then assert:
 
 ```javascript
 assert.deepStrictEqual(plan.endpoints.map((item) => item.name),
@@ -523,7 +524,12 @@ assert.strictEqual(plan.endpoints[0].baseAddress, 0x10000000n);
 assert.strictEqual(plan.externalInterfaces.find((x) => x.name === 'apb_ext0').addressWidth, 12);
 assert.deepStrictEqual(plan.interrupt.sources.map((x) => [x.id, x.source]), [
     [0, 'uart0.interrupt'], [1, 'uart1.interrupt'], [2, 'gpio0.interrupt'],
+    [3, 'external.wake'],
 ]);
+assert.deepStrictEqual(plan.interrupt.sources.map((x) => [x.id, x.trigger]), [
+    [0, 'high'], [1, 'low'], [2, 'rising'], [3, 'falling'],
+]);
+assert.strictEqual(plan.interrupt.irqMode & 0xffn, 0xe4n);
 assert.ok(plan.rtlFiles.includes('rtl/apb_intc/apb_intc.v'));
 ```
 
@@ -664,6 +670,11 @@ Assert header output contains include guards and only object macros:
 #define DEMO_SOC_DLB_BASE 0x08000000
 #define DEMO_SOC_UART0_BASE 0x10000000
 #define DEMO_SOC_UART0_IRQ 0
+#define MERC32_IRQ_TRIGGER_HIGH 0
+#define MERC32_IRQ_TRIGGER_LOW 1
+#define MERC32_IRQ_TRIGGER_RISING 2
+#define MERC32_IRQ_TRIGGER_FALLING 3
+#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH
 #endif
 ```
 

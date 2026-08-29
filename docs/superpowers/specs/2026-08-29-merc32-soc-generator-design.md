@@ -197,8 +197,9 @@ private repository and replaced by a protected, flattened implementation.
 The controller parameters are:
 
 - `IRQ_COUNT`, from 1 through 32.
-- `IRQ_MODE`, two constant bits per source: high level, low level, rising edge,
-  or falling edge.
+- `IRQ_MODE`, two constant bits per source with the normative encoding
+  `0` = high level, `1` = low level, `2` = rising edge, and `3` = falling
+  edge.
 
 All controller inputs are synchronous to its APB clock. Generated top-level
 external sources are synchronized before entering the controller. Internal APB
@@ -576,7 +577,11 @@ top module, parameters, ports, file list, and generation identity.
 
 The generated header contains selected memory sizes, peripheral base addresses
 and sizes, external windows, interrupt IDs and trigger modes, and available
-feature macros. It uses object-style macros accepted by the Tiny C preprocessor.
+feature macros. It defines `MERC32_IRQ_TRIGGER_HIGH`,
+`MERC32_IRQ_TRIGGER_LOW`, `MERC32_IRQ_TRIGGER_RISING`, and
+`MERC32_IRQ_TRIGGER_FALLING` with values `0` through `3`, respectively, plus a
+`<PROJECT>_<INSTANCE>_IRQ_TRIGGER` macro for every assigned controller source.
+It uses object-style macros accepted by the Tiny C preprocessor.
 
 `software/src/main.c` is a scaffold and is user-owned:
 

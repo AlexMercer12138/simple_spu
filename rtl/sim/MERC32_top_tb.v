@@ -409,7 +409,7 @@ module MERC32_top_tb;
 
     initial begin
         // $dumpfile("MERC32_top_tb.vcd");
-        // $dumpvars(0, merc32_top_tb);
+        // $dumpvars(0, MERC32_top_tb);
 
         for(index = 0; index < 256; index = index + 1) begin
             instruction_memory[index] = 32'h0;
