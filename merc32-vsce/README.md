@@ -101,7 +101,7 @@ npx vsce package
 | `merc32-asm.outputFormat` | 输出格式：`verilog` / `coe` / `mif` / `hex` / `bin` / `mem` | `verilog` |
 | `merc32-asm.outputPath` | 自定义输出目录（空则与源文件同目录） | `""` |
 | `merc32-asm.c.keepAssembly` | 构建 C 时是否保留中间生成的 `.asm` 文件 | `true` |
-| `merc32-asm.c.dataBase` | C 编译器使用的 DLB 数据基址 | `0x00800000` |
+| `merc32-asm.c.dataBase` | C 编译器使用的 DLB 数据基址 | `0x08000000` |
 | `merc32-asm.c.dlbAddrWidth` | DLB 字地址位宽，用于初始化 C 栈指针 | `16` |
 
 `dataBase` 与 `dlbAddrWidth` 支持 `0x` / `0b` 前缀的字面量。
@@ -360,10 +360,10 @@ Tiny C 是面向 MERC32 裸机程序的明确子集，并非完整的标准 C �
 
 ### MMIO 与中断
 
-通过 `volatile` 指针访问内存映射外设。地址 `0x00800000` 起为 DLB 数据空间，由 `merc32-asm.c.dataBase` 配置：
+通过 `volatile` 指针访问内存映射外设。地址 `0x08000000` 起为 DLB 数据空间，由 `merc32-asm.c.dataBase` 配置：
 
 ```c
-volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
+volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
 *status = 0x600D;
 ```
 
@@ -400,7 +400,7 @@ int sum(int *p, int n) {
 }
 
 int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
+    volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
     data[0] = 1;
     data[1] = 2;
     data[2] = 3;
