@@ -11,7 +11,7 @@
 .prog full_test
 .entry start
 
-.equ DATA_PAGE 0x0080
+.equ DATA_PAGE 0x0800
 .equ DATA_BASE 64
 .equ STATUS_ADDR 960
 .equ FAIL_ADDR 964

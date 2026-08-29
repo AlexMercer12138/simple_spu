@@ -21,7 +21,7 @@ export function getAssemblerSettings(sourceFile: string): AssemblerSettings {
         outputFormat: isOutputFormat(rawOutputFormat) ? rawOutputFormat : DEFAULT_OUTPUT_FORMAT,
         outputDir: resolveOutputDir(sourceFile, customOutputPath),
         cKeepAssembly: config.get<boolean>('c.keepAssembly', true),
-        cDataBase: parseIntegerSetting(config.get<string>('c.dataBase', '0x00800000'), 0x0080_0000),
+        cDataBase: parseIntegerSetting(config.get<string>('c.dataBase', '0x08000000'), 0x0800_0000),
         cDlbAddrWidth: config.get<number>('c.dlbAddrWidth', 16),
     };
 }

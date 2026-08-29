@@ -115,14 +115,14 @@ jmp r14
 软件栈位于 DLB 数据空间。默认 DLB 基地址为：
 
 ```text
-dataBase = 0x00800000
+dataBase = 0x08000000
 ```
 
 默认 DLB 地址宽度为 16 个 word 地址位，因此默认栈顶为：
 
 ```text
 stack_top = dataBase + (1 << (dlbAddrWidth + 2))
-          = 0x00800000 + 256 KiB
+          = 0x08000000 + 256 KiB
 ```
 
 栈向低地址增长。函数入口会分配固定大小栈帧：
@@ -276,7 +276,7 @@ p[i]    // 等价于 *(p + i)
 编译器可以解析 `volatile` 类型修饰，并在当前无优化后端下保持源码中出现的内存读写顺序。常见外设访问写法：
 
 ```c
-volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
+volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
 *status = 0x600D;
 ```
 

@@ -101,9 +101,9 @@ int gpio_wait_irq(int limit) {
 
 int gpio_fail(unsigned int stage) {
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
 
     *detail = stage;
     *status = 0x0BAD;
@@ -112,9 +112,9 @@ int gpio_fail(unsigned int stage) {
 
 int main(void) {
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
 
     gpio_init(0x0000000F, 0);
     gpio_write(5);

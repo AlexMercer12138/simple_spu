@@ -1,8 +1,8 @@
 volatile unsigned int irq_count = 0;
 volatile unsigned int irq_error = 0;
 
-unsigned int status_addr = 0x008003C0;
-unsigned int fail_addr = 0x008003C4;
+unsigned int status_addr = 0x080003C0;
+unsigned int fail_addr = 0x080003C4;
 unsigned int ready_code = 0x1234;
 unsigned int pass_code = 0x600D;
 unsigned int fail_code = 0x0BAD;

@@ -162,9 +162,9 @@ int i2c_master_write_read(unsigned int address,
 
 int i2c_fail(unsigned int stage) {
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
 
     *detail = stage;
     *status = 0x0BAD;
@@ -173,11 +173,11 @@ int i2c_fail(unsigned int stage) {
 
 int main(void) {
     volatile unsigned int *peer_ready =
-        (volatile unsigned int *)0x008003C8;
+        (volatile unsigned int *)0x080003C8;
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
     unsigned int write_data[2];
     unsigned int read_data[2];
     unsigned int combined_tx[1];

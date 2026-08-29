@@ -1346,7 +1346,7 @@ class CodeGenerator {
     private interruptHandler?: FunctionDecl;
 
     constructor(private readonly program: Program, options: CompileOptions) {
-        const dataBase = options.dataBase ?? 0x0080_0000;
+        const dataBase = options.dataBase ?? 0x0800_0000;
         if (!Number.isSafeInteger(dataBase)) {
             throw new CompilerError('dataBase must be a finite safe integer');
         }

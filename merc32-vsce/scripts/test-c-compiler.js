@@ -76,7 +76,7 @@ int logical_compare(int a, int b) {
 }
 
 int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)0x008003C0;
+    volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
     data[0] = 1;
     data[1] = 2;
     data[2] = 3;
@@ -95,7 +95,8 @@ assert.match(assembly, /\.entry __start/);
 assert.match(assembly, /jmp sum, r14/);
 assert.match(assembly, /mov r8, r8 << 2/);
 assert.doesNotMatch(assembly, /\br3\b/);
-assert.match(assembly, /mov r13, 0x84/);
+assert.match(assembly, /mov r13, 0x804\r?\nmov r13, r13 << 16/);
+assert.doesNotMatch(assembly, /mov r13, 0x84\r?\n/);
 assert.match(assembly, /cmp r\d+, r7 < r8/);
 assert.match(assembly, /cmpu r\d+, r7 >= r8/);
 assert.match(assembly, /cmp r\d+, r\d+ == 0/);

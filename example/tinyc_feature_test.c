@@ -1,5 +1,5 @@
-unsigned int status_addr = 0x008003C0;
-unsigned int fail_addr = 0x008003C4;
+unsigned int status_addr = 0x080003C0;
+unsigned int fail_addr = 0x080003C4;
 unsigned int pass_code = 0x600D;
 unsigned int fail_code = 0x0BAD;
 int global_seed = 3;
@@ -363,7 +363,7 @@ int control_syntax_tests(void) {
 int pointer_demo(void) {
     int local = 40;
     int *ptr = &local;
-    volatile unsigned int *scratch = (volatile unsigned int *)0x00800200;
+    volatile unsigned int *scratch = (volatile unsigned int *)0x08000200;
 
     *ptr = *ptr + 2;
     *scratch = *ptr;

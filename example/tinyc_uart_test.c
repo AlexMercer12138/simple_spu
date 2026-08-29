@@ -1,5 +1,5 @@
-unsigned int status_addr = 0x008003C0;
-unsigned int detail_addr = 0x008003C4;
+unsigned int status_addr = 0x080003C0;
+unsigned int detail_addr = 0x080003C4;
 unsigned int pass_code = 0x600D;
 unsigned int fail_code = 0x0BAD;
 unsigned int uart_base = 0x10000000;

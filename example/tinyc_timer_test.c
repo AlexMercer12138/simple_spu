@@ -112,9 +112,9 @@ void __irq_handler(void) {
 
 int timer_fail(unsigned int stage) {
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
 
     *detail = stage;
     *status = 0x0BAD;
@@ -123,9 +123,9 @@ int timer_fail(unsigned int stage) {
 
 int main(void) {
     volatile unsigned int *status =
-        (volatile unsigned int *)0x008003C0;
+        (volatile unsigned int *)0x080003C0;
     volatile unsigned int *detail =
-        (volatile unsigned int *)0x008003C4;
+        (volatile unsigned int *)0x080003C4;
     unsigned int stopped_ticks = 0;
     int remaining = 400000;
     int settle = 256;

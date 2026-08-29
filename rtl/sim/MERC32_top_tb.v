@@ -434,12 +434,12 @@ module merc32_top_tb;
         poll_xfer(response_address, response_data, response_status);
         check_value("instruction read returns write", response_data, 32'hcafe_1234);
 
-        debug_xfer(32'h0080_0000, 32'h55aa_a55a, XFER_WRITE,
+        debug_xfer(32'h0800_0000, 32'h55aa_a55a, XFER_WRITE,
                    response_address, response_data, response_status);
         poll_xfer(response_address, response_data, response_status);
         check_value("data write succeeds", {30'h0, response_status},
                     {30'h0, RESP_SUCCESS});
-        debug_xfer(32'h0080_0000, 32'h0, XFER_READ,
+        debug_xfer(32'h0800_0000, 32'h0, XFER_READ,
                    response_address, response_data, response_status);
         poll_xfer(response_address, response_data, response_status);
         check_value("data read returns write", response_data, 32'h55aa_a55a);
