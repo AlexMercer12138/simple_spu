@@ -131,7 +131,7 @@ function isPlainJsonArray(value: unknown): value is unknown[] {
 
 function isHostPath(value: string): boolean {
     return value.startsWith('/') || value.startsWith('\\')
-        || /^[A-Za-z]:[\\/]/.test(value) || value.includes('\\') || value.includes('/');
+        || /^[A-Za-z]:/.test(value) || value.includes('\\') || value.includes('/');
 }
 
 function isSafePathSegment(value: unknown): value is string | number {
