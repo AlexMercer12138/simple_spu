@@ -190,6 +190,17 @@ module merc32_core #(
     localparam  BUS_DLB                 = 2'd2;
     localparam  BUS_PLB                 = 2'd3;
 
+    initial begin
+        if ((ILB_ADDR_WIDTH < 1) || (ILB_ADDR_WIDTH > 25)) begin
+            $display("CONFIG ERROR: ILB_ADDR_WIDTH must be in range 1..25");
+            $finish;
+        end
+        if ((DLB_ADDR_WIDTH < 1) || (DLB_ADDR_WIDTH > 25)) begin
+            $display("CONFIG ERROR: DLB_ADDR_WIDTH must be in range 1..25");
+            $finish;
+        end
+    end
+
     wire                                cpu_rst_n;
     reg     [6:0]                       cpu_state;
     reg     [6:0]                       state_last;
@@ -348,14 +359,12 @@ module merc32_core #(
     function [1:0] decode_bus_target;
         input   [31:0] byte_address;
         begin
-            if(byte_address < 32'h0080_0000) begin
+            if(byte_address < 32'h0800_0000) begin
                 decode_bus_target = BUS_ILB;
-            end else if(byte_address < 32'h0100_0000) begin
+            end else if(byte_address < 32'h1000_0000) begin
                 decode_bus_target = BUS_DLB;
-            end else if(byte_address >= 32'h1000_0000) begin
-                decode_bus_target = BUS_PLB;
             end else begin
-                decode_bus_target = BUS_NONE;
+                decode_bus_target = BUS_PLB;
             end
         end
     endfunction

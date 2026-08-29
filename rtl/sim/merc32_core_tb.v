@@ -1,6 +1,9 @@
 `timescale 1ns / 1ps
 
-module merc32_core_tb();
+module merc32_core_tb #(
+    parameter TEST_ILB_ADDR_WIDTH = 25,
+    parameter TEST_DLB_ADDR_WIDTH = 25
+) ();
 
     localparam integer CLK_HALF_NS       = 5;
     localparam integer MAX_WAIT_CYCLES   = 160;
@@ -47,7 +50,7 @@ module merc32_core_tb();
 
     wire        ilb_rden;
     wire        ilb_wren;
-    wire [15:0] ilb_addr;
+    wire [TEST_ILB_ADDR_WIDTH-1:0] ilb_addr;
     wire [3:0]  ilb_strb;
     wire [31:0] ilb_wdata;
     reg  [31:0] ilb_rdata = 32'd0;
@@ -55,7 +58,7 @@ module merc32_core_tb();
 
     wire        dlb_rden;
     wire        dlb_wren;
-    wire [15:0] dlb_addr;
+    wire [TEST_DLB_ADDR_WIDTH-1:0] dlb_addr;
     wire [3:0]  dlb_strb;
     wire [31:0] dlb_wdata;
     reg  [31:0] dlb_rdata = 32'd0;
@@ -85,8 +88,8 @@ module merc32_core_tb();
     reg     plb_request_last = 1'b0;
 
     merc32_core #(
-        .ILB_ADDR_WIDTH (16),
-        .DLB_ADDR_WIDTH (16))
+        .ILB_ADDR_WIDTH (TEST_ILB_ADDR_WIDTH),
+        .DLB_ADDR_WIDTH (TEST_DLB_ADDR_WIDTH))
     merc32_core_inst (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -308,6 +311,21 @@ module merc32_core_tb();
                 failures = failures + 1;
                 $display("TEST FAIL: %0s expected=0x%08h actual=0x%08h",
                          check_name, expected, actual);
+            end
+        end
+    endtask
+
+    task check_bus_target;
+        input [31:0] address;
+        input [1:0] expected;
+        begin
+            checks = checks + 1;
+            if (merc32_core_inst.decode_bus_target(address) !== expected) begin
+                failures = failures + 1;
+                $display("TEST FAIL: address %h target=%0d expected=%0d",
+                         address,
+                         merc32_core_inst.decode_bus_target(address),
+                         expected);
             end
         end
     endtask
@@ -732,18 +750,18 @@ module merc32_core_tb();
         reg reached;
         begin
             prepare_case;
-            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0080);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0800);
             program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
             program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h1234);
-            program_rom[3] = enc_imm(OP_IMCU, FUNC_SW, 4'd5, 4'd4, 16'd4);
+            program_rom[3] = enc_imm(OP_IMCU, FUNC_SW, 4'd5, 4'd4, 16'd0);
             wait_for_pc(32'd16, reached);
             check_reached("immediate store retires", reached);
             if (reached)
-                check_value("immediate store uses base plus immediate",
-                            dlb_ram[1], 32'h0000_1234);
+                check_value("DLB base address selects word offset zero",
+                            dlb_ram[0], 32'h0000_1234);
 
             prepare_case;
-            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0080);
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h0800);
             program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
             program_rom[2] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h5678);
             program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd6, 4'd0, 16'd4);
@@ -900,6 +918,13 @@ module merc32_core_tb();
             program_rom[i] = enc_imm(OP_IALU, FUNC_SET, 4'd0, 4'd0, 16'd0);
         for (i = 0; i < 256; i = i + 1)
             dlb_ram[i] = 32'd0;
+
+        check_bus_target(32'h0000_0000, 2'd1);
+        check_bus_target(32'h07ff_ffff, 2'd1);
+        check_bus_target(32'h0800_0000, 2'd2);
+        check_bus_target(32'h0fff_ffff, 2'd2);
+        check_bus_target(32'h1000_0000, 2'd3);
+        check_bus_target(32'hffff_ffff, 2'd3);
 
         test_registered_instruction_decode;
         test_decode_smoke(decode_smoke_passed);
