@@ -85,7 +85,12 @@ function removeExactTempRoot(root: string, prefix: string): void {
     if (path.dirname(resolvedRoot) !== resolvedTemp || !path.basename(resolvedRoot).startsWith(prefix)) {
         throw new Error(`Refusing to remove unexpected extension-test root: ${resolvedRoot}`);
     }
-    fs.rmSync(resolvedRoot, { recursive: true, force: true });
+    fs.rmSync(resolvedRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+    });
 }
 
 main().catch((error: unknown) => {

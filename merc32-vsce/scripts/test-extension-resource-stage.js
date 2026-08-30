@@ -87,8 +87,14 @@ function run() {
                 })],
         ['rejects a generated-output junction to an input before mutation',
             testGeneratedOutputAlias],
+        ['rejects a webview-input junction to an output before mutation',
+            testWebviewInputAlias],
         ['rejects a root reached through a junction ancestor before mutation',
             testRootAncestorAlias],
+        ['rejects concrete input/output hardlink aliases before mutation',
+            testConcreteInputOutputHardlinks],
+        ['accepts distinct concrete input and output identities',
+            testDistinctConcreteInputOutputIdentities],
     ];
     const failures = [];
     for (const [name, testCase] of cases) {
@@ -334,6 +340,32 @@ function testGeneratedOutputAlias() {
     });
 }
 
+function testWebviewInputAlias() {
+    withTopologyFixture('webview input aliases generated RTL', (root) => ({
+        repositoryRoot: path.join(root, 'repository'),
+        extensionRoot: path.join(root, 'extension'),
+    }), ({ fixtureRoot, repositoryRoot, extensionRoot }) => {
+        const resourcesRoot = path.join(extensionRoot, 'resources');
+        const webviewRoot = path.join(resourcesRoot, 'webview');
+        const outputRtlRoot = path.join(resourcesRoot, 'rtl');
+        fs.renameSync(webviewRoot, outputRtlRoot);
+        if (!tryCreateDirectoryLink(outputRtlRoot, webviewRoot)) {
+            fs.renameSync(outputRtlRoot, webviewRoot);
+            return;
+        }
+        assertTopologyRejectedWithoutMutation(
+            fixtureRoot,
+            () => prepareApi.prepareResourcesAtRoots({
+                repositoryRoot,
+                extensionRoot,
+                socApi: fixtureSocApi,
+                sourceRevision: 'webview-alias-revision',
+            }),
+            'webview input aliases generated RTL',
+        );
+    });
+}
+
 function testRootAncestorAlias() {
     const aliasFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-root-alias-test-'));
     try {
@@ -359,6 +391,97 @@ function testRootAncestorAlias() {
     } finally {
         fs.rmSync(aliasFixtureRoot, { recursive: true, force: true });
     }
+}
+
+function testConcreteInputOutputHardlinks() {
+    const aliases = [
+        {
+            name: 'schema output aliases catalog JSON',
+            input: ['extension', 'resources', 'catalog', 'protocols.json'],
+            output: ['extension', 'resources', 'schema', 'merc32.schema.json'],
+        },
+        {
+            name: 'schema output aliases template',
+            input: ['extension', 'resources', 'templates', 'main.c.tpl'],
+            output: ['extension', 'resources', 'schema', 'merc32.schema.json'],
+        },
+        {
+            name: 'schema output aliases readable RTL',
+            input: ['repository', 'rtl', 'cpu', 'core.v'],
+            output: ['extension', 'resources', 'schema', 'merc32.schema.json'],
+        },
+        {
+            name: 'schema output aliases static license',
+            input: ['repository', 'LICENSE'],
+            output: ['extension', 'resources', 'schema', 'merc32.schema.json'],
+        },
+        {
+            name: 'manifest output aliases catalog JSON',
+            input: ['extension', 'resources', 'catalog', 'protocols.json'],
+            output: ['extension', 'resources', 'resource-manifest.json'],
+        },
+        {
+            name: 'generated RTL output aliases readable RTL input',
+            input: ['repository', 'rtl', 'cpu', 'core.v'],
+            output: ['extension', 'resources', 'rtl', 'cpu', 'core.v'],
+        },
+        {
+            name: 'generated license output aliases static license input',
+            input: ['repository', 'LICENSE'],
+            output: ['extension', 'resources', 'licenses', 'LICENSE'],
+        },
+    ];
+    const failures = [];
+    for (const alias of aliases) {
+        try {
+            withTopologyFixture(alias.name, (root) => ({
+                repositoryRoot: path.join(root, 'repository'),
+                extensionRoot: path.join(root, 'extension'),
+            }), ({ fixtureRoot, repositoryRoot, extensionRoot }) => {
+                const roleRoots = { fixture: fixtureRoot, repository: repositoryRoot,
+                    extension: extensionRoot };
+                const input = path.join(roleRoots[alias.input[0]], ...alias.input.slice(1));
+                const output = path.join(roleRoots[alias.output[0]], ...alias.output.slice(1));
+                fs.mkdirSync(path.dirname(output), { recursive: true });
+                fs.linkSync(input, output);
+                assertTopologyRejectedWithoutMutation(
+                    fixtureRoot,
+                    () => prepareApi.prepareResourcesAtRoots({
+                        repositoryRoot,
+                        extensionRoot,
+                        socApi: fixtureSocApi,
+                        sourceRevision: 'hardlink-alias-revision',
+                    }),
+                    alias.name,
+                );
+            });
+        } catch (error) {
+            failures.push(new Error(`${alias.name}: ${error.message}`, { cause: error }));
+        }
+    }
+    if (failures.length > 0) {
+        throw new AggregateError(failures,
+            `${failures.length} concrete hardlink topology contract(s) failed.`);
+    }
+}
+
+function testDistinctConcreteInputOutputIdentities() {
+    withTopologyFixture('distinct concrete identities', (root) => ({
+        repositoryRoot: path.join(root, 'repository'),
+        extensionRoot: path.join(root, 'extension'),
+    }), ({ repositoryRoot, extensionRoot }) => {
+        const result = prepareApi.prepareResourcesAtRoots({
+            repositoryRoot,
+            extensionRoot,
+            socApi: fixtureSocApi,
+            sourceRevision: 'distinct-identities-revision',
+        });
+        assert.strictEqual(result.sourceRevision, 'distinct-identities-revision');
+        assert.ok(result.files.includes('rtl/cpu/core.v'),
+            'valid topology did not prepare the readable CPU core');
+        assert.ok(result.files.includes('licenses/LICENSE'),
+            'valid topology did not prepare the static license');
+    });
 }
 
 function withPreparationModuleFixture(name, action) {
@@ -530,6 +653,8 @@ function copyAuthoritativeExtensionInputs(destinationResourcesRoot) {
         path.join(destinationResourcesRoot, 'catalog'), { recursive: true });
     fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'templates'),
         path.join(destinationResourcesRoot, 'templates'), { recursive: true });
+    fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'webview'),
+        path.join(destinationResourcesRoot, 'webview'), { recursive: true });
 }
 
 function writeVictimOutputs(resourcesRoot, marker) {

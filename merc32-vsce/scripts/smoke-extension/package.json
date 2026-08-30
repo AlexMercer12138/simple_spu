@@ -1,0 +1,17 @@
+{
+  "name": "merc32-vsix-smoke",
+  "displayName": "MERC32 Installed VSIX Smoke",
+  "description": "Installed-extension smoke harness for the MERC32 offline VSIX.",
+  "version": "0.0.0",
+  "publisher": "merc32-smoke",
+  "main": "./suite/index.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "extensionDependencies": [
+    "Vikai-mercer.merc32-vsce"
+  ]
+}

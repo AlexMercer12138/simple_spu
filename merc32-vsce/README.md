@@ -23,7 +23,7 @@ MERC32 CPU 的统一 VSCode 扩展，内置汇编器与 Tiny C 编译器，并�
 ### 从 VSIX 安装
 
 ```bash
-code --install-extension merc32-vsce-2.0.0.vsix
+code --install-extension merc32-vsce.vsix
 ```
 
 ### 从源码构建
@@ -38,7 +38,7 @@ npm run compile
 
 ```bash
 cd merc32-vsce
-npx vsce package
+npm run package:vsix
 ```
 
 ### 从市场安装（待发布）
@@ -46,6 +46,16 @@ npx vsce package
 在 VSCode 扩展面板搜索 `MERC32 Toolchain` 并安装。
 
 ## 使用方法
+
+### SoC 配置与生成
+
+1. 在工作区中新建任意名称的 `*.merc32.json` 文件。
+2. 直接打开文件使用图形化编辑器，或选择 **Reopen as Text** 编辑 JSON。
+3. 依次执行 **Validate**、**Auto-assign**（需要自动分配地址时）和 **Generate**。
+4. 将生成目录中的 `rtl/files.f` 加入 FPGA 或仿真工程的 Verilog 源文件列表。
+5. 从 `software/src/main.c` 开始编写裸机软件。
+
+VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装后可离线、独立生成，不依赖 MERC32 仓库检出。生成器绝不会覆盖已经存在的 `software/src/main.c`。输出包含可集成的 RTL 和软件起始文件，但不生成 FPGA 工程或 testbench。
 
 ### 工具链侧边栏
 

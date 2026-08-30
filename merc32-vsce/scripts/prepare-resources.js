@@ -43,6 +43,7 @@ function prepareResourcesAtRoots(options) {
     const resourcesRoot = path.join(extensionRoot, 'resources');
     const socApi = options.socApi || loadSocApi(extensionRoot);
     const { catalogRoot, catalogFiles, rtlFiles: sortedRtlFiles, staticFiles } = inputs;
+    validateConcreteResourceTopology({ extensionRoot, repositoryRoot }, inputs);
 
     const validationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-resource-catalog-'));
     let schemaText;
@@ -62,7 +63,6 @@ function prepareResourcesAtRoots(options) {
     const manifestFile = path.join(resourcesRoot, 'resource-manifest.json');
     fs.rmSync(generatedRtlRoot, { recursive: true, force: true });
     fs.rmSync(generatedLicenseRoot, { recursive: true, force: true });
-    fs.rmSync(manifestFile, { force: true });
     for (const logicalPath of sortedRtlFiles) {
         copyLogicalFile(repositoryRoot, resourcesRoot, logicalPath);
     }
@@ -71,7 +71,7 @@ function prepareResourcesAtRoots(options) {
         path.join(generatedLicenseRoot, 'LICENSE'));
     const schemaFile = path.join(resourcesRoot, 'schema', 'merc32.schema.json');
     fs.mkdirSync(path.dirname(schemaFile), { recursive: true });
-    fs.writeFileSync(schemaFile, schemaText);
+    writeFileAtomically(schemaFile, schemaText);
 
     const files = [
         ...sortedRtlFiles,
@@ -88,7 +88,7 @@ function prepareResourcesAtRoots(options) {
             sha256: sha256File(path.join(resourcesRoot, ...logicalPath.split('/'))),
         })),
     };
-    fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileAtomically(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
     return Object.freeze({ files: Object.freeze(files), sourceRevision });
 }
 
@@ -130,6 +130,8 @@ function discoverResourceInputs(options) {
         'catalog/protocols.json',
         'templates/README.md.tpl',
         'templates/main.c.tpl',
+        'webview/socEditor.css',
+        'webview/socEditor.js',
     ].sort();
     for (const logicalPath of staticFiles) {
         requireExactFile(resourcesRoot,
@@ -188,6 +190,7 @@ function validateResourceRootTopology(roots) {
         { label: 'repository license input', target: path.join(roots.repositoryRoot, 'LICENSE') },
         { label: 'extension catalog input', target: path.join(resourcesRoot, 'catalog') },
         { label: 'extension templates input', target: path.join(resourcesRoot, 'templates') },
+        { label: 'extension webview input', target: path.join(resourcesRoot, 'webview') },
     ];
     const outputs = [
         { label: 'generated RTL output', target: path.join(resourcesRoot, 'rtl') },
@@ -230,6 +233,54 @@ function validateResourceRootTopology(roots) {
                 || sameExistingIdentity(outputs[index].target, outputs[otherIndex].target)) {
                 throw new Error(
                     `Unsafe resource root topology: ${outputs[index].label} overlaps ${outputs[otherIndex].label}.`,
+                );
+            }
+        }
+    }
+}
+
+function validateConcreteResourceTopology(roots, inputs) {
+    const resourcesRoot = path.join(roots.extensionRoot, 'resources');
+    const authoritativeInputs = [
+        ...inputs.staticFiles.map((logicalPath) => ({
+            label: `extension resource input ${logicalPath}`,
+            target: path.join(resourcesRoot, ...logicalPath.split('/')),
+        })),
+        ...inputs.rtlFiles.map((logicalPath) => ({
+            label: `repository RTL input ${logicalPath}`,
+            target: path.join(roots.repositoryRoot, ...logicalPath.split('/')),
+        })),
+        {
+            label: 'repository license input LICENSE',
+            target: path.join(roots.repositoryRoot, 'LICENSE'),
+        },
+    ];
+    const writeTargets = [
+        ...inputs.rtlFiles.map((logicalPath) => ({
+            label: `generated RTL output ${logicalPath}`,
+            target: path.join(resourcesRoot, ...logicalPath.split('/')),
+        })),
+        {
+            label: 'generated license output licenses/LICENSE',
+            target: path.join(resourcesRoot, 'licenses', 'LICENSE'),
+        },
+        {
+            label: 'generated manifest output resource-manifest.json',
+            target: path.join(resourcesRoot, 'resource-manifest.json'),
+        },
+        {
+            label: 'generated schema output schema/merc32.schema.json',
+            target: path.join(resourcesRoot, 'schema', 'merc32.schema.json'),
+        },
+    ];
+
+    for (const output of writeTargets) {
+        assertPathHasNoLinks(output.target, output.label);
+        for (const input of authoritativeInputs) {
+            if (pathsOverlap(output.target, input.target)
+                || sameExistingIdentity(output.target, input.target)) {
+                throw new Error(
+                    `Unsafe resource topology: ${output.label} aliases ${input.label}.`,
                 );
             }
         }
@@ -397,6 +448,25 @@ function copyLogicalFile(sourceRoot, destinationRoot, logicalPath) {
     const destination = path.join(destinationRoot, ...logicalPath.split('/'));
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
+}
+
+function writeFileAtomically(target, contents) {
+    const temporary = path.join(
+        path.dirname(target),
+        `.${path.basename(target)}.tmp-${process.pid}-${crypto.randomBytes(12).toString('hex')}`,
+    );
+    let descriptor;
+    try {
+        descriptor = fs.openSync(temporary, 'wx');
+        fs.writeFileSync(descriptor, contents);
+        fs.fsyncSync(descriptor);
+        fs.closeSync(descriptor);
+        descriptor = undefined;
+        fs.renameSync(temporary, target);
+    } finally {
+        if (descriptor !== undefined) fs.closeSync(descriptor);
+        fs.rmSync(temporary, { force: true });
+    }
 }
 
 function readJson(file, logicalPath) {

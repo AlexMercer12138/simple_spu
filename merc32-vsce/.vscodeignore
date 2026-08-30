@@ -1,8 +1,24 @@
-src/
-scripts/
-node_modules/@types/
-node_modules/typescript/
-node_modules/undici-types/
+# Development sources and harnesses
+src/**
+scripts/**
+**/test/**
+**/tests/**
+**/fixtures/**
+.vscode-test/**
+.git/**
+rtl/**
+
+# Development-only dependencies and metadata
+node_modules/@types/**
+node_modules/@vscode/**
+node_modules/adm-zip/**
+node_modules/mocha/**
+node_modules/typescript/**
+node_modules/undici-types/**
 package-lock.json
 tsconfig.json
 *.vsix
+
+# Runtime payload intentionally retained and archive-audited:
+# out/**, resources/**, and npm's production dependency closure.
+**/*.map

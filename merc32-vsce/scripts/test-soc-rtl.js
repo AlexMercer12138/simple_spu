@@ -479,6 +479,8 @@ const expectedPreparedResources = [
     'schema/merc32.schema.json',
     'templates/README.md.tpl',
     'templates/main.c.tpl',
+    'webview/socEditor.css',
+    'webview/socEditor.js',
 ].sort();
 
 function copyLogicalFile(sourceRoot, destinationRoot, logicalPath) {
@@ -500,6 +502,8 @@ function makePreparationFixture(name) {
         path.join(extensionRoot, 'resources', 'catalog'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'templates'),
         path.join(extensionRoot, 'resources', 'templates'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'webview'),
+        path.join(extensionRoot, 'resources', 'webview'), { recursive: true });
     fs.mkdirSync(path.join(extensionRoot, 'resources'), { recursive: true });
     fs.writeFileSync(path.join(extensionRoot, 'resources', 'keep.txt'), 'preserve\n');
     return { sourceRepository, extensionRoot };

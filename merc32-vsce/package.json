@@ -321,6 +321,8 @@
     "@types/node": "^25.9.1",
     "@types/vscode": "^1.74.0",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "3.6.2",
+    "adm-zip": "0.5.16",
     "mocha": "^10.8.2",
     "typescript": "^6.0.3"
   },
@@ -342,6 +344,8 @@
     "test:extension:resources": "npm run test:extension:resources:unit && node scripts/test-extension-resources.js",
     "test:extension": "npm run test:extension:resources && npm run prepare:resources && npm run compile && node out/test/runTest.js",
     "test:vsix:deps": "node scripts/test-vsix-runtime-deps.js",
+    "package:vsix": "npm run vscode:prepublish && vsce package --out merc32-vsce.vsix",
+    "test:vsix": "node scripts/test-vsix-smoke.js merc32-vsce.vsix",
     "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"
   },
