@@ -1,76 +1,27 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const {
+    buildResourceProbePlan,
+    createNodeFsAdapter,
+    runResourceProbe,
+} = require('./extension-resource-probe');
 const { prepareResources } = require('./prepare-resources');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const resourcesRoot = path.join(extensionRoot, 'resources');
-const cacheRoot = path.join(extensionRoot, '.vscode-test');
-const schemaFile = path.join(resourcesRoot, 'schema', 'merc32.schema.json');
-const generatedTargets = Object.freeze([
-    Object.freeze({
-        label: 'resources/rtl',
-        target: path.join(resourcesRoot, 'rtl'),
-        backupName: 'rtl',
-    }),
-    Object.freeze({
-        label: 'resources/licenses',
-        target: path.join(resourcesRoot, 'licenses'),
-        backupName: 'licenses',
-    }),
-    Object.freeze({
-        label: 'resources/resource-manifest.json',
-        target: path.join(resourcesRoot, 'resource-manifest.json'),
-        backupName: 'resource-manifest.json',
-    }),
-]);
 
 function run() {
-    assertPackageScriptContract();
-
-    const cacheRootExisted = fs.existsSync(cacheRoot);
-    fs.mkdirSync(cacheRoot, { recursive: true });
-    const backupRoot = fs.mkdtempSync(path.join(cacheRoot, 'resource-probe-'));
-    const schemaSnapshot = snapshotSchema();
-    const targetSnapshots = generatedTargets.map((entry) => ({
-        ...entry,
-        backup: path.join(backupRoot, entry.backupName),
-        existed: fs.existsSync(entry.target),
-        moved: false,
-    }));
-    let contractFailure;
-
-    try {
-        for (const snapshot of targetSnapshots) {
-            if (!snapshot.existed) continue;
-            fs.renameSync(snapshot.target, snapshot.backup);
-            snapshot.moved = true;
-        }
-
-        prepareResources();
-        assertPreparedResources();
-    } catch (error) {
-        contractFailure = error;
-    }
-
-    const cleanupFailures = restoreProbeState(
-        backupRoot,
-        cacheRootExisted,
-        schemaSnapshot,
-        targetSnapshots,
-    );
-    if (contractFailure && cleanupFailures.length > 0) {
-        throw new AggregateError(
-            [contractFailure, ...cleanupFailures],
-            'Extension resource contract and cleanup both failed.',
-        );
-    }
-    if (contractFailure) throw contractFailure;
-    if (cleanupFailures.length > 0) {
-        throw new AggregateError(cleanupFailures, 'Extension resource contract cleanup failed.');
-    }
-
+    const plan = buildResourceProbePlan(extensionRoot, crypto.randomBytes(12).toString('hex'));
+    runResourceProbe({
+        plan,
+        fsApi: createNodeFsAdapter(fs),
+        beforeMutation: assertPackageScriptContract,
+        prepare: () => prepareResources(),
+        assertPrepared: assertPreparedResources,
+    });
     console.log('Extension resource preparation contract passed; prior outputs restored.');
 }
 
@@ -79,9 +30,14 @@ function assertPackageScriptContract() {
     const packageJson = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
     const scripts = packageJson.scripts || {};
     assert.strictEqual(
+        scripts['test:extension:resources:unit'],
+        'node scripts/test-extension-resource-probe.js',
+        'test:extension:resources:unit must execute the resource fault-injection suite',
+    );
+    assert.strictEqual(
         scripts['test:extension:resources'],
-        'node scripts/test-extension-resources.js',
-        'test:extension:resources must execute the fresh-resource contract',
+        'npm run test:extension:resources:unit && node scripts/test-extension-resources.js',
+        'test:extension:resources must execute unit and real-path resource contracts',
     );
     assert.deepStrictEqual(
         splitCommandStages(scripts['test:extension']),
@@ -102,15 +58,6 @@ function assertPackageScriptContract() {
 function splitCommandStages(command) {
     assert.strictEqual(typeof command, 'string', 'test:extension script is missing');
     return command.split(/\s*&&\s*/u);
-}
-
-function snapshotSchema() {
-    const status = fs.statSync(schemaFile);
-    assert.ok(status.isFile(), 'tracked MERC32 schema is missing');
-    return Object.freeze({
-        bytes: fs.readFileSync(schemaFile),
-        mtimeMs: status.mtimeMs,
-    });
 }
 
 function assertPreparedResources() {
@@ -153,74 +100,6 @@ function assertDirectory(target, label) {
 
 function assertFile(target, label) {
     assert.ok(fs.lstatSync(target).isFile(), `${label} is not a file`);
-}
-
-function restoreProbeState(backupRoot, cacheRootExisted, schemaSnapshot, targetSnapshots) {
-    const failures = [];
-
-    for (const snapshot of targetSnapshots) {
-        captureFailure(failures, `remove generated ${snapshot.label}`, () => {
-            removeExactGeneratedTarget(snapshot.target);
-        });
-        if (snapshot.moved) {
-            captureFailure(failures, `restore prior ${snapshot.label}`, () => {
-                fs.renameSync(snapshot.backup, snapshot.target);
-            });
-        }
-    }
-
-    captureFailure(failures, 'restore tracked schema', () => {
-        fs.writeFileSync(schemaFile, schemaSnapshot.bytes);
-        restoreSchemaTimestamps(schemaSnapshot);
-        assert.deepStrictEqual(fs.readFileSync(schemaFile), schemaSnapshot.bytes);
-        restoreSchemaTimestamps(schemaSnapshot);
-        const restoredStatus = fs.statSync(schemaFile);
-        assert.strictEqual(restoredStatus.mtimeMs, schemaSnapshot.mtimeMs);
-    });
-
-    captureFailure(failures, 'remove resource probe root', () => {
-        fs.rmdirSync(backupRoot);
-    });
-    if (!cacheRootExisted) {
-        captureFailure(failures, 'remove newly created VSCode test cache root', () => {
-            fs.rmdirSync(cacheRoot);
-        });
-    }
-
-    captureFailure(failures, 'verify resource probe postconditions', () => {
-        assert.ok(!fs.existsSync(backupRoot), 'resource probe backup root remains');
-        for (const snapshot of targetSnapshots) {
-            assert.strictEqual(
-                fs.existsSync(snapshot.target),
-                snapshot.existed,
-                `${snapshot.label} was not restored to its prior state`,
-            );
-        }
-    });
-    return failures;
-}
-
-function removeExactGeneratedTarget(target) {
-    const resolved = path.resolve(target);
-    assert.ok(
-        generatedTargets.some((entry) => path.resolve(entry.target) === resolved),
-        `refusing to remove unexpected resource target: ${resolved}`,
-    );
-    fs.rmSync(resolved, { recursive: true, force: true });
-}
-
-function restoreSchemaTimestamps(snapshot) {
-    const currentAtimeMs = fs.statSync(schemaFile).atimeMs;
-    fs.utimesSync(schemaFile, currentAtimeMs / 1000, snapshot.mtimeMs / 1000);
-}
-
-function captureFailure(failures, label, action) {
-    try {
-        action();
-    } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        failures.push(new Error(`${label}: ${detail}`, { cause: error }));
-    }
 }
 
 run();
