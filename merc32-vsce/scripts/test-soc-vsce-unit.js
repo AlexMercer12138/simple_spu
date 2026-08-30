@@ -162,12 +162,19 @@ assert.deepStrictEqual(SOC_ACTION_MODELS.map((item) => [item.label, item.command
 ]);
 
 const artifactManifest = {
+    manifestVersion: 1,
+    manifestFile: {
+        hashPolicy: 'excluded-self',
+        kind: 'control/manifest',
+        path: 'manifest.json',
+    },
+    projectName: 'demo',
+    sourceConfig: 'C:/workspace/configs/demo.merc32.json',
     files: [
         { kind: 'generated/rtl', logicalSource: 'generator:renderPlbRouter', path: 'rtl/generated/demo_plb_router.v' },
         { kind: 'generated/software-header', logicalSource: 'generator:renderSocHeader', path: 'software/include/demo.h' },
         { kind: 'generated/address-map', logicalSource: 'generator:renderAddressMap', path: 'address-map.json' },
         { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: 'rtl/demo.v' },
-        { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: '../outside.v' },
     ],
 };
 assert.deepStrictEqual(artifactPathsFromManifest(artifactManifest), [
@@ -175,6 +182,33 @@ assert.deepStrictEqual(artifactPathsFromManifest(artifactManifest), [
     'software/include/demo.h',
     'address-map.json',
 ], 'manifest artifact selection did not return the exact safe generated children');
+for (const [name, manifest] of [
+    ['missing files', { ...artifactManifest, files: undefined }],
+    ['wrong files shape', { ...artifactManifest, files: {} }],
+    ['missing required header', {
+        ...artifactManifest,
+        files: artifactManifest.files.filter((item) => item.kind !== 'generated/software-header'),
+    }],
+    ['wrong manifest sentinel', {
+        ...artifactManifest,
+        manifestFile: { ...artifactManifest.manifestFile, path: '../manifest.json' },
+    }],
+    ['traversing top path', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderSocTop'
+            ? { ...item, path: '../demo.v' }
+            : item),
+    }],
+    ['wrong address-map kind', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderAddressMap'
+            ? { ...item, kind: 'generated/rtl' }
+            : item),
+    }],
+]) {
+    assert.strictEqual(artifactPathsFromManifest(manifest), undefined,
+        `accepted structurally invalid artifact manifest: ${name}`);
+}
 
 const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
 for (const viewKey of ['configurations', 'generate', 'build', 'artifacts']) {
@@ -924,6 +958,19 @@ try {
     const liveOutputUri = uri('generated/live');
     const deadConfigUri = uri('configs/dead.merc32.json');
     const deadOutputUri = uri('generated/dead');
+    const invalidManifestKinds = [
+        'invalid-json',
+        'read-failure',
+        'missing-shape',
+        'wrong-shape',
+        'path-traversal',
+        'source-mismatch',
+    ];
+    const invalidManifestUris = invalidManifestKinds.map((name) => ({
+        name,
+        configUri: uri(`configs/${name}.merc32.json`),
+        outputUri: uri(`generated/${name}`),
+    }));
     const parseTestUri = (value) => {
         const parsed = new URL(value);
         return uri(decodeURIComponent(parsed.pathname).replace(/^\/workspace\//, ''));
@@ -936,7 +983,81 @@ try {
         { configUri: liveConfigUri.toString(), outputUri: liveOutputUri.toString() },
         { configUri: deadConfigUri.toString(), outputUri: deadOutputUri.toString() },
         { configUri: 'not a URI', outputUri: 'also not a URI' },
+        ...invalidManifestUris.map(({ configUri, outputUri }) => ({
+            configUri: configUri.toString(),
+            outputUri: outputUri.toString(),
+        })),
     ];
+    const validLiveManifest = {
+        files: [
+            {
+                kind: 'generated/rtl',
+                logicalSource: 'generator:renderSocTop',
+                path: 'rtl/live.v',
+                sha256: '1'.repeat(64),
+            },
+            {
+                kind: 'generated/software-header',
+                logicalSource: 'generator:renderSocHeader',
+                path: 'software/include/live.h',
+                sha256: '2'.repeat(64),
+            },
+            {
+                kind: 'generated/address-map',
+                logicalSource: 'generator:renderAddressMap',
+                path: 'address-map.json',
+                sha256: '3'.repeat(64),
+            },
+        ],
+        generatorVersion: '2.0.0',
+        manifestFile: {
+            hashPolicy: 'excluded-self',
+            kind: 'control/manifest',
+            path: 'manifest.json',
+        },
+        manifestVersion: 1,
+        projectName: 'live',
+        resourceRevision: 'test-resource-revision',
+        sourceConfig: 'C:/workspace/configs/live.merc32.json',
+    };
+    const manifestPayloads = new Map([
+        [joinTestUri(liveOutputUri, 'manifest.json').toString(),
+            Buffer.from(JSON.stringify(validLiveManifest))],
+    ]);
+    for (const { name, configUri, outputUri } of invalidManifestUris) {
+        const manifestUri = joinTestUri(outputUri, 'manifest.json').toString();
+        const sourceConfig = configUri.fsPath.replace(/\\/g, '/');
+        if (name === 'invalid-json') {
+            manifestPayloads.set(manifestUri, Buffer.from('{'));
+        } else if (name === 'read-failure') {
+            manifestPayloads.set(manifestUri, new Error('manifest read failed'));
+        } else if (name === 'missing-shape') {
+            const { files: _files, ...withoutFiles } = validLiveManifest;
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...withoutFiles,
+                sourceConfig,
+            })));
+        } else if (name === 'wrong-shape') {
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                files: {},
+                sourceConfig,
+            })));
+        } else if (name === 'path-traversal') {
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                files: validLiveManifest.files.map((item) => item.logicalSource === 'generator:renderSocTop'
+                    ? { ...item, path: '../live.v' }
+                    : item),
+                sourceConfig,
+            })));
+        } else {
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                sourceConfig: 'C:/workspace/configs/someone-else.merc32.json',
+            })));
+        }
+    }
     const fileTypes = new Map([
         [compilerArtifactUri.toString(), 1],
         [liveOutputUri.toString(), 2],
@@ -944,6 +1065,10 @@ try {
         [joinTestUri(liveOutputUri, 'rtl/live.v').toString(), 1],
         [joinTestUri(liveOutputUri, 'address-map.json').toString(), 1],
     ]);
+    for (const { outputUri } of invalidManifestUris) {
+        fileTypes.set(outputUri.toString(), 2);
+        fileTypes.set(joinTestUri(outputUri, 'manifest.json').toString(), 1);
+    }
     const artifactVscode = {
         FileType: { File: 1, Directory: 2 },
         Uri: {
@@ -960,14 +1085,10 @@ try {
                     return { type, ctime: 0, mtime: 0, size: 1 };
                 },
                 async readFile(value) {
-                    assert.strictEqual(value.toString(), joinTestUri(liveOutputUri, 'manifest.json').toString());
-                    return Buffer.from(JSON.stringify({
-                        files: [
-                            { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: 'rtl/live.v' },
-                            { kind: 'generated/software-header', logicalSource: 'generator:renderSocHeader', path: 'software/include/live.h' },
-                            { kind: 'generated/address-map', logicalSource: 'generator:renderAddressMap', path: 'address-map.json' },
-                        ],
-                    }));
+                    const payload = manifestPayloads.get(value.toString());
+                    assert.notStrictEqual(payload, undefined, `unexpected manifest read: ${value.toString()}`);
+                    if (payload instanceof Error) throw payload;
+                    return payload;
                 },
             },
             asRelativePath(value) { return value.path.slice('/workspace/'.length); },
@@ -1036,6 +1157,45 @@ try {
         outputUri: liveOutputUri.toString(),
     }]], 'dead persisted generated output was not removed from workspace state');
 
+    const recordedConfigUri = uri('configs/recorded.merc32.json');
+    const recordedOutputUri = uri('generated/recorded');
+    const recordedManifestUri = joinTestUri(recordedOutputUri, 'manifest.json');
+    fileTypes.set(recordedOutputUri.toString(), 2);
+    fileTypes.set(recordedManifestUri.toString(), 1);
+    manifestPayloads.set(recordedManifestUri.toString(), Buffer.from(JSON.stringify({
+        ...validLiveManifest,
+        projectName: 'recorded',
+        sourceConfig: recordedConfigUri.fsPath.replace(/\\/g, '/'),
+        files: validLiveManifest.files.map((item) => ({
+            ...item,
+            path: item.path
+                .replace('rtl/live.v', 'rtl/recorded.v')
+                .replace('software/include/live.h', 'software/include/recorded.h'),
+        })),
+    })));
+    artifactWorkspaceUpdates.length = 0;
+    await artifactStore.recordGeneratedSoc({
+        configUri: recordedConfigUri,
+        outputUri: recordedOutputUri,
+        manifestUri: recordedManifestUri,
+    });
+    assert.deepStrictEqual(artifactWorkspaceUpdates.at(-1), [SOC_ARTIFACT_STATE_KEY, [
+        { configUri: liveConfigUri.toString(), outputUri: liveOutputUri.toString() },
+        { configUri: recordedConfigUri.toString(), outputUri: recordedOutputUri.toString() },
+    ]], 'validated generated SoC record was not persisted');
+
+    artifactWorkspaceUpdates.length = 0;
+    const invalidRecorded = invalidManifestUris.find((item) => item.name === 'invalid-json');
+    await artifactStore.recordGeneratedSoc({
+        configUri: invalidRecorded.configUri,
+        outputUri: invalidRecorded.outputUri,
+        manifestUri: joinTestUri(invalidRecorded.outputUri, 'manifest.json'),
+    });
+    assert.ok(artifactWorkspaceUpdates.length > 0, 'invalid record pruning was not persisted');
+    assert.ok(artifactWorkspaceUpdates.every(([, records]) => records.every((item) =>
+        item.outputUri !== invalidRecorded.outputUri.toString())),
+    'invalid generated SoC record was persisted before validation');
+
     const artifactOpenCalls = [];
     const artifactProvider = new Merc32ArtifactsProvider(artifactStore, artifactVscode);
     const artifactRoots = artifactProvider.getChildren();
@@ -1061,6 +1221,53 @@ try {
         'directory artifact did not use revealFileInOS');
     assert.strictEqual(artifactOpenCalls[0][2].toString(), liveOutputUri.toString());
     artifactProvider.dispose();
+
+    const oldRaceArtifactUri = uri('build/race-old.hex');
+    const newRaceArtifactUri = uri('build/race-new.hex');
+    let releaseOldStat;
+    let markOldStatStarted;
+    const oldStatStarted = new Promise((resolve) => { markOldStatStarted = resolve; });
+    const oldStatResult = new Promise((resolve) => { releaseOldStat = resolve; });
+    const raceVscode = {
+        ...artifactVscode,
+        workspace: {
+            ...artifactVscode.workspace,
+            fs: {
+                ...artifactVscode.workspace.fs,
+                async stat(value) {
+                    if (value.toString() === oldRaceArtifactUri.toString()) {
+                        markOldStatStarted();
+                        return oldStatResult;
+                    }
+                    if (value.toString() === newRaceArtifactUri.toString()) {
+                        return { type: 1, ctime: 0, mtime: 0, size: 1 };
+                    }
+                    throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+                },
+            },
+        },
+    };
+    const raceStore = new Merc32ArtifactStore({
+        get: (_key, fallback) => fallback,
+        update: async () => {},
+    }, raceVscode);
+    const compilerPublications = [];
+    raceStore.subscribe(() => {
+        compilerPublications.push(raceStore.getCompilerArtifacts().map((item) => item.label));
+    });
+    raceStore.setCompilerArtifacts([{ label: 'race-old.hex', file: oldRaceArtifactUri.fsPath }]);
+    const racingRefresh = raceStore.refresh();
+    await oldStatStarted;
+    raceStore.setCompilerArtifacts([{ label: 'race-new.hex', file: newRaceArtifactUri.fsPath }]);
+    assert.deepStrictEqual(raceStore.getCompilerArtifacts().map((item) => item.label), ['race-new.hex'],
+        'compiler setter was blocked behind an in-flight refresh');
+    releaseOldStat({ type: 1, ctime: 0, mtime: 0, size: 1 });
+    await racingRefresh;
+    assert.deepStrictEqual(raceStore.getCompilerArtifacts().map((item) => item.label), ['race-new.hex'],
+        'refresh overwrote the newer compiler artifact publication');
+    assert.deepStrictEqual(compilerPublications.at(-1), ['race-new.hex'],
+        'refresh fired a stale compiler artifact event');
+    raceStore.dispose();
 
     const watcherDisposals = [];
     const watchers = [];

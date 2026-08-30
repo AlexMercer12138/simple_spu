@@ -257,21 +257,15 @@ interface ManifestFileRecord {
     path?: unknown;
 }
 
-/** Selects only the three user-facing generated files from a trusted-format manifest. */
-export function artifactPathsFromManifest(value: unknown): string[] {
-    if (!isObject(value) || !Array.isArray(value.files)) return [];
-    const files = value.files.filter((item): item is ManifestFileRecord => isObject(item));
-    const selectors: readonly ((item: ManifestFileRecord) => boolean)[] = [
-        (item) => item.kind === 'generated/rtl' && item.logicalSource === 'generator:renderSocTop',
-        (item) => item.kind === 'generated/software-header',
-        (item) => item.kind === 'generated/address-map',
-    ];
-    const result: string[] = [];
-    for (const select of selectors) {
-        const relativePath = files.find((item) => select(item) && isSafeArtifactPath(item.path))?.path;
-        if (typeof relativePath === 'string' && !result.includes(relativePath)) result.push(relativePath);
-    }
-    return result;
+interface ArtifactManifestBinding {
+    paths: readonly string[];
+    sourceConfig: string;
+}
+
+/** Selects the three user-facing files only from a structurally valid version-1 manifest. */
+export function artifactPathsFromManifest(value: unknown): string[] | undefined {
+    const binding = artifactManifestBinding(value);
+    return binding ? [...binding.paths] : undefined;
 }
 
 interface PersistedSocArtifact {
@@ -301,6 +295,7 @@ export interface ArtifactSnapshot {
 /** Shared session/compiler and persisted/generated-SoC artifact state. */
 export class Merc32ArtifactStore implements vscode.Disposable {
     private compiler: (ToolchainArtifact & { uri: vscode.Uri })[] = [];
+    private compilerRevision = 0;
     private generatedSocs: ResolvedGeneratedSocArtifacts[] = [];
     private persisted: PersistedSocArtifact[];
     private readonly listeners = new Set<() => void>();
@@ -322,6 +317,7 @@ export class Merc32ArtifactStore implements vscode.Disposable {
             ...artifact,
             uri: this.vscodeApi.Uri.file(artifact.file),
         }));
+        this.compilerRevision += 1;
         this.fireChanged();
     }
 
@@ -357,8 +353,7 @@ export class Merc32ArtifactStore implements vscode.Disposable {
             this.persisted = this.persisted.filter((item) =>
                 item.configUri !== persisted.configUri && item.outputUri !== persisted.outputUri);
             this.persisted.push(persisted);
-            await this.persist();
-            await this.performRefresh();
+            await this.performRefresh(true);
         });
     }
 
@@ -374,9 +369,14 @@ export class Merc32ArtifactStore implements vscode.Disposable {
         return this.operationQueue;
     }
 
-    private async performRefresh(): Promise<void> {
+    private async performRefresh(persistAfterValidation = false): Promise<void> {
         if (this.disposed) return;
-        const compiler = await filterAsync(this.compiler, (artifact) => this.pathExists(artifact.uri, 'file'));
+        const compilerRevision = this.compilerRevision;
+        const compilerSnapshot = [...this.compiler];
+        const compiler = await filterAsync(
+            compilerSnapshot,
+            (artifact) => this.pathExists(artifact.uri, 'file'),
+        );
         const livePersisted: PersistedSocArtifact[] = [];
         const generatedSocs: ResolvedGeneratedSocArtifacts[] = [];
         for (const persisted of this.persisted) {
@@ -394,19 +394,25 @@ export class Merc32ArtifactStore implements vscode.Disposable {
                 || !await this.pathExists(manifestUri, 'file')) {
                 continue;
             }
+            let manifest: ArtifactManifestBinding | undefined;
+            try {
+                const bytes = await this.vscodeApi.workspace.fs.readFile(manifestUri);
+                manifest = artifactManifestBinding(JSON.parse(Buffer.from(bytes).toString('utf8')));
+            } catch (error) {
+                this.onError(error);
+            }
+            if (!manifest || !sameConfigIdentity(manifest.sourceConfig, configUri)) {
+                if (!manifest) {
+                    this.onError(new Error(`Ignoring invalid MERC32 SoC manifest: ${manifestUri.toString()}`));
+                }
+                continue;
+            }
             livePersisted.push(persisted);
             const artifacts: ResolvedArtifact[] = [
                 { kind: 'directory', label: 'Output directory', uri: outputUri },
                 { kind: 'file', label: 'manifest.json', uri: manifestUri, relativePath: 'manifest.json' },
             ];
-            let manifestPaths: string[] = [];
-            try {
-                const bytes = await this.vscodeApi.workspace.fs.readFile(manifestUri);
-                manifestPaths = artifactPathsFromManifest(JSON.parse(Buffer.from(bytes).toString('utf8')));
-            } catch (error) {
-                this.onError(error);
-            }
-            for (const relativePath of manifestPaths) {
+            for (const relativePath of manifest.paths) {
                 const uri = this.vscodeApi.Uri.joinPath(outputUri, ...relativePath.split('/'));
                 if (!await this.pathExists(uri, 'file')) continue;
                 artifacts.push({
@@ -419,10 +425,10 @@ export class Merc32ArtifactStore implements vscode.Disposable {
             generatedSocs.push({ configUri, outputUri, artifacts });
         }
         const persistenceChanged = !samePersistedArtifacts(this.persisted, livePersisted);
-        this.compiler = compiler;
+        if (this.compilerRevision === compilerRevision) this.compiler = compiler;
         this.persisted = livePersisted;
         this.generatedSocs = generatedSocs;
-        if (persistenceChanged) await this.persist();
+        if (persistenceChanged || persistAfterValidation) await this.persist();
         this.fireChanged();
     }
 
@@ -617,6 +623,62 @@ function isSafeArtifactPath(value: unknown): value is string {
         return false;
     }
     return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+function artifactManifestBinding(value: unknown): ArtifactManifestBinding | undefined {
+    if (!isObject(value)
+        || value.manifestVersion !== 1
+        || !isObject(value.manifestFile)
+        || value.manifestFile.hashPolicy !== 'excluded-self'
+        || value.manifestFile.kind !== 'control/manifest'
+        || value.manifestFile.path !== 'manifest.json'
+        || typeof value.projectName !== 'string'
+        || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.projectName)
+        || typeof value.sourceConfig !== 'string'
+        || value.sourceConfig.length === 0
+        || value.sourceConfig.includes('\0')
+        || !Array.isArray(value.files)) {
+        return undefined;
+    }
+    const files = value.files.filter((item): item is ManifestFileRecord => isObject(item));
+    const expected = [
+        {
+            kind: 'generated/rtl',
+            logicalSource: 'generator:renderSocTop',
+            path: `rtl/${value.projectName}.v`,
+        },
+        {
+            kind: 'generated/software-header',
+            logicalSource: 'generator:renderSocHeader',
+            path: `software/include/${value.projectName}.h`,
+        },
+        {
+            kind: 'generated/address-map',
+            logicalSource: 'generator:renderAddressMap',
+            path: 'address-map.json',
+        },
+    ] as const;
+    for (const required of expected) {
+        const matches = files.filter((item) => item.logicalSource === required.logicalSource);
+        if (matches.length !== 1
+            || matches[0].kind !== required.kind
+            || matches[0].path !== required.path
+            || !isSafeArtifactPath(matches[0].path)) {
+            return undefined;
+        }
+    }
+    return {
+        paths: expected.map((item) => item.path),
+        sourceConfig: value.sourceConfig,
+    };
+}
+
+function sameConfigIdentity(sourceConfig: string, configUri: vscode.Uri): boolean {
+    const left = sourceConfig.replace(/\\/g, '/');
+    const right = configUri.fsPath.replace(/\\/g, '/');
+    return process.platform === 'win32'
+        ? left.toLocaleLowerCase('en-US') === right.toLocaleLowerCase('en-US')
+        : left === right;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
