@@ -40,6 +40,9 @@ const IDLE_GENERATION: SocGenerationState = {
 
 type SocEditorCommandType = 'autoAssign' | 'validate' | 'generate';
 
+/** Task 4 commands return false only when the requested action did not complete. */
+export type SocEditorCommandOutcome = boolean | void;
+
 const SOC_EDITOR_COMMAND_STATUS: Readonly<Record<SocEditorCommandType, {
     command: string;
     start: SocGenerationState;
@@ -231,14 +234,14 @@ export function buildSocEditorViewModel(
 export async function executeSocEditorCommand(
     type: SocEditorCommandType,
     documentUri: vscode.Uri,
-    executeCommand: (command: string, ...args: unknown[]) => PromiseLike<unknown>,
+    executeCommand: (command: string, ...args: unknown[]) => PromiseLike<SocEditorCommandOutcome>,
     postStatus: (status: SocGenerationState) => PromiseLike<unknown>,
 ): Promise<void> {
     const action = SOC_EDITOR_COMMAND_STATUS[type];
     await postStatus(action.start);
     try {
-        await executeCommand(action.command, documentUri);
-        await postStatus(action.success);
+        const outcome = await executeCommand(action.command, documentUri);
+        await postStatus(outcome === false ? action.failure : action.success);
     } catch {
         await postStatus(action.failure);
     }
@@ -480,7 +483,10 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             await executeSocEditorCommand(
                 message.type,
                 document.uri,
-                (command, ...args) => this.vscodeApi.commands.executeCommand(command, ...args),
+                (command, ...args) => this.vscodeApi.commands.executeCommand<SocEditorCommandOutcome>(
+                    command,
+                    ...args,
+                ),
                 postStatus,
             );
             return;

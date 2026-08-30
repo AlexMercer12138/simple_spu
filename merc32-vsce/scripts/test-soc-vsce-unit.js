@@ -630,22 +630,41 @@ const fakeDocument = {
         + standardJsonLf.slice(appliedRange.end.offset);
     assert.ok(appliedText.includes('"debug": true'));
 
-    for (const [type, expectedCommand, expectedPhases] of [
-        ['autoAssign', 'merc32.soc.autoAssign', ['working', 'success']],
-        ['validate', 'merc32.soc.validate', ['validating', 'success']],
-        ['generate', 'merc32.soc.generate', ['generating', 'generated']],
+    for (const [type, expectedCommand, outcome, expectedPhases] of [
+        ['autoAssign', 'merc32.soc.autoAssign', true, ['working', 'success']],
+        ['validate', 'merc32.soc.validate', undefined, ['validating', 'success']],
+        ['generate', 'merc32.soc.generate', true, ['generating', 'generated']],
     ]) {
         const calls = [];
         const statuses = [];
         await executeSocEditorCommand(
             type,
             fakeDocument.uri,
-            async (...args) => { calls.push(args); },
+            async (...args) => {
+                calls.push(args);
+                return outcome;
+            },
             async (status) => { statuses.push(status); },
         );
         assert.deepStrictEqual(calls, [[expectedCommand, fakeDocument.uri]]);
         assert.deepStrictEqual(statuses.map((status) => status.phase), expectedPhases,
             `${type} posted dishonest status transitions`);
+    }
+
+    for (const [type, expectedPhases] of [
+        ['autoAssign', ['working', 'error']],
+        ['validate', ['validating', 'error']],
+        ['generate', ['generating', 'error']],
+    ]) {
+        const statuses = [];
+        await executeSocEditorCommand(
+            type,
+            fakeDocument.uri,
+            async () => false,
+            async (status) => { statuses.push(status); },
+        );
+        assert.deepStrictEqual(statuses.map((status) => status.phase), expectedPhases,
+            `${type} reported success after an explicit false outcome`);
     }
 
     const failedStatuses = [];
