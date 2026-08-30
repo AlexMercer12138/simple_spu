@@ -12,6 +12,6 @@
     "vscode": "^1.74.0"
   },
   "extensionDependencies": [
-    "Vikai-mercer.merc32-vsce"
+    "merc32-smoke.merc32-network-guard"
   ]
 }

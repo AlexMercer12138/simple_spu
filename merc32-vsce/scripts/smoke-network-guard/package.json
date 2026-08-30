@@ -1,0 +1,14 @@
+{
+  "name": "merc32-network-guard",
+  "displayName": "MERC32 Installed Smoke Network Guard",
+  "description": "Network guard loaded before the MERC32 installed-extension smoke.",
+  "version": "0.0.0",
+  "publisher": "merc32-smoke",
+  "main": "./suite/index.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "engines": {
+    "vscode": "^1.74.0"
+  }
+}

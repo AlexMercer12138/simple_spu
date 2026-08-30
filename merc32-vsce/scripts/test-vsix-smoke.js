@@ -16,6 +16,7 @@ const {
 } = require('@vscode/test-electron');
 
 const EXTENSION_ID = 'Vikai-mercer.merc32-vsce';
+const GUARD_EXTENSION_ID = 'merc32-smoke.merc32-network-guard';
 const SMOKE_EXTENSION_ID = 'merc32-smoke.merc32-vsix-smoke';
 const VSCODE_VERSION = '1.74.3';
 const TEMP_PREFIX = 'merc32-vsix-smoke-';
@@ -30,6 +31,21 @@ const NETWORK_LAUNCH_ARGS = Object.freeze([
     '--no-pings',
     '--proxy-server=http://127.0.0.1:9',
     '--proxy-bypass-list=<-loopback>',
+]);
+const REQUIRED_GUARD_SELF_TEST_APIS = Object.freeze([
+    'dgram.createSocket',
+    'dgram.Socket.prototype.send',
+    'dns.Resolver.prototype.resolve',
+    'dns.lookup',
+    'dns.promises.Resolver.prototype.resolve',
+    'dns.promises.resolve',
+    'http.request',
+    'http2.connect',
+    'https.request',
+    'net.Socket.prototype.connect',
+    'net.connect',
+    'net.createConnection',
+    'tls.connect',
 ]);
 const REQUIRED_BASE_RTL = Object.freeze([
     'rtl/cpu/MERC32_top.v',
@@ -53,6 +69,8 @@ async function main() {
     let result;
     try {
         assertColdCacheFailsWithoutNetwork(tempReceipt.root);
+        assertNetworkGuardAuthenticationContracts(tempReceipt.root);
+        assertStandaloneNetworkGuardCoverage(extensionRoot, tempReceipt.root);
         result = await testVsix({
             extensionRoot,
             inputVsix,
@@ -113,6 +131,104 @@ function assertColdCacheFailsWithoutNetwork(tempRoot) {
         'cold-cache resolution attempted network access');
 }
 
+function assertNetworkGuardAuthenticationContracts(tempRoot) {
+    const expectedToken = 'a'.repeat(64);
+    const contracts = [
+        {
+            expected: /network guard log is missing/u,
+            label: 'missing guard log',
+            path: path.join(tempRoot, 'missing-guard.log'),
+        },
+        {
+            expected: /network guard log is empty/u,
+            label: 'empty guard log',
+            path: path.join(tempRoot, 'empty-guard.log'),
+            text: '',
+        },
+        {
+            expected: /network guard authentication token mismatch/u,
+            label: 'wrong-token guard log',
+            path: path.join(tempRoot, 'wrong-token-guard.log'),
+            text: `${JSON.stringify({
+                event: 'installed',
+                pid: process.pid,
+                token: 'b'.repeat(64),
+                version: 1,
+            })}\n`,
+        },
+    ];
+    const failures = [];
+    for (const contract of contracts) {
+        if (contract.text !== undefined) {
+            fs.writeFileSync(contract.path, contract.text, { encoding: 'utf8', flag: 'wx' });
+        }
+        try {
+            assert.throws(
+                () => assertNoRecordedNetworkAttempts(contract.path, expectedToken),
+                contract.expected,
+                contract.label,
+            );
+        } catch (error) {
+            failures.push(`${contract.label}: ${error.actual?.message || error.message}`);
+        }
+    }
+    assert.deepStrictEqual(failures, [],
+        `network guard authentication contract failure(s):\n${failures.join('\n')}`);
+}
+
+function assertStandaloneNetworkGuardCoverage(extensionRoot, tempRoot) {
+    const guardModule = path.join(
+        extensionRoot,
+        'scripts',
+        'smoke-network-guard',
+        'suite',
+        'index.js',
+    );
+    requireExactFile(guardModule, 'standalone network guard module');
+    const logFile = path.join(tempRoot, 'standalone-network-guard.log');
+    const token = crypto.randomBytes(32).toString('hex');
+    const script = [
+        "const guard = require(process.env.MERC32_SMOKE_GUARD_MODULE);",
+        "const token = process.env.MERC32_SMOKE_NETWORK_GUARD_TOKEN;",
+        'const api = guard.activate();',
+        "if (api.assertReady(token) !== true) throw new Error('guard not ready');",
+        'process.stdout.write(JSON.stringify(api.runSelfTests(token)));',
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: tempRoot,
+        encoding: 'utf8',
+        env: offlineEnvironment({
+            MERC32_SMOKE_GUARD_MODULE: guardModule,
+            MERC32_SMOKE_NETWORK_GUARD_LOG: logFile,
+            MERC32_SMOKE_NETWORK_GUARD_TOKEN: token,
+        }),
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 30_000,
+    });
+    assertSpawnPassed(result, 'standalone network guard self-test');
+    const selfTest = JSON.parse(result.stdout);
+    assert.strictEqual(selfTest.namedPipeAllowed, true,
+        'standalone guard self-test did not preserve named-pipe IPC');
+    for (const api of REQUIRED_GUARD_SELF_TEST_APIS) {
+        assert.ok(selfTest.deniedApis.includes(api),
+            `standalone guard self-test did not cover ${api}`);
+    }
+    for (const api of ['fetch', 'WebSocket']) {
+        if (typeof globalThis[api] === 'function') {
+            assert.ok(selfTest.deniedApis.includes(api),
+                `standalone guard self-test did not cover reachable ${api}`);
+        }
+    }
+    try {
+        require.resolve('undici');
+        assert.ok(selfTest.deniedApis.includes('undici.Dispatcher.prototype.dispatch'),
+            'standalone guard self-test did not cover reachable Undici dispatch');
+    } catch (error) {
+        if (error?.code !== 'MODULE_NOT_FOUND') throw error;
+    }
+    assertNoRecordedNetworkAttempts(logFile, token, ['active', 'self-test-complete']);
+}
+
 async function testVsix(options) {
     const firstVsix = path.join(options.tempRoot, 'first.vsix');
     fs.copyFileSync(options.inputVsix, firstVsix, fs.constants.COPYFILE_EXCL);
@@ -142,11 +258,17 @@ async function testVsix(options) {
 function auditVsix(vsixFile, extensionRoot) {
     const zip = new AdmZip(vsixFile);
     const entries = new Map();
+    const foldedEntries = new Map();
     const fileMap = [];
     for (const entry of zip.getEntries()) {
-        const name = normalizeArchivePath(entry.entryName);
+        const name = normalizeArchivePath(entry.entryName, entry.isDirectory);
         assert.ok(!entries.has(name), `VSIX contains duplicate entry ${name}`);
+        const collisionKey = (entry.isDirectory ? name.slice(0, -1) : name)
+            .toLocaleLowerCase('en-US');
+        assert.ok(!foldedEntries.has(collisionKey),
+            `case-insensitive VSIX entry alias ${foldedEntries.get(collisionKey)} and ${name}`);
         entries.set(name, entry);
+        foldedEntries.set(collisionKey, name);
         if (entry.isDirectory) continue;
         const bytes = entry.getData();
         fileMap.push(Object.freeze({
@@ -282,7 +404,7 @@ function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
         },
         {
             label: 'case-only resource path alias',
-            expected: /case-insensitive resource path alias/u,
+            expected: /case-insensitive VSIX entry alias/u,
             mutate(zip) {
                 const manifest = readZipJson(zip, RESOURCE_MANIFEST);
                 const record = requireCatalogManifestRecord(manifest);
@@ -294,6 +416,72 @@ function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
                 zip.addFile(`extension/resources/${aliasPath}`, source.getData());
                 manifest.files.push({ ...record, path: aliasPath });
                 updateZipJson(zip, RESOURCE_MANIFEST, manifest);
+            },
+        },
+        {
+            label: 'repeated archive separator',
+            expected: /archive path is not canonical/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension//resources/repeated.txt');
+            },
+        },
+        {
+            label: 'leading archive separator',
+            expected: /VSIX entry is absolute/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, '/extension/resources/leading.txt');
+            },
+        },
+        {
+            label: 'trailing separator alias to a file',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, `${RESOURCE_MANIFEST}/`, Buffer.alloc(0));
+            },
+        },
+        {
+            label: 'dot archive segment',
+            expected: /VSIX entry escapes the archive root/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/./resources/dot.txt');
+            },
+        },
+        {
+            label: 'dot-dot archive segment',
+            expected: /VSIX entry escapes the archive root/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/resources/../resources/dot-dot.txt');
+            },
+        },
+        {
+            label: 'backslash archive alias',
+            expected: /VSIX entry uses backslashes/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension\\resources\\backslash.txt');
+            },
+        },
+        {
+            label: 'percent-encoded archive ambiguity',
+            expected: /VSIX entry uses percent encoding/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/resources/%6eotes.txt');
+            },
+        },
+        {
+            label: 'Unicode-normalization archive ambiguity',
+            expected: /VSIX entry uses non-canonical Unicode/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/resources/cafe\u0301.txt');
+            },
+        },
+        {
+            label: 'case-only non-resource path alias',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                const source = zip.getEntry('extension/package.json');
+                assert.ok(source && !source.isDirectory,
+                    'mutation source is missing extension/package.json');
+                addRawArchiveEntry(zip, 'extension/Package.json', source.getData());
             },
         },
     ];
@@ -315,6 +503,28 @@ function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
     }
     assert.deepStrictEqual(failures, [],
         `VSIX resource mutation contract failure(s):\n${failures.join('\n')}`);
+
+    const directoryVsix = path.join(tempRoot, 'archive-directory-entry.vsix');
+    const directoryZip = loadWritableZip(baseVsix);
+    addRawArchiveEntry(
+        directoryZip,
+        'extension/resources/empty-directory/',
+        Buffer.alloc(0),
+    );
+    directoryZip.writeZip(directoryVsix);
+    assert.doesNotThrow(
+        () => assertVsixContents(auditVsix(directoryVsix, extensionRoot), extensionRoot),
+        'canonical ZIP directory entry was rejected',
+    );
+}
+
+let rawArchiveEntryId = 0;
+
+function addRawArchiveEntry(zip, entryName, contents = Buffer.from('mutation\n', 'utf8')) {
+    const seed = `archive-mutation-seed-${rawArchiveEntryId += 1}.tmp`;
+    const entry = zip.addFile(seed, contents);
+    entry.entryName = entryName;
+    return entry;
 }
 
 function loadWritableZip(vsixFile) {
@@ -457,11 +667,28 @@ function packageAgain(extensionRoot) {
 }
 
 async function runInstalledSmoke(options) {
+    const guardSource = path.join(options.extensionRoot, 'scripts', 'smoke-network-guard');
+    assert.deepStrictEqual(listRelativeFiles(guardSource), [
+        'package.json',
+        'suite/index.js',
+    ], 'installed network guard is missing or contains unexpected checkout files');
     const harnessSource = path.join(options.extensionRoot, 'scripts', 'smoke-extension');
     assert.deepStrictEqual(listRelativeFiles(harnessSource), [
         'package.json',
         'suite/index.js',
     ], 'installed smoke harness is missing or contains unexpected checkout files');
+
+    const guardPackageRoot = path.join(options.tempRoot, 'smoke-network-guard');
+    copyExactTree(guardSource, guardPackageRoot);
+    const guardVsix = path.join(options.tempRoot, 'smoke-network-guard.vsix');
+    await createVSIX({
+        allowMissingRepository: true,
+        cwd: guardPackageRoot,
+        dependencies: false,
+        packagePath: guardVsix,
+        skipLicense: true,
+    });
+    requireExactFile(guardVsix, 'packaged network guard extension');
 
     const harnessPackageRoot = path.join(options.tempRoot, 'smoke-extension');
     copyExactTree(harnessSource, harnessPackageRoot);
@@ -479,6 +706,7 @@ async function runInstalledSmoke(options) {
     const userDataDir = createChildDirectory(options.tempRoot, 'user-data');
     const workspaceDir = createChildDirectory(options.tempRoot, 'workspace');
     const networkGuardLog = path.join(options.tempRoot, 'network-attempts.log');
+    const networkGuardToken = crypto.randomBytes(32).toString('hex');
     const configFile = path.join(workspaceDir, 'all-peripherals.merc32.json');
     fs.copyFileSync(
         path.join(options.extensionRoot, 'scripts', 'fixtures', 'soc',
@@ -490,17 +718,21 @@ async function runInstalledSmoke(options) {
     const executable = resolveCachedVSCodeExecutable(options.extensionRoot);
     const guardedEnvironment = offlineEnvironment({
         MERC32_SMOKE_NETWORK_GUARD_LOG: networkGuardLog,
+        MERC32_SMOKE_NETWORK_GUARD_TOKEN: networkGuardToken,
     });
     installVsix(executable, options.vsixFile, extensionsDir, userDataDir,
         guardedEnvironment);
     const installedExtension = findInstalledExtension(extensionsDir, EXTENSION_ID);
+    installVsix(executable, guardVsix, extensionsDir, userDataDir,
+        guardedEnvironment);
+    findInstalledExtension(extensionsDir, GUARD_EXTENSION_ID);
     installVsix(executable, harnessVsix, extensionsDir, userDataDir,
         guardedEnvironment);
     const harnessDir = findInstalledExtension(extensionsDir, SMOKE_EXTENSION_ID);
     const harnessManifest = JSON.parse(fs.readFileSync(
         path.join(harnessDir, 'package.json'), 'utf8'));
-    assert.deepStrictEqual(harnessManifest.extensionDependencies, [EXTENSION_ID],
-        'smoke extension must depend on the installed MERC32 extension');
+    assert.deepStrictEqual(harnessManifest.extensionDependencies, [GUARD_EXTENSION_ID],
+        'smoke extension must depend only on the installed network guard');
 
     const outputDir = path.join(workspaceDir, 'generated', 'all_peripherals_soc');
     const resultFile = path.join(options.tempRoot, 'smoke-result.json');
@@ -532,6 +764,7 @@ async function runInstalledSmoke(options) {
         MERC32_SMOKE_EXTENSIONS_DIR: extensionsDir,
         MERC32_SMOKE_INSTALLED_EXTENSION: installedExtension,
         MERC32_SMOKE_NETWORK_GUARD_LOG: networkGuardLog,
+        MERC32_SMOKE_NETWORK_GUARD_TOKEN: networkGuardToken,
         MERC32_SMOKE_OUTPUT: outputDir,
         MERC32_SMOKE_REPOSITORY: options.repositoryRoot,
         MERC32_SMOKE_RESULT: resultFile,
@@ -552,7 +785,12 @@ async function runInstalledSmoke(options) {
     const smokeResult = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     assert.strictEqual(smokeResult.status, 'passed',
         `installed smoke harness failed: ${smokeResult.error || 'unknown failure'}`);
-    assertNoRecordedNetworkAttempts(networkGuardLog);
+    assertNoRecordedNetworkAttempts(networkGuardLog, networkGuardToken, [
+        'active',
+        'after-target',
+        'before-target',
+        'self-test-complete',
+    ]);
     return {
         configFile,
         hostOutput: `${host.stdout || ''}${host.stderr || ''}`,
@@ -713,11 +951,71 @@ function offlineEnvironment(additions = {}) {
     return env;
 }
 
-function assertNoRecordedNetworkAttempts(logFile) {
-    if (!fs.existsSync(logFile)) return;
-    const attempts = fs.readFileSync(logFile, 'utf8').trim();
-    assert.strictEqual(attempts, '',
-        `installed smoke attempted forbidden network access:\n${attempts}`);
+function assertNoRecordedNetworkAttempts(logFile, expectedToken, requiredHeartbeats = []) {
+    const records = readAuthenticatedNetworkGuardRecords(logFile, expectedToken);
+    assert.strictEqual(records.filter((record) => record.event === 'installed').length, 1,
+        'network guard log must contain exactly one installed record');
+    const heartbeats = new Set(records
+        .filter((record) => record.event === 'heartbeat')
+        .map((record) => record.stage));
+    for (const stage of requiredHeartbeats) {
+        assert.ok(heartbeats.has(stage),
+            `network guard log is missing heartbeat ${stage}`);
+    }
+    const attempts = records.filter((record) => record.event === 'denied');
+    const runtimeAttempts = attempts.filter((record) => record.phase !== 'self-test');
+    assert.deepStrictEqual(runtimeAttempts, [],
+        `installed smoke attempted forbidden network access:\n${JSON.stringify(runtimeAttempts)}`);
+    const selfTestApis = attempts.map((record) => record.api);
+    assert.strictEqual(new Set(selfTestApis).size, selfTestApis.length,
+        'network guard self-test recorded a duplicate denial');
+    if (requiredHeartbeats.includes('self-test-complete')) {
+        for (const api of REQUIRED_GUARD_SELF_TEST_APIS) {
+            assert.ok(selfTestApis.includes(api),
+                `network guard log is missing self-test denial ${api}`);
+        }
+    }
+}
+
+function readAuthenticatedNetworkGuardRecords(logFile, expectedToken) {
+    assert.match(expectedToken, /^[0-9a-f]{64}$/u,
+        'expected network guard token is invalid');
+    assert.ok(isExactFile(logFile), `network guard log is missing: ${logFile}`);
+    const text = fs.readFileSync(logFile, 'utf8');
+    assert.ok(text.trim().length > 0, `network guard log is empty: ${logFile}`);
+    const lines = text.split(/\r?\n/u);
+    if (lines[lines.length - 1] === '') lines.pop();
+    assert.ok(lines.every((line) => line.length > 0),
+        'network guard log contains an empty record');
+    return lines.map((line, index) => {
+        let record;
+        try {
+            record = JSON.parse(line);
+        } catch (error) {
+            throw new Error(`network guard log record ${index} is invalid JSON`, { cause: error });
+        }
+        assert.ok(record && typeof record === 'object' && !Array.isArray(record),
+            `network guard log record ${index} is not an object`);
+        assert.strictEqual(record.version, 1,
+            `network guard log record ${index} has an unsupported version`);
+        assert.strictEqual(record.token, expectedToken,
+            'network guard authentication token mismatch');
+        assert.ok(Number.isInteger(record.pid) && record.pid > 0,
+            `network guard log record ${index} has an invalid pid`);
+        assert.ok(['denied', 'heartbeat', 'installed'].includes(record.event),
+            `network guard log record ${index} has an invalid event`);
+        if (record.event === 'denied') {
+            assert.ok(typeof record.api === 'string' && record.api.length > 0,
+                `network guard log record ${index} has an invalid denied API`);
+            assert.ok(['runtime', 'self-test'].includes(record.phase),
+                `network guard log record ${index} has an invalid denial phase`);
+        }
+        if (record.event === 'heartbeat') {
+            assert.ok(typeof record.stage === 'string' && record.stage.length > 0,
+                `network guard log record ${index} has an invalid heartbeat stage`);
+        }
+        return record;
+    });
 }
 
 function createOwnedTempRoot() {
@@ -852,15 +1150,31 @@ function readArchiveJson(audit, logicalPath) {
     return JSON.parse(readArchiveFile(audit, logicalPath).toString('utf8'));
 }
 
-function normalizeArchivePath(value) {
+function normalizeArchivePath(value, isDirectory) {
     assert.strictEqual(typeof value, 'string');
+    assert.strictEqual(typeof isDirectory, 'boolean');
+    assert.ok(value.length > 0, 'VSIX entry path is empty');
+    assert.strictEqual(value.normalize('NFC'), value,
+        `VSIX entry uses non-canonical Unicode: ${value}`);
+    assert.ok(/^[\x20-\x7e]+$/u.test(value),
+        `VSIX entry uses non-ASCII characters: ${value}`);
+    assert.ok(!value.includes('%'), `VSIX entry uses percent encoding: ${value}`);
     assert.ok(!value.includes('\\'), `VSIX entry uses backslashes: ${value}`);
     assert.ok(!value.startsWith('/') && !/^[A-Za-z]:/u.test(value),
         `VSIX entry is absolute: ${value}`);
-    const segments = value.split('/').filter((segment) => segment !== '');
+    const segments = value.split('/');
+    const hasTrailingSeparator = segments[segments.length - 1] === '';
+    assert.strictEqual(hasTrailingSeparator, isDirectory,
+        `VSIX entry type and trailing separator disagree: ${value}`);
+    if (hasTrailingSeparator) segments.pop();
+    assert.ok(segments.length > 0 && segments.every((segment) => segment !== ''),
+        `VSIX archive path is not canonical: ${value}`);
     assert.ok(segments.every((segment) => segment !== '.' && segment !== '..'),
         `VSIX entry escapes the archive root: ${value}`);
-    return value;
+    const canonical = `${segments.join('/')}${isDirectory ? '/' : ''}`;
+    assert.strictEqual(canonical, value,
+        `VSIX archive path is not canonical: ${value}`);
+    return canonical;
 }
 
 function normalizeResourcePath(value) {

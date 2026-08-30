@@ -1,63 +1,29 @@
 const assert = require('assert');
-const dns = require('dns');
 const fs = require('fs');
-const http = require('http');
-const http2 = require('http2');
-const https = require('https');
-const net = require('net');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const tls = require('tls');
-
-installNetworkGuard(process.env.MERC32_SMOKE_NETWORK_GUARD_LOG);
 
 const vscode = require('vscode');
 
 const EXTENSION_ID = 'Vikai-mercer.merc32-vsce';
+const GUARD_EXTENSION_ID = 'merc32-smoke.merc32-network-guard';
 const SMOKE_EXTENSION_ID = 'merc32-smoke.merc32-vsix-smoke';
 const GENERATE_COMMAND = 'merc32.soc.generate';
-
-function installNetworkGuard(logFile) {
-    if (!logFile) return;
-    const deny = (api) => {
-        fs.appendFileSync(logFile, `${process.pid} ${api}\n`);
-        throw new Error(`MERC32 installed smoke denied network API ${api}.`);
-    };
-    const replace = (owner, name) => {
-        owner[name] = (...args) => deny(`${name}(${args.length})`);
-    };
-    const dnsNames = [
-        'lookup', 'lookupService', 'resolve', 'resolve4', 'resolve6', 'resolveAny',
-        'resolveCaa', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs',
-        'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTxt', 'reverse',
-    ];
-    for (const [owner, names] of [
-        [http, ['request', 'get']],
-        [https, ['request', 'get']],
-        [http2, ['connect']],
-        [tls, ['connect']],
-        [dns, dnsNames],
-    ]) {
-        for (const name of names) replace(owner, name);
-    }
-    if (dns.promises) {
-        for (const name of dnsNames) replace(dns.promises, name);
-    }
-
-    const isIpc = (args) => typeof args[0] === 'string'
-        || (args[0] && typeof args[0] === 'object' && typeof args[0].path === 'string');
-    for (const name of ['connect', 'createConnection']) {
-        const original = net[name];
-        net[name] = function (...args) {
-            if (isIpc(args)) return Reflect.apply(original, this, args);
-            return deny(`net.${name}`);
-        };
-    }
-    if (typeof globalThis.fetch === 'function') {
-        globalThis.fetch = (...args) => deny(`fetch(${args.length})`);
-    }
-    process.env.MERC32_SMOKE_NETWORK_GUARD_ACTIVE = '1';
-}
+const REQUIRED_GUARD_SELF_TEST_APIS = Object.freeze([
+    'dgram.createSocket',
+    'dgram.Socket.prototype.send',
+    'dns.Resolver.prototype.resolve',
+    'dns.lookup',
+    'dns.promises.Resolver.prototype.resolve',
+    'dns.promises.resolve',
+    'http.request',
+    'http2.connect',
+    'https.request',
+    'net.Socket.prototype.connect',
+    'net.connect',
+    'net.createConnection',
+    'tls.connect',
+]);
 
 async function run() {
     const configFile = requiredEnvironment('MERC32_SMOKE_CONFIG');
@@ -68,9 +34,10 @@ async function run() {
     const tempRoot = requiredEnvironment('MERC32_SMOKE_TEMP_ROOT');
     const workspaceRoot = requiredEnvironment('MERC32_SMOKE_WORKSPACE');
     const networkGuardLog = requiredEnvironment('MERC32_SMOKE_NETWORK_GUARD_LOG');
+    const networkGuardToken = requiredEnvironment('MERC32_SMOKE_NETWORK_GUARD_TOKEN');
 
     assert.strictEqual(vscode.version, requiredEnvironment('MERC32_SMOKE_VSCODE_VERSION'));
-    assertOfflineHostEnvironment(tempRoot, networkGuardLog);
+    assertOfflineHostEnvironment(tempRoot, networkGuardLog, networkGuardToken);
     assert.ok(process.argv.every((argument) =>
         !String(argument).startsWith('--extensionDevelopmentPath')
             && !String(argument).startsWith('--extensionTestsPath')),
@@ -81,11 +48,13 @@ async function run() {
 
     const harness = vscode.extensions.getExtension(SMOKE_EXTENSION_ID);
     assert.ok(harness, 'VSCode did not discover the installed smoke extension');
-    assert.deepStrictEqual(harness.packageJSON.extensionDependencies, [EXTENSION_ID]);
+    assert.deepStrictEqual(harness.packageJSON.extensionDependencies, [GUARD_EXTENSION_ID]);
     assertContained(extensionsDir, harness.extensionPath, 'installed smoke extension');
 
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, `VSCode did not discover installed extension ${EXTENSION_ID}`);
+    assert.strictEqual(extension.isActive, false,
+        'installed MERC32 extension activated before the network guard was ready');
     assert.strictEqual(comparablePath(extension.extensionPath),
         comparablePath(installedExtensionPath));
     assertContained(extensionsDir, extension.extensionPath, 'installed MERC32 extension');
@@ -93,6 +62,35 @@ async function run() {
         'MERC32 extension was loaded from the repository checkout');
     assert.strictEqual(extension.packageJSON.publisher, 'Vikai-mercer');
     assert.strictEqual(extension.packageJSON.name, 'merc32-vsce');
+
+    const guard = vscode.extensions.getExtension(GUARD_EXTENSION_ID);
+    assert.ok(guard, 'VSCode did not discover the installed network guard extension');
+    assert.strictEqual(guard.isActive, true,
+        'network guard dependency was not active before the smoke runner');
+    const guardApi = await guard.activate();
+    assert.strictEqual(guardApi.assertReady(networkGuardToken), true,
+        'network guard did not authenticate its ready state');
+    const guardSelfTest = guardApi.runSelfTests(networkGuardToken);
+    assert.strictEqual(guardSelfTest.namedPipeAllowed, true,
+        'network guard self-test did not preserve named-pipe IPC');
+    assert.ok(Array.isArray(guardSelfTest.deniedApis),
+        'network guard self-test did not report denied APIs');
+    for (const api of REQUIRED_GUARD_SELF_TEST_APIS) {
+        assert.ok(guardSelfTest.deniedApis.includes(api),
+            `network guard self-test did not cover ${api}`);
+    }
+
+    guardApi.heartbeat(networkGuardToken, 'before-target');
+    assertNoNetworkAttempts(networkGuardLog, networkGuardToken, [
+        'active',
+        'before-target',
+        'self-test-complete',
+    ]);
+    assert.strictEqual(extension.isActive, false,
+        'installed MERC32 extension activated while recording guard readiness');
+    await extension.activate();
+    assert.strictEqual(extension.isActive, true,
+        'explicit installed MERC32 extension activation did not complete');
 
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes(GENERATE_COMMAND),
@@ -170,7 +168,13 @@ async function run() {
         `iverilog elaboration failed:\n${elaboration.stdout || ''}${elaboration.stderr || ''}`);
     requireExactFile(path.join(outputDir, 'all_peripherals.vvp'),
         'Icarus elaboration output');
-    assertNoNetworkAttempts(networkGuardLog);
+    guardApi.heartbeat(networkGuardToken, 'after-target');
+    assertNoNetworkAttempts(networkGuardLog, networkGuardToken, [
+        'active',
+        'after-target',
+        'before-target',
+        'self-test-complete',
+    ]);
 
     console.log(`Installed ${EXTENSION_ID} generated the maximal SoC through ${GENERATE_COMMAND}.`);
     console.log(`Icarus elaborated ${fileList.length} RTL sources with top all_peripherals_soc.`);
@@ -197,7 +201,7 @@ async function activate() {
     void vscode.commands.executeCommand('workbench.action.quit');
 }
 
-function assertOfflineHostEnvironment(tempRoot, networkGuardLog) {
+function assertOfflineHostEnvironment(tempRoot, networkGuardLog, networkGuardToken) {
     for (const name of [
         'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
         'all_proxy', 'http_proxy', 'https_proxy', 'no_proxy',
@@ -209,14 +213,51 @@ function assertOfflineHostEnvironment(tempRoot, networkGuardLog) {
     assert.strictEqual(process.env.MERC32_SMOKE_NETWORK_GUARD_ACTIVE, '1',
         'installed smoke network guard was not preloaded');
     assertContained(tempRoot, networkGuardLog, 'network guard log');
-    assertNoNetworkAttempts(networkGuardLog);
+    assertNoNetworkAttempts(networkGuardLog, networkGuardToken, ['active']);
 }
 
-function assertNoNetworkAttempts(networkGuardLog) {
-    if (!fs.existsSync(networkGuardLog)) return;
-    const attempts = fs.readFileSync(networkGuardLog, 'utf8').trim();
-    assert.strictEqual(attempts, '',
-        `installed smoke attempted forbidden network access:\n${attempts}`);
+function assertNoNetworkAttempts(networkGuardLog, expectedToken, requiredHeartbeats) {
+    requireExactFile(networkGuardLog, 'network guard log');
+    const text = fs.readFileSync(networkGuardLog, 'utf8');
+    assert.ok(text.trim().length > 0, 'network guard log is empty');
+    const lines = text.split(/\r?\n/u);
+    if (lines[lines.length - 1] === '') lines.pop();
+    const records = lines.map((line, index) => {
+        assert.ok(line.length > 0, 'network guard log contains an empty record');
+        const record = JSON.parse(line);
+        assert.ok(record && typeof record === 'object' && !Array.isArray(record),
+            `network guard log record ${index} is not an object`);
+        assert.strictEqual(record.version, 1,
+            `network guard log record ${index} has an unsupported version`);
+        assert.strictEqual(record.token, expectedToken,
+            'network guard authentication token mismatch');
+        assert.ok(Number.isInteger(record.pid) && record.pid > 0,
+            `network guard log record ${index} has an invalid pid`);
+        assert.ok(['denied', 'heartbeat', 'installed'].includes(record.event),
+            `network guard log record ${index} has an invalid event`);
+        return record;
+    });
+    assert.strictEqual(records.filter((record) => record.event === 'installed').length, 1,
+        'network guard log must contain exactly one installed record');
+    const heartbeats = new Set(records
+        .filter((record) => record.event === 'heartbeat')
+        .map((record) => record.stage));
+    for (const stage of requiredHeartbeats) {
+        assert.ok(heartbeats.has(stage), `network guard log is missing heartbeat ${stage}`);
+    }
+    const attempts = records.filter((record) => record.event === 'denied');
+    const runtimeAttempts = attempts.filter((record) => record.phase !== 'self-test');
+    assert.deepStrictEqual(runtimeAttempts, [],
+        `installed smoke attempted forbidden network access:\n${JSON.stringify(runtimeAttempts)}`);
+    const selfTestApis = attempts.map((record) => record.api);
+    assert.strictEqual(new Set(selfTestApis).size, selfTestApis.length,
+        'network guard self-test recorded a duplicate denial');
+    if (requiredHeartbeats.includes('self-test-complete')) {
+        for (const api of REQUIRED_GUARD_SELF_TEST_APIS) {
+            assert.ok(selfTestApis.includes(api),
+                `network guard log is missing self-test denial ${api}`);
+        }
+    }
 }
 
 function requiredEnvironment(name) {
