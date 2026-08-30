@@ -19,14 +19,16 @@ function buildResourceProbePlan(extensionRoot, token) {
     assert.match(token, /^[0-9a-f]{24}$/u, 'resource probe token must contain 24 lowercase hex digits');
     const resolvedExtensionRoot = path.resolve(extensionRoot);
     const resourcesRoot = path.join(resolvedExtensionRoot, 'resources');
+    const schemaRoot = path.join(resourcesRoot, 'schema');
     const cacheRoot = path.join(resolvedExtensionRoot, '.vscode-test');
     const probeRoot = path.join(cacheRoot, `resource-probe-${token}`);
     const plan = {
         extensionRoot: resolvedExtensionRoot,
         resourcesRoot,
+        schemaRoot,
         cacheRoot,
         probeRoot,
-        schemaFile: path.join(resourcesRoot, 'schema', 'merc32.schema.json'),
+        schemaFile: path.join(schemaRoot, 'merc32.schema.json'),
         schemaBackup: path.join(probeRoot, 'merc32.schema.json'),
         targets: TARGET_DEFINITIONS.map((definition) => Object.freeze({
             label: definition.label,
@@ -51,8 +53,8 @@ function runResourceProbe(options) {
     } = options;
     let primaryFailure;
     const cleanupFailures = [];
-    let cacheCreated = false;
-    let probeCreated = false;
+    const cacheState = createRootState(plan.cacheRoot);
+    const probeState = createRootState(plan.probeRoot);
     let schemaSnapshot;
     let preparationStarted = false;
     let targetStates = [];
@@ -60,6 +62,7 @@ function runResourceProbe(options) {
         snapshotSucceeded: false,
         moveSucceeded: false,
         workingCreated: false,
+        workingIdentity: undefined,
         restoreSucceeded: false,
     };
 
@@ -71,42 +74,65 @@ function runResourceProbe(options) {
         assert.strictEqual(typeof assertPrepared, 'function', 'assertPrepared callback is required');
         beforeMutation();
 
-        requireExactDirectoryEntry(fsApi, plan.extensionRoot, 'extension root');
-        requireExactDirectoryEntry(fsApi, plan.resourcesRoot, 'resources root');
-        requireExactFileEntry(fsApi, plan.schemaFile, 'tracked schema');
-        const cacheEntry = fsApi.lstat(plan.cacheRoot);
+        requireExactSchemaEntry(fsApi, plan);
+        const cacheEntry = lstatWithRealParent(
+            fsApi,
+            plan,
+            plan.cacheRoot,
+            'VSCode test cache root',
+        );
+        cacheState.originalDetected = cacheEntry !== undefined;
         if (cacheEntry !== undefined
             && (cacheEntry.isSymbolicLink() || !cacheEntry.isDirectory())) {
             throw new Error(`VSCode test cache root is not an exact directory: ${plan.cacheRoot}`);
         }
-        if (fsApi.lstat(plan.probeRoot) !== undefined) {
+        const probeEntry = cacheEntry === undefined
+            ? undefined
+            : lstatWithRealParent(
+                fsApi,
+                plan,
+                plan.probeRoot,
+                'resource probe root',
+            );
+        probeState.originalDetected = probeEntry !== undefined;
+        if (probeEntry !== undefined) {
             throw new Error(`Resource probe root already exists: ${plan.probeRoot}`);
         }
-        targetStates = plan.targets.map((entry) => ({
-            ...entry,
-            originalDetected: fsApi.lstat(entry.target) !== undefined,
-            moveSucceeded: false,
-            generatedCreated: false,
-            restoreSucceeded: false,
-        }));
+        targetStates = plan.targets.map((entry) => {
+            const originalEntry = lstatWithRealParent(
+                fsApi,
+                plan,
+                entry.target,
+                entry.label,
+            );
+            return {
+                ...entry,
+                originalDetected: originalEntry !== undefined,
+                originalIdentity: identityOf(originalEntry, entry.label),
+                moveSucceeded: false,
+                generatedCreated: false,
+                generatedIdentity: undefined,
+                restoreSucceeded: false,
+            };
+        });
 
         if (cacheEntry === undefined) {
-            fsApi.mkdir(plan.cacheRoot);
-            cacheCreated = true;
+            createOwnedDirectory(fsApi, plan, cacheState, 'VSCode test cache root');
         }
-        fsApi.mkdir(plan.probeRoot);
-        probeCreated = true;
-        schemaSnapshot = snapshotSchema(fsApi, plan.schemaFile);
+        createOwnedDirectory(fsApi, plan, probeState, 'resource probe root');
+        schemaSnapshot = snapshotSchema(fsApi, plan);
         schemaState.snapshotSucceeded = true;
         preserveSchemaEntry(fsApi, plan, schemaSnapshot, schemaState);
 
         for (const state of targetStates) {
             if (!state.originalDetected) continue;
-            moveOriginalTarget(fsApi, state);
+            moveOriginalTarget(fsApi, plan, state);
         }
 
+        requirePreparationRoots(fsApi, plan);
         preparationStarted = true;
         prepare();
+        requirePreparationRoots(fsApi, plan);
         assertPrepared();
     } catch (error) {
         primaryFailure = error;
@@ -120,16 +146,22 @@ function runResourceProbe(options) {
         if (schemaSnapshot !== undefined) {
             restoreSchemaEntry(plan, fsApi, schemaSnapshot, schemaState, cleanupFailures);
         }
-        if (probeCreated) {
-            captureCleanupFailure(cleanupFailures, 'remove exact resource probe root', () => {
-                fsApi.rmdir(plan.probeRoot);
-            });
-        }
-        if (cacheCreated) {
-            captureCleanupFailure(cleanupFailures, 'remove newly created VSCode test cache root', () => {
-                fsApi.rmdir(plan.cacheRoot);
-            });
-        }
+        cleanupOwnedRoot(
+            fsApi,
+            plan,
+            probeState,
+            cleanupFailures,
+            'remove exact resource probe root',
+            'resource probe root',
+        );
+        cleanupOwnedRoot(
+            fsApi,
+            plan,
+            cacheState,
+            cleanupFailures,
+            'remove newly created VSCode test cache root',
+            'VSCode test cache root',
+        );
         if (observeStates !== undefined) {
             captureCleanupFailure(cleanupFailures, 'publish resource probe state', () => {
                 observeStates(snapshotTargetStates(targetStates));
@@ -141,16 +173,74 @@ function runResourceProbe(options) {
     return snapshotTargetStates(targetStates);
 }
 
+function createRootState(target) {
+    return {
+        target,
+        originalDetected: false,
+        createSucceeded: false,
+        createdIdentity: undefined,
+        removeSucceeded: false,
+    };
+}
+
+function createOwnedDirectory(fsApi, plan, state, label) {
+    assert.strictEqual(state.originalDetected, false, `refusing to replace prior ${label}`);
+    const validateCreation = () => {
+        requireRealDirectoryChain(
+            fsApi,
+            plan.extensionRoot,
+            path.dirname(state.target),
+            `${label} parent`,
+        );
+        if (fsApi.lstat(state.target) !== undefined) {
+            throw new Error(`${label} appeared before creation: ${state.target}`);
+        }
+    };
+    validateCreation();
+
+    const receipt = { applied: false };
+    try {
+        fsApi.mkdir(state.target, receipt, validateCreation);
+        state.createSucceeded = true;
+        state.createdIdentity = receipt.identity;
+    } catch (error) {
+        try {
+            const entry = lstatWithRealParent(fsApi, plan, state.target, label);
+            if (receipt.applied) {
+                state.createSucceeded = true;
+                state.createdIdentity = receipt.identity;
+                state.removeSucceeded = entry === undefined;
+            }
+        } catch (reconcileError) {
+            throw new AggregateError(
+                [error, reconcileError],
+                `${label} creation failed ambiguously.`,
+            );
+        }
+        throw error;
+    }
+}
+
+function cleanupOwnedRoot(fsApi, plan, state, failures, cleanupLabel, entryLabel) {
+    if (!state.createSucceeded || state.removeSucceeded) return;
+    captureCleanupFailure(failures, cleanupLabel, () => {
+        removeOwnedRootEntry(fsApi, plan, state, entryLabel);
+    });
+}
+
 function validateResourceProbePlan(plan) {
     assert.ok(plan && typeof plan === 'object', 'resource probe plan is required');
     const extensionRoot = path.resolve(plan.extensionRoot);
     assertSamePath(plan.extensionRoot, extensionRoot, 'extension root');
     const resourcesRoot = path.join(extensionRoot, 'resources');
+    const schemaRoot = path.join(resourcesRoot, 'schema');
     const cacheRoot = path.join(extensionRoot, '.vscode-test');
     assertSamePath(plan.resourcesRoot, resourcesRoot, 'resources root');
     assertSamePath(plan.cacheRoot, cacheRoot, 'VSCode test cache root');
     assertExactDescendant(extensionRoot, resourcesRoot, 'resources root');
     assertExactDescendant(extensionRoot, cacheRoot, 'VSCode test cache root');
+    assertSamePath(plan.schemaRoot, schemaRoot, 'schema root');
+    assertExactDescendant(resourcesRoot, schemaRoot, 'schema root');
 
     assert.strictEqual(path.dirname(path.resolve(plan.probeRoot)), path.resolve(cacheRoot),
         'resource probe root must be an exact child of the VSCode test cache root');
@@ -159,7 +249,7 @@ function validateResourceProbePlan(plan) {
     assertExactDescendant(extensionRoot, plan.probeRoot, 'resource probe root');
     assertSamePath(
         plan.schemaFile,
-        path.join(resourcesRoot, 'schema', 'merc32.schema.json'),
+        path.join(schemaRoot, 'merc32.schema.json'),
         'tracked schema',
     );
     assertSamePath(
@@ -191,7 +281,7 @@ function validateResourceProbePlan(plan) {
 
 function validateFsAdapter(fsApi) {
     for (const method of [
-        'lstat', 'stat', 'mkdir', 'rmdir', 'rename', 'readFile', 'writeFile',
+        'lstat', 'stat', 'mkdir', 'rmdir', 'rename', 'readFile', 'writeFile', 'createFile',
         'unlink', 'rmTree',
     ]) {
         assert.strictEqual(typeof fsApi?.[method], 'function', `filesystem adapter lacks ${method}`);
@@ -205,36 +295,143 @@ function requireExactDirectoryEntry(fsApi, target, label) {
     }
 }
 
+function identityOf(status, label) {
+    if (status === undefined) return undefined;
+    assert.notStrictEqual(
+        status.entryIdentity,
+        undefined,
+        `filesystem adapter did not identify ${label}`,
+    );
+    return status.entryIdentity;
+}
+
+function requireIdentity(status, expectedIdentity, label) {
+    const actualIdentity = identityOf(status, label);
+    if (actualIdentity !== expectedIdentity) {
+        throw new Error(`${label} identity changed`);
+    }
+    return status;
+}
+
+function requireRealDirectoryChain(fsApi, extensionRoot, directory, label) {
+    const resolvedRoot = path.resolve(extensionRoot);
+    const resolvedDirectory = path.resolve(directory);
+    const relative = path.relative(resolvedRoot, resolvedDirectory);
+    assert.ok(
+        relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..'
+            && !path.isAbsolute(relative)),
+        `${label} must stay at or below ${resolvedRoot}`,
+    );
+
+    requireExactDirectoryEntry(fsApi, resolvedRoot, 'extension root');
+    if (relative === '') return;
+    let current = resolvedRoot;
+    for (const component of relative.split(path.sep)) {
+        current = path.join(current, component);
+        const componentLabel = samePath(current, resolvedDirectory)
+            ? label
+            : `${path.basename(current)} root`;
+        requireExactDirectoryEntry(fsApi, current, componentLabel);
+    }
+}
+
+function lstatWithRealParent(fsApi, plan, target, label) {
+    requireRealDirectoryChain(fsApi, plan.extensionRoot, path.dirname(target), `${label} parent`);
+    return fsApi.lstat(target);
+}
+
+function requireExactSchemaEntry(fsApi, plan) {
+    requireRealDirectoryChain(fsApi, plan.extensionRoot, plan.schemaRoot, 'schema root');
+    return requireExactFileEntry(fsApi, plan.schemaFile, 'tracked schema');
+}
+
+function requirePreparationRoots(fsApi, plan) {
+    requireRealDirectoryChain(fsApi, plan.extensionRoot, plan.resourcesRoot, 'resources root');
+    requireRealDirectoryChain(fsApi, plan.extensionRoot, plan.schemaRoot, 'schema root');
+    requireRealDirectoryChain(fsApi, plan.extensionRoot, plan.probeRoot, 'resource probe root');
+    requireExactSchemaEntry(fsApi, plan);
+}
+
 function requireExactFileEntry(fsApi, target, label) {
     const status = fsApi.lstat(target);
     if (status === undefined || status.isSymbolicLink() || !status.isFile()) {
         throw new Error(`${label} is not an exact file: ${target}`);
     }
+    identityOf(status, label);
+    return status;
 }
 
-function snapshotSchema(fsApi, schemaFile) {
-    const status = fsApi.stat(schemaFile);
+function snapshotSchema(fsApi, plan) {
+    const schemaEntry = requireExactSchemaEntry(fsApi, plan);
+    const status = fsApi.stat(plan.schemaFile);
     assert.ok(status.isFile(), 'tracked MERC32 schema is missing');
-    const bytes = fsApi.readFile(schemaFile);
-    return Object.freeze({ bytes: Buffer.from(bytes), mtimeMs: status.mtimeMs });
+    requireExactSchemaEntry(fsApi, plan);
+    const bytes = fsApi.readFile(plan.schemaFile);
+    return Object.freeze({
+        bytes: Buffer.from(bytes),
+        mtimeMs: status.mtimeMs,
+        identity: identityOf(schemaEntry, 'tracked schema'),
+    });
 }
 
 function preserveSchemaEntry(fsApi, plan, snapshot, state) {
+    requireIdentity(requireExactSchemaEntry(fsApi, plan), snapshot.identity, 'tracked schema');
+    const validateSchemaMove = () => validateRenameEndpoints(
+        fsApi,
+        plan,
+        plan.schemaFile,
+        plan.schemaBackup,
+        snapshot.identity,
+        'tracked schema',
+        'tracked schema backup',
+    );
+    validateSchemaMove();
+    const renameReceipt = { applied: false };
     try {
-        fsApi.rename(plan.schemaFile, plan.schemaBackup);
+        fsApi.rename(
+            plan.schemaFile,
+            plan.schemaBackup,
+            snapshot.identity,
+            renameReceipt,
+            validateSchemaMove,
+        );
         state.moveSucceeded = true;
     } catch (error) {
-        reconcileMoveAfterFailure(fsApi, plan.schemaFile, plan.schemaBackup, state, error,
-            'tracked schema');
+        reconcileMoveAfterFailure(
+            fsApi,
+            plan,
+            plan.schemaFile,
+            plan.schemaBackup,
+            snapshot.identity,
+            renameReceipt,
+            state,
+            error,
+            'tracked schema',
+        );
         throw error;
     }
 
+    const createReceipt = { applied: false };
+    const validateSchemaCreation = () => {
+        requireRealDirectoryChain(fsApi, plan.extensionRoot, plan.schemaRoot, 'schema root');
+        if (fsApi.lstat(plan.schemaFile) !== undefined) {
+            throw new Error(`tracked schema replacement appeared before creation: ${plan.schemaFile}`);
+        }
+    };
     try {
-        fsApi.writeFile(plan.schemaFile, snapshot.bytes);
+        validateSchemaCreation();
+        fsApi.createFile(plan.schemaFile, snapshot.bytes, createReceipt, validateSchemaCreation);
         state.workingCreated = true;
+        state.workingIdentity = createReceipt.identity;
     } catch (error) {
         try {
-            state.workingCreated = fsApi.lstat(plan.schemaFile) !== undefined;
+            state.workingCreated = lstatWithRealParent(
+                fsApi,
+                plan,
+                plan.schemaFile,
+                'tracked schema replacement',
+            ) !== undefined && createReceipt.applied;
+            if (createReceipt.applied) state.workingIdentity = createReceipt.identity;
         } catch (reconcileError) {
             throw new AggregateError(
                 [error, reconcileError],
@@ -245,9 +442,69 @@ function preserveSchemaEntry(fsApi, plan, snapshot, state) {
     }
 }
 
-function reconcileMoveAfterFailure(fsApi, source, destination, state, error, label) {
+function removeOwnedRootEntry(fsApi, plan, state, label) {
+    let status = lstatWithRealParent(fsApi, plan, state.target, label);
+    if (status === undefined) {
+        state.removeSucceeded = true;
+        return;
+    }
+    if (state.createdIdentity === undefined
+        || status.entryIdentity !== state.createdIdentity) {
+        throw new Error(`${label} identity changed after creation: ${state.target}`);
+    }
+
+    const receipt = { applied: false };
+    const validateRemoval = () => {
+        status = lstatWithRealParent(fsApi, plan, state.target, label);
+        if (status === undefined) throw new Error(`${label} disappeared before removal`);
+        requireIdentity(status, state.createdIdentity, label);
+    };
     try {
-        if (fsApi.lstat(source) === undefined && fsApi.lstat(destination) !== undefined) {
+        if (status.isSymbolicLink() || !status.isDirectory()) {
+            fsApi.unlink(state.target, state.createdIdentity, receipt, validateRemoval);
+        } else {
+            fsApi.rmdir(state.target, state.createdIdentity, receipt, validateRemoval);
+        }
+        state.removeSucceeded = true;
+    } catch (error) {
+        try {
+            state.removeSucceeded = lstatWithRealParent(
+                fsApi,
+                plan,
+                state.target,
+                label,
+            ) === undefined;
+        } catch (reconcileError) {
+            throw new AggregateError(
+                [error, reconcileError],
+                `${label} removal failed ambiguously.`,
+            );
+        }
+        throw error;
+    }
+}
+
+function reconcileMoveAfterFailure(
+    fsApi,
+    plan,
+    source,
+    destination,
+    expectedIdentity,
+    receipt,
+    state,
+    error,
+    label,
+) {
+    try {
+        const sourceEntry = lstatWithRealParent(fsApi, plan, source, label);
+        const destinationEntry = lstatWithRealParent(
+            fsApi,
+            plan,
+            destination,
+            `${label} backup`,
+        );
+        if (receipt.applied && sourceEntry === undefined && destinationEntry !== undefined
+            && identityOf(destinationEntry, `${label} backup`) === expectedIdentity) {
             state.moveSucceeded = true;
         }
     } catch (reconcileError) {
@@ -258,13 +515,59 @@ function reconcileMoveAfterFailure(fsApi, source, destination, state, error, lab
     }
 }
 
-function moveOriginalTarget(fsApi, state) {
+function moveOriginalTarget(fsApi, plan, state) {
+    const validateMove = () => validateRenameEndpoints(
+        fsApi,
+        plan,
+        state.target,
+        state.backup,
+        state.originalIdentity,
+        state.label,
+        `${state.label} backup`,
+    );
+    validateMove();
+    const receipt = { applied: false };
     try {
-        fsApi.rename(state.target, state.backup);
+        fsApi.rename(
+            state.target,
+            state.backup,
+            state.originalIdentity,
+            receipt,
+            validateMove,
+        );
         state.moveSucceeded = true;
     } catch (error) {
-        reconcileMoveAfterFailure(fsApi, state.target, state.backup, state, error, state.label);
+        reconcileMoveAfterFailure(
+            fsApi,
+            plan,
+            state.target,
+            state.backup,
+            state.originalIdentity,
+            receipt,
+            state,
+            error,
+            state.label,
+        );
         throw error;
+    }
+}
+
+function validateRenameEndpoints(
+    fsApi,
+    plan,
+    source,
+    destination,
+    expectedSourceIdentity,
+    sourceLabel,
+    destinationLabel,
+) {
+    const sourceEntry = lstatWithRealParent(fsApi, plan, source, sourceLabel);
+    if (sourceEntry === undefined) {
+        throw new Error(`${sourceLabel} is missing before rename: ${source}`);
+    }
+    requireIdentity(sourceEntry, expectedSourceIdentity, sourceLabel);
+    if (lstatWithRealParent(fsApi, plan, destination, destinationLabel) !== undefined) {
+        throw new Error(`${destinationLabel} already exists before rename: ${destination}`);
     }
 }
 
@@ -273,7 +576,14 @@ function markGeneratedEntries(plan, fsApi, states, failures) {
         if (state.originalDetected && !state.moveSucceeded) continue;
         captureCleanupFailure(failures, `inspect generated ${state.label}`, () => {
             assertAllowedTarget(plan, state.target);
-            state.generatedCreated = fsApi.lstat(state.target) !== undefined;
+            const generatedEntry = lstatWithRealParent(
+                fsApi,
+                plan,
+                state.target,
+                state.label,
+            );
+            state.generatedCreated = generatedEntry !== undefined;
+            state.generatedIdentity = identityOf(generatedEntry, `generated ${state.label}`);
         });
     }
 }
@@ -281,9 +591,21 @@ function markGeneratedEntries(plan, fsApi, states, failures) {
 function restoreTargetEntry(plan, fsApi, state, failures) {
     if (state.originalDetected && !state.moveSucceeded) {
         const result = attemptCleanup(failures, `verify untouched ${state.label}`, () => {
-            if (fsApi.lstat(state.target) === undefined) {
+            const targetEntry = lstatWithRealParent(fsApi, plan, state.target, state.label);
+            if (targetEntry === undefined) {
+                const backupEntry = lstatWithRealParent(
+                    fsApi,
+                    plan,
+                    state.backup,
+                    `${state.label} backup`,
+                );
+                if (backupEntry !== undefined
+                    && identityOf(backupEntry, `${state.label} backup`) !== state.originalIdentity) {
+                    throw new Error(`${state.label} backup identity changed`);
+                }
                 throw new Error(`untouched original disappeared: ${state.target}`);
             }
+            requireIdentity(targetEntry, state.originalIdentity, state.label);
         });
         state.restoreSucceeded = result.ok;
         return;
@@ -292,14 +614,20 @@ function restoreTargetEntry(plan, fsApi, state, failures) {
     let targetReady = true;
     if (state.generatedCreated) {
         const removal = attemptCleanup(failures, `remove generated ${state.label}`, () => {
-            removeExactEntry(plan, fsApi, state.target);
+            removeExactEntry(plan, fsApi, state);
         });
         if (!removal.ok) {
-            targetReady = reconcileAbsentTarget(fsApi, state.target, failures, state.label);
+            targetReady = reconcileAbsentTarget(
+                fsApi,
+                plan,
+                state.target,
+                failures,
+                state.label,
+            );
         }
     } else {
         const absent = attemptCleanup(failures, `verify absent ${state.label}`, () => {
-            if (fsApi.lstat(state.target) !== undefined) {
+            if (lstatWithRealParent(fsApi, plan, state.target, state.label) !== undefined) {
                 throw new Error(`unrecorded entry occupies ${state.target}`);
             }
         });
@@ -312,38 +640,81 @@ function restoreTargetEntry(plan, fsApi, state, failures) {
     }
     if (!targetReady) return;
 
+    const restoreReceipt = { applied: false };
+    const validateRestore = () => validateRenameEndpoints(
+        fsApi,
+        plan,
+        state.backup,
+        state.target,
+        state.originalIdentity,
+        `${state.label} backup`,
+        state.label,
+    );
     const restored = attemptCleanup(failures, `restore prior ${state.label}`, () => {
-        fsApi.rename(state.backup, state.target);
+        validateRestore();
+        fsApi.rename(
+            state.backup,
+            state.target,
+            state.originalIdentity,
+            restoreReceipt,
+            validateRestore,
+        );
     });
     if (restored.ok) {
         state.restoreSucceeded = true;
         return;
     }
     const reconciled = attemptCleanup(failures, `reconcile restored ${state.label}`, () => {
-        if (fsApi.lstat(state.backup) !== undefined || fsApi.lstat(state.target) === undefined) {
+        const backupEntry = lstatWithRealParent(
+            fsApi,
+            plan,
+            state.backup,
+            `${state.label} backup`,
+        );
+        const targetEntry = lstatWithRealParent(
+            fsApi,
+            plan,
+            state.target,
+            state.label,
+        );
+        if (!restoreReceipt.applied || backupEntry !== undefined || targetEntry === undefined
+            || identityOf(targetEntry, state.label) !== state.originalIdentity) {
+            if (restoreReceipt.applied && targetEntry !== undefined
+                && identityOf(targetEntry, state.label) !== state.originalIdentity) {
+                throw new Error(`${state.label} identity changed after restore`);
+            }
             throw new Error(`prior entry was not restored to ${state.target}`);
         }
     });
     state.restoreSucceeded = reconciled.ok;
 }
 
-function reconcileAbsentTarget(fsApi, target, failures, label) {
+function reconcileAbsentTarget(fsApi, plan, target, failures, label) {
     return attemptCleanup(failures, `reconcile removed ${label}`, () => {
-        if (fsApi.lstat(target) !== undefined) {
+        if (lstatWithRealParent(fsApi, plan, target, label) !== undefined) {
             throw new Error(`generated entry remains at ${target}`);
         }
     }).ok;
 }
 
-function removeExactEntry(plan, fsApi, target) {
-    assertAllowedTarget(plan, target);
-    const status = fsApi.lstat(target);
+function removeExactEntry(plan, fsApi, state) {
+    assertAllowedTarget(plan, state.target);
+    const status = lstatWithRealParent(fsApi, plan, state.target, state.label);
     if (status === undefined) return;
+    requireIdentity(status, state.generatedIdentity, `generated ${state.label}`);
+    const receipt = { applied: false };
+    const validateRemoval = () => {
+        const currentEntry = lstatWithRealParent(fsApi, plan, state.target, state.label);
+        if (currentEntry === undefined) {
+            throw new Error(`generated ${state.label} disappeared before removal`);
+        }
+        requireIdentity(currentEntry, state.generatedIdentity, `generated ${state.label}`);
+    };
     if (status.isSymbolicLink() || !status.isDirectory()) {
-        fsApi.unlink(target);
+        fsApi.unlink(state.target, state.generatedIdentity, receipt, validateRemoval);
         return;
     }
-    fsApi.rmTree(target);
+    fsApi.rmTree(state.target, state.generatedIdentity, receipt, validateRemoval);
 }
 
 function assertAllowedTarget(plan, target) {
@@ -357,7 +728,25 @@ function restoreSchemaEntry(plan, fsApi, snapshot, state, failures) {
     if (!state.snapshotSucceeded) return;
     if (!state.moveSucceeded) {
         const untouched = attemptCleanup(failures, 'verify untouched tracked schema', () => {
-            assertExactSchema(fsApi, plan.schemaFile, snapshot);
+            const schemaEntry = lstatWithRealParent(
+                fsApi,
+                plan,
+                plan.schemaFile,
+                'tracked schema',
+            );
+            if (schemaEntry === undefined) {
+                const backupEntry = lstatWithRealParent(
+                    fsApi,
+                    plan,
+                    plan.schemaBackup,
+                    'tracked schema backup',
+                );
+                if (backupEntry !== undefined
+                    && identityOf(backupEntry, 'tracked schema backup') !== snapshot.identity) {
+                    throw new Error('tracked schema backup identity changed');
+                }
+            }
+            assertExactSchema(fsApi, plan, snapshot);
         });
         state.restoreSucceeded = untouched.ok;
         return;
@@ -365,16 +754,35 @@ function restoreSchemaEntry(plan, fsApi, snapshot, state, failures) {
 
     let schemaPathReady = true;
     const currentEntry = attemptCleanup(failures, 'inspect tracked schema replacement', () =>
-        fsApi.lstat(plan.schemaFile));
+        lstatWithRealParent(
+            fsApi,
+            plan,
+            plan.schemaFile,
+            'tracked schema replacement',
+        ));
     if (!currentEntry.ok) {
         schemaPathReady = false;
     } else if (currentEntry.value !== undefined) {
+        if (!state.workingCreated) {
+            captureCleanupFailure(failures, 'preserve unowned tracked schema entry', () => {
+                throw new Error(`unowned entry occupies tracked schema: ${plan.schemaFile}`);
+            });
+            return;
+        }
+        if (identityOf(currentEntry.value, 'tracked schema replacement')
+            !== state.workingIdentity) {
+            captureCleanupFailure(failures, 'preserve replaced tracked schema entry', () => {
+                throw new Error('tracked schema replacement identity changed');
+            });
+            return;
+        }
         const removed = attemptCleanup(failures, 'remove tracked schema replacement', () => {
-            removeExactSchemaEntry(plan, fsApi);
+            removeExactSchemaEntry(plan, fsApi, state.workingIdentity);
         });
         if (!removed.ok) {
             schemaPathReady = reconcileAbsentTarget(
                 fsApi,
+                plan,
                 plan.schemaFile,
                 failures,
                 'tracked schema replacement',
@@ -383,14 +791,47 @@ function restoreSchemaEntry(plan, fsApi, snapshot, state, failures) {
     }
     if (!schemaPathReady) return;
 
+    const restoreReceipt = { applied: false };
+    const validateRestore = () => validateRenameEndpoints(
+        fsApi,
+        plan,
+        plan.schemaBackup,
+        plan.schemaFile,
+        snapshot.identity,
+        'tracked schema backup',
+        'tracked schema',
+    );
     const restored = attemptCleanup(failures, 'restore prior tracked schema entry', () => {
-        fsApi.rename(plan.schemaBackup, plan.schemaFile);
+        validateRestore();
+        fsApi.rename(
+            plan.schemaBackup,
+            plan.schemaFile,
+            snapshot.identity,
+            restoreReceipt,
+            validateRestore,
+        );
     });
     let renameRestored = restored.ok;
     if (!renameRestored) {
         const reconciled = attemptCleanup(failures, 'reconcile restored tracked schema', () => {
-            if (fsApi.lstat(plan.schemaBackup) !== undefined
-                || fsApi.lstat(plan.schemaFile) === undefined) {
+            const backupEntry = lstatWithRealParent(
+                fsApi,
+                plan,
+                plan.schemaBackup,
+                'tracked schema backup',
+            );
+            const schemaEntry = lstatWithRealParent(
+                fsApi,
+                plan,
+                plan.schemaFile,
+                'tracked schema',
+            );
+            if (!restoreReceipt.applied || backupEntry !== undefined || schemaEntry === undefined
+                || identityOf(schemaEntry, 'tracked schema') !== snapshot.identity) {
+                if (restoreReceipt.applied && schemaEntry !== undefined
+                    && identityOf(schemaEntry, 'tracked schema') !== snapshot.identity) {
+                    throw new Error('tracked schema identity changed after restore');
+                }
                 throw new Error(`prior tracked schema was not restored to ${plan.schemaFile}`);
             }
         });
@@ -399,29 +840,51 @@ function restoreSchemaEntry(plan, fsApi, snapshot, state, failures) {
     if (!renameRestored) return;
 
     const verified = attemptCleanup(failures, 'verify restored tracked schema', () => {
-        assertExactSchema(fsApi, plan.schemaFile, snapshot);
+        assertExactSchema(fsApi, plan, snapshot);
     });
     state.restoreSucceeded = verified.ok;
 }
 
-function removeExactSchemaEntry(plan, fsApi) {
+function removeExactSchemaEntry(plan, fsApi, expectedIdentity) {
     assertSamePath(plan.schemaFile,
         path.join(plan.resourcesRoot, 'schema', 'merc32.schema.json'), 'tracked schema');
-    const status = fsApi.lstat(plan.schemaFile);
+    const status = lstatWithRealParent(
+        fsApi,
+        plan,
+        plan.schemaFile,
+        'tracked schema replacement',
+    );
     if (status === undefined) return;
+    requireIdentity(status, expectedIdentity, 'tracked schema replacement');
+    const receipt = { applied: false };
+    const validateRemoval = () => {
+        const currentEntry = lstatWithRealParent(
+            fsApi,
+            plan,
+            plan.schemaFile,
+            'tracked schema replacement',
+        );
+        if (currentEntry === undefined) {
+            throw new Error('tracked schema replacement disappeared before removal');
+        }
+        requireIdentity(currentEntry, expectedIdentity, 'tracked schema replacement');
+    };
     if (status.isSymbolicLink() || !status.isDirectory()) {
-        fsApi.unlink(plan.schemaFile);
+        fsApi.unlink(plan.schemaFile, expectedIdentity, receipt, validateRemoval);
         return;
     }
-    fsApi.rmTree(plan.schemaFile);
+    fsApi.rmTree(plan.schemaFile, expectedIdentity, receipt, validateRemoval);
 }
 
-function assertExactSchema(fsApi, schemaFile, snapshot) {
-    const status = fsApi.lstat(schemaFile);
+function assertExactSchema(fsApi, plan, snapshot) {
+    const status = lstatWithRealParent(fsApi, plan, plan.schemaFile, 'tracked schema');
     assert.ok(status !== undefined && !status.isSymbolicLink() && status.isFile(),
         'tracked schema was not restored as an exact file entry');
-    assert.deepStrictEqual(fsApi.readFile(schemaFile), snapshot.bytes);
-    assert.strictEqual(fsApi.stat(schemaFile).mtimeMs, snapshot.mtimeMs);
+    requireIdentity(status, snapshot.identity, 'tracked schema');
+    requireExactSchemaEntry(fsApi, plan);
+    assert.deepStrictEqual(fsApi.readFile(plan.schemaFile), snapshot.bytes);
+    requireExactSchemaEntry(fsApi, plan);
+    assert.strictEqual(fsApi.stat(plan.schemaFile).mtimeMs, snapshot.mtimeMs);
 }
 
 function captureCleanupFailure(failures, label, action) {
@@ -486,17 +949,71 @@ function comparablePath(value) {
 }
 
 function createNodeFsAdapter(fsModule) {
+    const lstat = (target) => {
+        const status = fsModule.lstatSync(target, { bigint: true, throwIfNoEntry: false });
+        if (status !== undefined) status.entryIdentity = `${status.dev}:${status.ino}`;
+        return status;
+    };
+    const requireExpectedIdentity = (target, expectedIdentity, label) => {
+        const status = lstat(target);
+        if (status === undefined) throw new Error(`${label} is missing: ${target}`);
+        if (status.entryIdentity !== expectedIdentity) {
+            throw new Error(`${label} identity changed`);
+        }
+        return status;
+    };
     return Object.freeze({
-        lstat: (target) => fsModule.lstatSync(target, { throwIfNoEntry: false }),
+        lstat,
         stat: (target) => fsModule.statSync(target),
-        mkdir: (target) => fsModule.mkdirSync(target),
-        rmdir: (target) => fsModule.rmdirSync(target),
-        rename: (source, destination) => fsModule.renameSync(source, destination),
+        mkdir: (target, receipt, validate) => {
+            validate();
+            fsModule.mkdirSync(target);
+            receipt.applied = true;
+            receipt.identity = lstat(target)?.entryIdentity;
+        },
+        rmdir: (target, expectedIdentity, receipt, validate) => {
+            validate();
+            requireExpectedIdentity(target, expectedIdentity, 'directory before removal');
+            fsModule.rmdirSync(target);
+            receipt.applied = true;
+        },
+        rename: (source, destination, expectedIdentity, receipt, validate) => {
+            validate();
+            requireExpectedIdentity(source, expectedIdentity, 'rename source');
+            if (lstat(destination) !== undefined) {
+                throw new Error(`rename destination already exists: ${destination}`);
+            }
+            fsModule.renameSync(source, destination);
+            receipt.applied = true;
+            receipt.identity = expectedIdentity;
+        },
         readFile: (target) => fsModule.readFileSync(target),
         writeFile: (target, bytes) => fsModule.writeFileSync(target, bytes),
+        createFile: (target, bytes, receipt, validate) => {
+            validate();
+            const descriptor = fsModule.openSync(target, 'wx');
+            try {
+                const status = fsModule.fstatSync(descriptor, { bigint: true });
+                receipt.applied = true;
+                receipt.identity = `${status.dev}:${status.ino}`;
+                fsModule.writeFileSync(descriptor, bytes);
+            } finally {
+                fsModule.closeSync(descriptor);
+            }
+        },
         utimes: (target, atime, mtime) => fsModule.utimesSync(target, atime, mtime),
-        unlink: (target) => fsModule.unlinkSync(target),
-        rmTree: (target) => fsModule.rmSync(target, { recursive: true, force: false }),
+        unlink: (target, expectedIdentity, receipt, validate) => {
+            validate();
+            requireExpectedIdentity(target, expectedIdentity, 'entry before unlink');
+            fsModule.unlinkSync(target);
+            receipt.applied = true;
+        },
+        rmTree: (target, expectedIdentity, receipt, validate) => {
+            validate();
+            requireExpectedIdentity(target, expectedIdentity, 'directory before recursive removal');
+            fsModule.rmSync(target, { recursive: true, force: false });
+            receipt.applied = true;
+        },
     });
 }
 
