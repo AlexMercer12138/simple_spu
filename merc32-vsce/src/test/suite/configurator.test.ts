@@ -211,7 +211,17 @@ suite('MERC32 SoC configurator extension host', () => {
 
             fs.appendFileSync(managedTop, '\n// modified by extension-host test\n', 'utf8');
             const modifiedTop = fs.readFileSync(managedTop);
-            assert.strictEqual(await runSocGeneration(uriA, 'normal', services), false);
+            const registeredConflict = vscode.commands.executeCommand<boolean>(
+                SOC_COMMANDS.generate,
+                uriA,
+            );
+            assert.strictEqual(
+                await settleCommandAfterClearingNotifications(
+                    'registered Generate command to report the managed-file conflict',
+                    registeredConflict,
+                ),
+                false,
+            );
             assert.deepStrictEqual(fs.readFileSync(managedTop), modifiedTop);
             assert.strictEqual(await runSocGeneration(uriA, 'force', services), true);
             assert.deepStrictEqual(fs.readFileSync(managedTop), originalTop);
@@ -347,6 +357,26 @@ async function waitFor<T>(
         await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
     throw new Error(`Timed out waiting for ${description}. Last observation: ${lastObservation}`);
+}
+
+async function settleCommandAfterClearingNotifications<T>(
+    description: string,
+    command: Thenable<T>,
+    deadlineMs = DEFAULT_DEADLINE_MS,
+): Promise<T> {
+    const state: {
+        settlement?: { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown };
+    } = {};
+    void Promise.resolve(command).then(
+        (value) => { state.settlement = { status: 'fulfilled', value }; },
+        (reason: unknown) => { state.settlement = { status: 'rejected', reason }; },
+    );
+    const settlement = await waitFor(description, async () => {
+        await vscode.commands.executeCommand('notifications.clearAll');
+        return state.settlement;
+    }, deadlineMs);
+    if (settlement.status === 'rejected') throw settlement.reason;
+    return settlement.value;
 }
 
 function describeHostState(): string {
