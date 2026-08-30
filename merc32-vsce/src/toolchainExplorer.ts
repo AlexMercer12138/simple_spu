@@ -1,10 +1,8 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { COMMANDS } from './constants';
 import { ToolchainCommandState } from './extensionCommands';
-import { ToolchainArtifact } from './types';
 
-type NodeKind = 'group' | 'command' | 'artifact' | 'info';
+type NodeKind = 'group' | 'command';
 
 interface NodeSpec {
     label: string;
@@ -15,7 +13,7 @@ interface NodeSpec {
     children?: NodeSpec[];
 }
 
-export class Merc32ToolchainExplorer implements vscode.TreeDataProvider<NodeSpec> {
+export class Merc32ToolchainExplorer implements vscode.TreeDataProvider<NodeSpec>, vscode.Disposable {
     private readonly changeEmitter = new vscode.EventEmitter<NodeSpec | undefined | null | void>();
     readonly onDidChangeTreeData = this.changeEmitter.event;
 
@@ -23,6 +21,10 @@ export class Merc32ToolchainExplorer implements vscode.TreeDataProvider<NodeSpec
 
     refresh(): void {
         this.changeEmitter.fire();
+    }
+
+    dispose(): void {
+        this.changeEmitter.dispose();
     }
 
     getTreeItem(element: NodeSpec): vscode.TreeItem {
@@ -45,7 +47,6 @@ export class Merc32ToolchainExplorer implements vscode.TreeDataProvider<NodeSpec
 
         return [
             this.buildGroup(),
-            this.artifactsGroup(),
         ];
     }
 
@@ -63,20 +64,6 @@ export class Merc32ToolchainExplorer implements vscode.TreeDataProvider<NodeSpec
             ],
         };
     }
-
-    private artifactsGroup(): NodeSpec {
-        const children = this.state.artifacts.length
-            ? this.state.artifacts.map((artifact) => artifactNode(artifact))
-            : [infoNode('No artifacts yet', 'Run a build to populate this list')];
-
-        return {
-            label: 'Artifacts',
-            kind: 'group',
-            icon: 'folder-library',
-            children,
-        };
-    }
-
 }
 
 function commandNode(label: string, command: string, description: string, icon: string): NodeSpec {
@@ -86,28 +73,5 @@ function commandNode(label: string, command: string, description: string, icon: 
         description,
         icon,
         command: { command, title: label },
-    };
-}
-
-function artifactNode(artifact: ToolchainArtifact): NodeSpec {
-    return {
-        label: artifact.label || path.basename(artifact.file),
-        kind: 'artifact',
-        description: artifact.description || artifact.file,
-        icon: 'file',
-        command: {
-            command: COMMANDS.openLastArtifact,
-            title: 'Open Artifact',
-            arguments: [artifact],
-        },
-    };
-}
-
-function infoNode(label: string, description: string): NodeSpec {
-    return {
-        label,
-        kind: 'info',
-        description,
-        icon: 'info',
     };
 }

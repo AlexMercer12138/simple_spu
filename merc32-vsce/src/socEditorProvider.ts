@@ -342,16 +342,20 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
 
     constructor(
         private readonly extensionUri: vscode.Uri,
+        catalog: ModuleCatalog,
         private readonly vscodeApi: VscodeApi = loadVscode(),
     ) {
-        this.catalog = loadCatalog(this.vscodeApi.Uri.joinPath(extensionUri, 'resources').fsPath);
+        this.catalog = catalog;
     }
 
     static register(
         context: vscode.ExtensionContext,
+        catalog?: ModuleCatalog,
         vscodeApi: VscodeApi = loadVscode(),
     ): vscode.Disposable {
-        const provider = new Merc32SocEditorProvider(context.extensionUri, vscodeApi);
+        const resolvedCatalog = catalog
+            ?? loadCatalog(vscodeApi.Uri.joinPath(context.extensionUri, 'resources').fsPath);
+        const provider = new Merc32SocEditorProvider(context.extensionUri, resolvedCatalog, vscodeApi);
         return vscodeApi.window.registerCustomEditorProvider(
             SOC_EDITOR_VIEW_TYPE,
             provider,

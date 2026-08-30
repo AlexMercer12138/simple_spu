@@ -7,7 +7,13 @@ import { getAssemblerSettings } from './configuration';
 import { CompileMode, FileAssemblyResult } from './types';
 
 export class AssemblyRunner implements vscode.Disposable {
-    private readonly channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+    private readonly channel: vscode.OutputChannel;
+    private readonly ownsChannel: boolean;
+
+    constructor(channel?: vscode.OutputChannel) {
+        this.channel = channel ?? vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+        this.ownsChannel = channel === undefined;
+    }
 
     run(file: string, mode: CompileMode): FileAssemblyResult | undefined {
         try {
@@ -32,7 +38,7 @@ export class AssemblyRunner implements vscode.Disposable {
     }
 
     dispose(): void {
-        this.channel.dispose();
+        if (this.ownsChannel) this.channel.dispose();
     }
 
     private showSuccess(mode: CompileMode, result: FileAssemblyResult): void {

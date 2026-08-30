@@ -27,6 +27,11 @@ export interface ToolchainArtifact {
     description?: string;
 }
 
+export interface CompilerArtifactStore {
+    setCompilerArtifacts(artifacts: readonly ToolchainArtifact[]): void;
+    getCompilerArtifacts(): readonly ToolchainArtifact[];
+}
+
 export function isOutputFormat(value: string | undefined): value is OutputFormat {
     return Boolean(value && (OUTPUT_FORMATS as readonly string[]).includes(value));
 }

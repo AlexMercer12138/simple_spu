@@ -36,9 +36,14 @@ export class SocDiagnostics implements vscode.Disposable {
     private readonly subscriptions: vscode.Disposable[];
     private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    constructor(assetRoot: string, vscodeApi: VscodeApi = loadVscode() as VscodeApi) {
+    constructor(
+        catalogOrAssetRoot: ModuleCatalog | string,
+        vscodeApi: VscodeApi = loadVscode() as VscodeApi,
+    ) {
         this.vscodeApi = vscodeApi;
-        this.catalog = loadCatalog(assetRoot);
+        this.catalog = typeof catalogOrAssetRoot === 'string'
+            ? loadCatalog(catalogOrAssetRoot)
+            : catalogOrAssetRoot;
         this.collection = vscodeApi.languages.createDiagnosticCollection('merc32-soc');
         this.subscriptions = [
             vscodeApi.workspace.onDidOpenTextDocument((document) => this.refresh(document)),

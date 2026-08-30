@@ -5,22 +5,27 @@ import { COMMANDS } from './constants';
 import { buildCFileToRom, compileCFileToAssembly } from './compilerService';
 import { getActiveAsmFile, getActiveCFile, getActiveMerc32SourceFile } from './editor';
 import { getCompileModeLabel, getCompileModeQuickPickItems, getCompileModeShortName } from './compileModes';
-import { CompileMode, DEFAULT_COMPILE_MODE, ToolchainArtifact } from './types';
+import {
+    CompileMode,
+    CompilerArtifactStore,
+    DEFAULT_COMPILE_MODE,
+    ToolchainArtifact,
+} from './types';
 
 export interface ToolchainCommandState {
     currentMode: CompileMode;
-    artifacts: ToolchainArtifact[];
 }
 
 export function registerAssemblerCommands(
     runner: AssemblyRunner,
     state: ToolchainCommandState,
+    artifactStore: CompilerArtifactStore,
     onArtifactsChanged: () => void,
 ): vscode.Disposable[] {
     let currentMode: CompileMode = state.currentMode || DEFAULT_COMPILE_MODE;
 
     const setArtifacts = (artifacts: ToolchainArtifact[]) => {
-        state.artifacts = artifacts;
+        artifactStore.setCompilerArtifacts(artifacts);
         onArtifactsChanged();
     };
 
@@ -88,7 +93,8 @@ export function registerAssemblerCommands(
             }
         }),
         vscode.commands.registerCommand(COMMANDS.openLastArtifact, async (artifact?: ToolchainArtifact) => {
-            const target = artifact || state.artifacts[state.artifacts.length - 1];
+            const artifacts = artifactStore.getCompilerArtifacts();
+            const target = artifact || artifacts[artifacts.length - 1];
             if (!target) {
                 vscode.window.showInformationMessage('No MERC32 artifact has been generated yet');
                 return;

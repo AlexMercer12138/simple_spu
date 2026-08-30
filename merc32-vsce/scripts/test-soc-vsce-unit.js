@@ -1,4 +1,5 @@
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 const pkg = require('../package.json');
@@ -74,7 +75,13 @@ for (const command of [
     `missing custom-editor title action: ${command}`);
 }
 
-const { SOC_COMMANDS, SOC_CONFIG_SUFFIX, SOC_EDITOR_VIEW_TYPE, SOC_VIEW_IDS } = require('../out/constants');
+const {
+    SOC_COMMANDS,
+    SOC_CONFIG_SUFFIX,
+    SOC_EDITOR_VIEW_TYPE,
+    SOC_HOST_COMMANDS,
+    SOC_VIEW_IDS,
+} = require('../out/constants');
 const {
     MAX_WEBVIEW_MESSAGE_BYTES,
     isCurrentDocumentMessage,
@@ -101,6 +108,15 @@ const {
     runSocGeneration,
     workspaceUriFromFsPath,
 } = require('../out/socCommands');
+const {
+    Merc32ArtifactStore,
+    Merc32ArtifactsProvider,
+    SOC_ACTION_MODELS,
+    SOC_ARTIFACT_STATE_KEY,
+    SocConfigurationProvider,
+    artifactPathsFromManifest,
+    buildConfigurationModels,
+} = require('../out/socExplorer');
 
 assert.strictEqual(SOC_CONFIG_SUFFIX, '.merc32.json');
 assert.strictEqual(SOC_EDITOR_VIEW_TYPE, 'merc32.socConfigEditor');
@@ -120,8 +136,86 @@ assert.deepStrictEqual(SOC_COMMANDS, {
     adoptOutput: 'merc32.soc.adoptOutput',
     openArtifact: 'merc32.soc.openArtifact',
     reopenAsText: 'merc32.soc.reopenAsText',
-    refresh: 'merc32.soc.refresh',
 });
+assert.deepStrictEqual(SOC_HOST_COMMANDS, { refresh: 'merc32.soc.refresh' });
+
+const configurationModels = buildConfigurationModels([
+    { uri: 'two-b', workspaceRelativePath: 'root-two/peripherals/b.merc32.json' },
+    { uri: 'one-z', workspaceRelativePath: 'root-one/z.merc32.json' },
+    { uri: 'two-a', workspaceRelativePath: 'root-two/peripherals/a.merc32.json' },
+    { uri: 'two-c', workspaceRelativePath: 'root-two\\peripherals\\c.merc32.json' },
+]);
+assert.deepStrictEqual(configurationModels.map((item) => item.workspaceRelativePath), [
+    'root-one/z.merc32.json',
+    'root-two/peripherals/a.merc32.json',
+    'root-two/peripherals/b.merc32.json',
+    'root-two/peripherals/c.merc32.json',
+], 'configurations were not sorted by workspace-relative path');
+assert.deepStrictEqual(configurationModels.slice(1).map((item) => item.uri), ['two-a', 'two-b', 'two-c'],
+    'same-directory configurations were collapsed or reordered');
+
+assert.deepStrictEqual(SOC_ACTION_MODELS.map((item) => [item.label, item.command]), [
+    ['Validate', 'merc32.soc.validate'],
+    ['Auto-assign', 'merc32.soc.autoAssign'],
+    ['Generate', 'merc32.soc.generate'],
+    ['Force Generate', 'merc32.soc.forceGenerate'],
+]);
+
+const artifactManifest = {
+    files: [
+        { kind: 'generated/rtl', logicalSource: 'generator:renderPlbRouter', path: 'rtl/generated/demo_plb_router.v' },
+        { kind: 'generated/software-header', logicalSource: 'generator:renderSocHeader', path: 'software/include/demo.h' },
+        { kind: 'generated/address-map', logicalSource: 'generator:renderAddressMap', path: 'address-map.json' },
+        { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: 'rtl/demo.v' },
+        { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: '../outside.v' },
+    ],
+};
+assert.deepStrictEqual(artifactPathsFromManifest(artifactManifest), [
+    'rtl/demo.v',
+    'software/include/demo.h',
+    'address-map.json',
+], 'manifest artifact selection did not return the exact safe generated children');
+
+const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+for (const viewKey of ['configurations', 'generate', 'build', 'artifacts']) {
+    assert.match(extensionSource, new RegExp(`registerTreeDataProvider\\(SOC_VIEW_IDS\\.${viewKey}`),
+        `activation did not register the ${viewKey} view`);
+}
+assert.strictEqual((extensionSource.match(/createOutputChannel\(/g) ?? []).length, 1,
+    'activation must create exactly one shared output channel');
+assert.strictEqual((extensionSource.match(/loadCatalog\(/g) ?? []).length, 1,
+    'activation must load exactly one catalog');
+assert.match(extensionSource, /new AssemblyRunner\(output\)/,
+    'the assembler runner does not use the shared output channel');
+assert.match(extensionSource, /new SocDiagnostics\(catalog,/,
+    'diagnostics do not receive the shared catalog');
+assert.match(extensionSource, /new Merc32SocEditorProvider\(context\.extensionUri, catalog,/,
+    'the custom editor does not receive the shared catalog');
+assert.match(extensionSource, /registerAssemblerCommands\([\s\S]*artifactStore/,
+    'legacy commands do not publish into the shared artifact store');
+assert.match(extensionSource, /catch \(error\)[\s\S]*SoC tools were disabled/,
+    'activation does not isolate packaged-catalog failure to the SoC side');
+assert.doesNotMatch(extensionSource, /await vscode\.window\.showErrorMessage/,
+    'catalog failure notification blocks extension activation');
+assert.match(extensionSource,
+    /registerSocExplorerCommands\([\s\S]*if \(catalogFailureMessage\)[\s\S]*showErrorMessage/,
+    'catalog failure is shown before legacy commands and views are registered');
+
+const extensionCommandsSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extensionCommands.ts'), 'utf8');
+assert.match(extensionCommandsSource, /artifactStore\.setCompilerArtifacts\(artifacts\)/,
+    'compiler outputs are not published through the shared store');
+assert.doesNotMatch(extensionCommandsSource, /state\.artifacts\s*=/,
+    'compiler outputs remained in the legacy explorer state');
+
+const toolchainExplorerSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'toolchainExplorer.ts'), 'utf8');
+assert.doesNotMatch(toolchainExplorerSource, /artifactsGroup|No artifacts yet/,
+    'the Toolchain view still owns an artifact subtree');
+assert.match(toolchainExplorerSource, /implements vscode\.TreeDataProvider<[^>]+>, vscode\.Disposable/,
+    'the Toolchain provider does not dispose its event emitter');
+assert.match(extensionSource, /context\.subscriptions\.push\([\s\S]*toolchainProvider,/,
+    'the Toolchain provider is not activation-owned');
 
 assert.deepStrictEqual(parseWebviewMessage({
     type: 'setValue', documentVersion: 7, path: ['cpu', 'debug'], value: true,
@@ -823,6 +917,226 @@ try {
         },
         toString() { return `file://${this.path}`; },
     });
+
+    const compilerArtifactUri = uri('build/existing.hex');
+    const missingCompilerArtifactUri = uri('build/missing.asm');
+    const liveConfigUri = uri('configs/live.merc32.json');
+    const liveOutputUri = uri('generated/live');
+    const deadConfigUri = uri('configs/dead.merc32.json');
+    const deadOutputUri = uri('generated/dead');
+    const parseTestUri = (value) => {
+        const parsed = new URL(value);
+        return uri(decodeURIComponent(parsed.pathname).replace(/^\/workspace\//, ''));
+    };
+    const joinTestUri = (base, ...segments) => base.with({
+        path: path.posix.join(base.path, ...segments),
+    });
+    const artifactWorkspaceUpdates = [];
+    const persistedArtifacts = [
+        { configUri: liveConfigUri.toString(), outputUri: liveOutputUri.toString() },
+        { configUri: deadConfigUri.toString(), outputUri: deadOutputUri.toString() },
+        { configUri: 'not a URI', outputUri: 'also not a URI' },
+    ];
+    const fileTypes = new Map([
+        [compilerArtifactUri.toString(), 1],
+        [liveOutputUri.toString(), 2],
+        [joinTestUri(liveOutputUri, 'manifest.json').toString(), 1],
+        [joinTestUri(liveOutputUri, 'rtl/live.v').toString(), 1],
+        [joinTestUri(liveOutputUri, 'address-map.json').toString(), 1],
+    ]);
+    const artifactVscode = {
+        FileType: { File: 1, Directory: 2 },
+        Uri: {
+            parse: parseTestUri,
+            file(value) { return uri(value.replace(/^C:\\workspace\\/, '').replace(/\\/g, '/')); },
+            joinPath: joinTestUri,
+            isUri(value) { return Boolean(value && typeof value.toString === 'function'); },
+        },
+        workspace: {
+            fs: {
+                async stat(value) {
+                    const type = fileTypes.get(value.toString());
+                    if (type === undefined) throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+                    return { type, ctime: 0, mtime: 0, size: 1 };
+                },
+                async readFile(value) {
+                    assert.strictEqual(value.toString(), joinTestUri(liveOutputUri, 'manifest.json').toString());
+                    return Buffer.from(JSON.stringify({
+                        files: [
+                            { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: 'rtl/live.v' },
+                            { kind: 'generated/software-header', logicalSource: 'generator:renderSocHeader', path: 'software/include/live.h' },
+                            { kind: 'generated/address-map', logicalSource: 'generator:renderAddressMap', path: 'address-map.json' },
+                        ],
+                    }));
+                },
+            },
+            asRelativePath(value) { return value.path.slice('/workspace/'.length); },
+            async openTextDocument(value) {
+                artifactOpenCalls.push(['openTextDocument', value]);
+                return { uri: value };
+            },
+        },
+        window: {
+            async showTextDocument(document, options) {
+                artifactOpenCalls.push(['showTextDocument', document, options]);
+            },
+        },
+        commands: {
+            async executeCommand(...args) { artifactOpenCalls.push(['executeCommand', ...args]); },
+        },
+        EventEmitter: class {
+            constructor() {
+                this.listeners = [];
+                this.event = (listener) => {
+                    this.listeners.push(listener);
+                    return { dispose: () => { this.listeners = this.listeners.filter((item) => item !== listener); } };
+                };
+            }
+            fire(value) { for (const listener of this.listeners) listener(value); }
+            dispose() { this.listeners = []; }
+        },
+        TreeItem: class {
+            constructor(label, collapsibleState) {
+                this.label = label;
+                this.collapsibleState = collapsibleState;
+            }
+        },
+        TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+        ThemeIcon: class { constructor(id) { this.id = id; } },
+    };
+    const artifactWorkspaceState = {
+        get(key, fallback) {
+            assert.strictEqual(key, SOC_ARTIFACT_STATE_KEY);
+            return persistedArtifacts ?? fallback;
+        },
+        async update(key, value) {
+            artifactWorkspaceUpdates.push([key, value]);
+        },
+    };
+    const artifactStore = new Merc32ArtifactStore(artifactWorkspaceState, artifactVscode);
+    artifactStore.setCompilerArtifacts([
+        { label: 'existing.hex', file: compilerArtifactUri.fsPath, description: 'Assembler output' },
+        { label: 'missing.asm', file: missingCompilerArtifactUri.fsPath, description: 'Tiny C output' },
+    ]);
+    await artifactStore.refresh();
+    const artifactSnapshot = artifactStore.getSnapshot();
+    assert.deepStrictEqual(artifactSnapshot.compiler.map((item) => item.label), ['existing.hex'],
+        'refresh retained a missing compiler artifact');
+    assert.strictEqual(artifactSnapshot.generatedSocs.length, 1,
+        'refresh retained a generated SoC with a missing output/manifest');
+    assert.strictEqual(artifactSnapshot.generatedSocs[0].configUri.toString(), liveConfigUri.toString());
+    assert.deepStrictEqual(artifactSnapshot.generatedSocs[0].artifacts.map((item) => item.relativePath), [
+        undefined,
+        'manifest.json',
+        'rtl/live.v',
+        'address-map.json',
+    ], 'refresh retained a missing generated child or lost a required artifact');
+    assert.deepStrictEqual(artifactWorkspaceUpdates.at(-1), [SOC_ARTIFACT_STATE_KEY, [{
+        configUri: liveConfigUri.toString(),
+        outputUri: liveOutputUri.toString(),
+    }]], 'dead persisted generated output was not removed from workspace state');
+
+    const artifactOpenCalls = [];
+    const artifactProvider = new Merc32ArtifactsProvider(artifactStore, artifactVscode);
+    const artifactRoots = artifactProvider.getChildren();
+    const compilerNode = artifactRoots.find((item) => item.label === 'existing.hex');
+    assert.ok(compilerNode, 'shared compiler artifact was absent from the Artifacts view');
+    assert.strictEqual(await artifactProvider.openArtifact({ kind: 'file', uri: compilerArtifactUri }), false,
+        'raw artifact-shaped input was accepted');
+    assert.strictEqual(await artifactProvider.openArtifact(compilerNode), true);
+    assert.deepStrictEqual(artifactOpenCalls.map((call) => call[0]), [
+        'openTextDocument',
+        'showTextDocument',
+    ], 'file artifact did not use openTextDocument plus showTextDocument');
+    assert.strictEqual(artifactOpenCalls[0][1].toString(), compilerArtifactUri.toString());
+    assert.strictEqual(artifactOpenCalls[1][1].uri, artifactOpenCalls[0][1]);
+    assert.deepStrictEqual(artifactOpenCalls[1][2], { preview: false });
+    artifactOpenCalls.length = 0;
+    const socGroup = artifactRoots.find((item) => item.kind === 'group');
+    const outputDirectoryNode = artifactProvider.getChildren(socGroup)
+        .find((item) => item.kind === 'directory');
+    assert.strictEqual(await artifactProvider.openArtifact(outputDirectoryNode), true);
+    assert.strictEqual(artifactOpenCalls.length, 1);
+    assert.deepStrictEqual(artifactOpenCalls[0].slice(0, 2), ['executeCommand', 'revealFileInOS'],
+        'directory artifact did not use revealFileInOS');
+    assert.strictEqual(artifactOpenCalls[0][2].toString(), liveOutputUri.toString());
+    artifactProvider.dispose();
+
+    const watcherDisposals = [];
+    const watchers = [];
+    let workspaceFolderListener;
+    class FakeRelativePattern {
+        constructor(base, patternValue) {
+            this.base = base;
+            this.pattern = patternValue;
+        }
+    }
+    const workspaceFolders = [
+        { name: 'root-one', uri: uri('root-one') },
+        { name: 'root-two', uri: uri('root-two') },
+    ];
+    const discoveredByRoot = new Map([
+        ['root-one', [uri('root-one/z.merc32.json')]],
+        ['root-two', [uri('root-two/peripherals/b.merc32.json'), uri('root-two/peripherals/a.merc32.json')]],
+    ]);
+    const configurationVscode = {
+        ...artifactVscode,
+        RelativePattern: FakeRelativePattern,
+        workspace: {
+            workspaceFolders,
+            async findFiles(patternValue) {
+                assert.ok(patternValue instanceof FakeRelativePattern);
+                assert.strictEqual(patternValue.pattern, '**/*.merc32.json');
+                return discoveredByRoot.get(patternValue.base.name) ?? [];
+            },
+            asRelativePath(value, includeWorkspaceFolder) {
+                assert.strictEqual(includeWorkspaceFolder, true);
+                return value.path.slice('/workspace/'.length);
+            },
+            createFileSystemWatcher(patternValue) {
+                assert.ok(patternValue instanceof FakeRelativePattern);
+                const listeners = { create: [], change: [], delete: [] };
+                const watcher = {
+                    patternValue,
+                    listeners,
+                    onDidCreate(listener) { listeners.create.push(listener); return trackedDisposable('create'); },
+                    onDidChange(listener) { listeners.change.push(listener); return trackedDisposable('change'); },
+                    onDidDelete(listener) { listeners.delete.push(listener); return trackedDisposable('delete'); },
+                    dispose() { watcherDisposals.push('watcher'); },
+                };
+                watchers.push(watcher);
+                return watcher;
+            },
+            onDidChangeWorkspaceFolders(listener) {
+                workspaceFolderListener = listener;
+                return trackedDisposable('workspace-folders');
+            },
+        },
+    };
+    function trackedDisposable(kind) {
+        return { dispose() { watcherDisposals.push(kind); } };
+    }
+    const configurationProvider = await SocConfigurationProvider.create(configurationVscode);
+    assert.strictEqual(watchers.length, 2, 'did not create one watcher per workspace folder');
+    assert.deepStrictEqual(configurationProvider.getChildren()
+        .map((item) => item.workspaceRelativePath), [
+        'root-one/z.merc32.json',
+        'root-two/peripherals/a.merc32.json',
+        'root-two/peripherals/b.merc32.json',
+    ]);
+    watchers[0].listeners.change[0](uri('root-one/new.merc32.json'));
+    await configurationProvider.refresh();
+    workspaceFolderListener({ added: [], removed: [] });
+    await configurationProvider.refresh();
+    assert.strictEqual(watchers.length, 4,
+        'workspace-folder changes did not rebuild one watcher per current folder');
+    configurationProvider.dispose();
+    assert.strictEqual(watcherDisposals.filter((kind) => kind === 'watcher').length, 4);
+    assert.strictEqual(watcherDisposals.filter((kind) => kind === 'create').length, 4);
+    assert.strictEqual(watcherDisposals.filter((kind) => kind === 'change').length, 4);
+    assert.strictEqual(watcherDisposals.filter((kind) => kind === 'delete').length, 4);
+    assert.strictEqual(watcherDisposals.filter((kind) => kind === 'workspace-folders').length, 1);
+
     const explicitUri = uri('explicit.merc32.json');
     const activeUri = uri('active.merc32.json');
     const workspaceUri = uri('workspace.merc32.json');

@@ -38,5 +38,8 @@ export const SOC_COMMANDS = {
     adoptOutput: 'merc32.soc.adoptOutput',
     openArtifact: 'merc32.soc.openArtifact',
     reopenAsText: 'merc32.soc.reopenAsText',
+} as const;
+
+export const SOC_HOST_COMMANDS = {
     refresh: 'merc32.soc.refresh',
 } as const;
