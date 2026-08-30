@@ -139,8 +139,12 @@
             addField('Output directory', ['project', 'outputDir'], model.config.project.outputDir, { kind: 'text' });
         } else if (root === 'cpu') {
             propertyTitle.textContent = 'CPU';
-            addField('Debug port', ['cpu', 'debug'], Boolean(model.config.cpu.debug), { kind: 'boolean' });
-            addField('JTAG ID code', ['cpu', 'jtagIdCode'], model.config.cpu.jtagIdCode || '0x4d320001', { kind: 'text' });
+            addField('Debug port', ['cpu', 'debug'], Boolean(model.config.cpu.debug), {
+                kind: 'boolean', optional: true,
+            });
+            addField('JTAG ID code', ['cpu', 'jtagIdCode'], model.config.cpu.jtagIdCode || '', {
+                kind: 'text', optional: true, placeholder: '0x4d320001 (default)',
+            });
         } else if (root === 'memory') {
             renderMemory(selected[1]);
         } else if (root === 'peripherals') {
@@ -164,7 +168,9 @@
         });
         addField('Capacity', ['memory', slot, 'size'], memory.size, { kind: valueKind(memory.size) });
         if (memory.type === 'internal_ram') {
-            addField('Initialization file', ['memory', slot, 'initFile'], memory.initFile || '', { kind: 'text' });
+            addField('Initialization file', ['memory', slot, 'initFile'], memory.initFile || '', {
+                kind: 'text', optional: true,
+            });
         }
     }
 
@@ -178,7 +184,9 @@
             options: model.catalog.modules.map((item) => ({ value: item.type, label: item.label })),
         });
         addField('Instance name', ['peripherals', index, 'name'], peripheral.name, { kind: 'text' });
-        addField('Base address', ['peripherals', index, 'baseAddress'], peripheral.baseAddress || '', { kind: 'text' });
+        addField('Base address', ['peripherals', index, 'baseAddress'], peripheral.baseAddress || '', {
+            kind: 'text', optional: true,
+        });
         if (descriptor && descriptor.parameters.length) {
             propertyForm.appendChild(groupHeading('Module parameters'));
             descriptor.parameters.forEach((parameter) => {
@@ -191,6 +199,7 @@
                             : parameter.type === 'string' ? 'text' : 'number',
                     minimum: parameter.minimum,
                     maximum: parameter.maximum,
+                    optional: true,
                     options: parameter.values && parameter.values.map((value) => ({
                         value,
                         label: String(value),
@@ -209,7 +218,9 @@
             options: model.catalog.externalInterfaces.map((item) => ({ value: item.type, label: item.label })),
         });
         addField('Instance name', ['externalInterfaces', index, 'name'], endpoint.name, { kind: 'text' });
-        addField('Base address', ['externalInterfaces', index, 'baseAddress'], endpoint.baseAddress || '', { kind: 'text' });
+        addField('Base address', ['externalInterfaces', index, 'baseAddress'], endpoint.baseAddress || '', {
+            kind: 'text', optional: true,
+        });
         addField('Window size', ['externalInterfaces', index, 'windowSize'], endpoint.windowSize, {
             kind: valueKind(endpoint.windowSize),
         });
@@ -298,16 +309,33 @@
             control = document.createElement('input');
             control.type = options.kind === 'number' ? 'number' : 'text';
             control.value = value === undefined ? '' : String(value);
+            if (options.placeholder !== undefined) control.placeholder = options.placeholder;
             if (options.minimum !== undefined) control.min = String(options.minimum);
             if (options.maximum !== undefined) control.max = String(options.maximum);
             if (options.kind === 'number') control.step = '1';
             control.addEventListener('change', () => {
+                if (control.value === '') {
+                    if (options.optional) postUnsetValue(path);
+                    return;
+                }
                 const next = options.kind === 'number' ? Number(control.value) : control.value;
                 if (options.kind !== 'number' || Number.isFinite(next)) postSetValue(path, next);
             });
         }
         control.disabled = Boolean(model.readOnly);
         detail.appendChild(control);
+        if (options.optional) {
+            const reset = element('button', 'field-reset', '-');
+            reset.type = 'button';
+            reset.title = `Clear ${labelText}`;
+            reset.setAttribute('aria-label', reset.title);
+            reset.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                postUnsetValue(path);
+            });
+            detail.appendChild(reset);
+        }
         row.append(label, detail);
         propertyForm.appendChild(row);
     }
@@ -479,6 +507,14 @@
             documentVersion: model.documentVersion,
             path,
             value,
+        });
+    }
+
+    function postUnsetValue(path) {
+        vscode.postMessage({
+            type: 'unsetValue',
+            documentVersion: model.documentVersion,
+            path,
         });
     }
 

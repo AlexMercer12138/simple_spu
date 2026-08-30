@@ -85,8 +85,11 @@ const { buildJsonReplacement } = require('../out/socJsonEdits');
 const { diagnosticRange } = require('../out/socDiagnostics');
 const {
     applySocDocumentUpdates,
+    buildSocDocumentUpdates,
     buildSocEditorViewModel,
+    executeSocEditorCommand,
     isEditableSocPath,
+    isUnsettableSocPath,
     renderEditorHtml,
 } = require('../out/socEditorProvider');
 
@@ -120,6 +123,9 @@ assert.deepStrictEqual(parseWebviewMessage({
 assert.deepStrictEqual(parseWebviewMessage({
     type: 'select', documentVersion: 7, path: ['peripherals', 0],
 }), { type: 'select', documentVersion: 7, path: ['peripherals', 0] });
+assert.deepStrictEqual(parseWebviewMessage({
+    type: 'unsetValue', documentVersion: 7, path: ['peripherals', 0, 'baseAddress'],
+}), { type: 'unsetValue', documentVersion: 7, path: ['peripherals', 0, 'baseAddress'] });
 
 const inheritedType = Object.create({ type: 'ready' });
 const inheritedPath = Object.create({ path: ['cpu', 'debug'] });
@@ -139,6 +145,8 @@ const invalidMessages = [
     { type: 'select', path: ['C:temp'] },
     { type: 'select', path: ['C:'] },
     { type: 'setValue', path: ['cpu', 'debug'], value: true },
+    { type: 'unsetValue', path: ['cpu', 'debug'] },
+    { type: 'unsetValue', documentVersion: 1, path: ['cpu', 'debug'], value: false },
     { type: 'setValue', documentVersion: 0, path: ['cpu', 'debug'], value: true },
     { type: 'setValue', documentVersion: 1.5, path: ['cpu', 'debug'], value: true },
     { type: 'setValue', documentVersion: 1, path: ['cpu', 'c:Temp'], value: true },
@@ -151,14 +159,37 @@ const invalidMessages = [
     { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: Object.create(null) },
     { type: 'setValue', documentVersion: 1, path: ['cpu', 'debug'], value: [true, Object.create({ injected: true })] },
     { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'C:\\outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'C:outside' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '\\\\server\\share' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '\\\\?\\C:\\outside' },
     { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '/outside' },
     { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: '../outside' },
     { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'file:///outside' },
-    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'rtl/cpu/core.v' },
-    { type: 'setValue', documentVersion: 1, path: ['project', 'outputDir'], value: 'resources/webview/socEditor.js' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'generated/demo_soc' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'generated\\demo_soc' },
+    { type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'resources/generated' },
 ];
 for (const value of invalidMessages) {
     assert.strictEqual(parseWebviewMessage(value), undefined, `accepted invalid message: ${JSON.stringify(value)}`);
+}
+
+for (const [pathValue, relativeValue] of [
+    [['project', 'outputDir'], 'generated\\demo_soc'],
+    [['project', 'outputDir'], 'resources/generated'],
+    [['project', 'outputDir'], 'rtl/cpu/core.v'],
+    [['memory', 'ilb', 'initFile'], 'boot\\firmware.mem'],
+]) {
+    assert.deepStrictEqual(parseWebviewMessage({
+        type: 'setValue',
+        documentVersion: 4,
+        path: pathValue,
+        value: relativeValue,
+    }), {
+        type: 'setValue',
+        documentVersion: 4,
+        path: pathValue,
+        value: relativeValue,
+    }, `rejected safe config-relative path: ${relativeValue}`);
 }
 
 assert.strictEqual(MAX_WEBVIEW_MESSAGE_BYTES, 64 * 1024);
@@ -366,6 +397,62 @@ assert.strictEqual(isEditableSocPath(
     catalog,
     ['interrupt', 'sources'],
 ), true, 'controller interrupt routes cannot be added or removed');
+
+for (const optionalPath of [
+    ['cpu', 'debug'],
+    ['cpu', 'jtagIdCode'],
+    ['memory', 'ilb', 'initFile'],
+    ['peripherals', 0, 'baseAddress'],
+    ['peripherals', 0, 'parameters', 'SYS_CLK_FREQ'],
+    ['externalInterfaces', 0, 'baseAddress'],
+]) {
+    assert.strictEqual(isUnsettableSocPath(parsedMultiForEditing.config, catalog, optionalPath), true,
+        `rejected optional field deletion: ${JSON.stringify(optionalPath)}`);
+    assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+        type: 'unsetValue', documentVersion: 12, path: optionalPath,
+    }), [{ path: optionalPath, value: undefined }]);
+}
+for (const requiredPath of [
+    ['project', 'name'],
+    ['project', 'outputDir'],
+    ['memory', 'ilb', 'type'],
+    ['memory', 'ilb', 'size'],
+    ['peripherals', 0, 'type'],
+    ['peripherals', 0, 'name'],
+    ['externalInterfaces', 0, 'windowSize'],
+    ['externalInterfaces', 0, 'addressWidth'],
+    ['interrupt', 'mode'],
+]) {
+    assert.strictEqual(isUnsettableSocPath(parsedMultiForEditing.config, catalog, requiredPath), false,
+        `allowed required field deletion: ${JSON.stringify(requiredPath)}`);
+    assert.strictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+        type: 'unsetValue', documentVersion: 12, path: requiredPath,
+    }), undefined);
+}
+
+const optionalRemovalUpdates = [
+    ['cpu', 'debug'],
+    ['cpu', 'jtagIdCode'],
+    ['memory', 'ilb', 'initFile'],
+    ['peripherals', 0, 'baseAddress'],
+    ['peripherals', 0, 'parameters', 'SYS_CLK_FREQ'],
+    ['externalInterfaces', 0, 'baseAddress'],
+].flatMap((pathValue) => buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'unsetValue', documentVersion: 12, path: pathValue,
+}));
+const optionalRemovalResult = JSON.parse(applyReplacement(
+    multiText,
+    buildJsonReplacement(multiText, optionalRemovalUpdates),
+));
+assert.strictEqual(Object.prototype.hasOwnProperty.call(optionalRemovalResult.cpu, 'debug'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(optionalRemovalResult.cpu, 'jtagIdCode'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(optionalRemovalResult.memory.ilb, 'initFile'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(optionalRemovalResult.peripherals[0], 'baseAddress'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(
+    optionalRemovalResult.peripherals[0].parameters, 'SYS_CLK_FREQ'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(
+    optionalRemovalResult.externalInterfaces[0], 'baseAddress'), false);
+assert.strictEqual(optionalRemovalResult.project.name, 'demo_soc');
 assert.deepStrictEqual(multiView.selectedPath, ['peripherals', 0]);
 assert.ok(multiView.catalog.modules.find((item) => item.type === 'apb_uart')
     .parameters.some((parameter) => parameter.name === 'FIFO_DEPTH'
@@ -380,6 +467,18 @@ assert.ok(multiView.dependencyRows.some((row) => row.kind === 'module'
     && row.name === 'apb_uart'));
 assert.ok(multiView.dependencyRows.some((row) => row.kind === 'rtl'
     && /packaged files$/.test(row.detail)));
+
+const activeGeneration = { phase: 'generating', message: 'Generating SoC...' };
+const activeGenerationView = buildSocEditorViewModel(
+    multiText,
+    multiFixture,
+    12,
+    catalog,
+    ['peripherals', 0],
+    activeGeneration,
+);
+assert.deepStrictEqual(activeGenerationView.generation, activeGeneration,
+    'document snapshot reset the panel action status');
 const serializedMultiView = JSON.stringify(multiView);
 assert.ok(!serializedMultiView.includes(path.dirname(multiFixture)), 'view model leaked a host path');
 assert.ok(!serializedMultiView.includes('rtl/'), 'view model leaked a packaged asset path');
@@ -399,6 +498,31 @@ assert.ok(!path.win32.isAbsolute(hostPathView.config.project.outputDir),
     'view model leaked an absolute project output path');
 assert.ok(!path.win32.isAbsolute(hostPathView.config.memory.ilb.initFile),
     'view model leaked an absolute memory initialization path');
+
+const relativePathConfig = JSON.parse(standardJsonLf);
+relativePathConfig.project.outputDir = 'resources/generated';
+relativePathConfig.memory.ilb.initFile = 'boot\\firmware.mem';
+const relativePathView = buildSocEditorViewModel(
+    `${JSON.stringify(relativePathConfig, null, 2)}\n`,
+    'relative-path.merc32.json',
+    14,
+    catalog,
+    ['project'],
+);
+assert.strictEqual(relativePathView.config.project.outputDir, 'resources/generated');
+assert.strictEqual(relativePathView.config.memory.ilb.initFile, 'boot\\firmware.mem');
+
+const packagedPathConfig = JSON.parse(standardJsonLf);
+packagedPathConfig.project.outputDir = path.resolve(__dirname, '..', 'resources', 'generated');
+const packagedPathView = buildSocEditorViewModel(
+    `${JSON.stringify(packagedPathConfig, null, 2)}\n`,
+    'packaged-path.merc32.json',
+    15,
+    catalog,
+    ['project'],
+);
+assert.strictEqual(packagedPathView.config.project.outputDir, '',
+    'view model leaked an absolute packaged asset path');
 
 const invalidView = buildSocEditorViewModel('{"cpu":', 'broken.merc32.json', 3, catalog, ['cpu']);
 assert.strictEqual(invalidView.config, undefined);
@@ -428,6 +552,8 @@ assert.strictEqual((html.match(/<script\b/g) || []).length, 1);
 assert.strictEqual((html.match(/<script\b[^>]*\bnonce="NONCE"/g) || []).length, 1);
 assert.ok(!/\son[a-z]+\s*=/i.test(html), 'HTML contains an inline event handler');
 assert.ok(!/https?:\/\//i.test(html), 'HTML contains a remote URL');
+assert.ok(html.includes('id="generation-title">Status</h2>'),
+    'non-generation failures are still labeled as Generation');
 const resourceUris = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
 assert.deepStrictEqual(resourceUris.sort(), [
     'vscode-webview-resource:/extension/resources/webview/socEditor.css',
@@ -440,7 +566,15 @@ const webviewJs = require('fs').readFileSync(
     path.join(__dirname, '..', 'resources', 'webview', 'socEditor.js'), 'utf8');
 assert.ok(webviewCss.includes('box-sizing: border-box'));
 assert.ok(webviewCss.includes('minmax(210px, 0.8fr) minmax(320px, 1.4fr) minmax(260px, 1fr)'));
-assert.ok(/@media\s*\(max-width:\s*760px\)/.test(webviewCss));
+const workbenchCss = /\.workbench\s*\{([^}]*)\}/s.exec(webviewCss)[1];
+const minimumTrackWidth = [...workbenchCss.matchAll(/minmax\((\d+)px,/g)]
+    .reduce((total, match) => total + Number(match[1]), 0);
+const singleColumnBreakpoint = Number(
+    /@media\s*\(max-width:\s*(\d+)px\)[\s\S]*?\.workbench\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/
+        .exec(webviewCss)[1],
+);
+assert.ok(singleColumnBreakpoint >= minimumTrackWidth,
+    `single-column breakpoint ${singleColumnBreakpoint}px is below ${minimumTrackWidth}px minimum tracks`);
 assert.ok(!/border-radius:\s*(?:9|[1-9]\d+)px/.test(webviewCss));
 assert.ok(!webviewJs.includes('innerHTML'));
 assert.ok(!/\.on(?:click|change|input|submit)\s*=/.test(webviewJs));
@@ -495,6 +629,34 @@ const fakeDocument = {
         + appliedEdit.replacements[0][2]
         + standardJsonLf.slice(appliedRange.end.offset);
     assert.ok(appliedText.includes('"debug": true'));
+
+    for (const [type, expectedCommand, expectedPhases] of [
+        ['autoAssign', 'merc32.soc.autoAssign', ['working', 'success']],
+        ['validate', 'merc32.soc.validate', ['validating', 'success']],
+        ['generate', 'merc32.soc.generate', ['generating', 'generated']],
+    ]) {
+        const calls = [];
+        const statuses = [];
+        await executeSocEditorCommand(
+            type,
+            fakeDocument.uri,
+            async (...args) => { calls.push(args); },
+            async (status) => { statuses.push(status); },
+        );
+        assert.deepStrictEqual(calls, [[expectedCommand, fakeDocument.uri]]);
+        assert.deepStrictEqual(statuses.map((status) => status.phase), expectedPhases,
+            `${type} posted dishonest status transitions`);
+    }
+
+    const failedStatuses = [];
+    await executeSocEditorCommand(
+        'generate',
+        fakeDocument.uri,
+        async () => { throw new Error('generation failed'); },
+        async (status) => { failedStatuses.push(status); },
+    );
+    assert.deepStrictEqual(failedStatuses.map((status) => status.phase), ['generating', 'error']);
+    assert.match(failedStatuses[1].message, /generation failed/i);
 
     console.log('MERC32 VSCode SoC unit contracts passed.');
 })().catch((error) => {

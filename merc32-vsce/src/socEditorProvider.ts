@@ -15,7 +15,10 @@ import {
 } from './soc';
 import {
     HostToWebviewMessage,
+    isConfigRelativePathField,
     isCurrentDocumentMessage,
+    isSafeConfigRelativePath,
+    isSafeNonPathString,
     JsonObject,
     JsonValue,
     parseWebviewMessage,
@@ -33,6 +36,34 @@ type UriForHtml = Pick<vscode.Uri, 'path' | 'with'>;
 const IDLE_GENERATION: SocGenerationState = {
     phase: 'idle',
     message: 'No generation run in this editor session.',
+};
+
+type SocEditorCommandType = 'autoAssign' | 'validate' | 'generate';
+
+const SOC_EDITOR_COMMAND_STATUS: Readonly<Record<SocEditorCommandType, {
+    command: string;
+    start: SocGenerationState;
+    success: SocGenerationState;
+    failure: SocGenerationState;
+}>> = {
+    autoAssign: {
+        command: SOC_COMMANDS.autoAssign,
+        start: { phase: 'working', message: 'Assigning addresses...' },
+        success: { phase: 'success', message: 'Address assignment completed.' },
+        failure: { phase: 'error', message: 'Address assignment failed.' },
+    },
+    validate: {
+        command: SOC_COMMANDS.validate,
+        start: { phase: 'validating', message: 'Validating configuration...' },
+        success: { phase: 'success', message: 'Validation completed.' },
+        failure: { phase: 'error', message: 'Validation failed.' },
+    },
+    generate: {
+        command: SOC_COMMANDS.generate,
+        start: { phase: 'generating', message: 'Generating SoC...' },
+        success: { phase: 'generated', message: 'SoC generation completed.' },
+        failure: { phase: 'error', message: 'SoC generation failed.' },
+    },
 };
 
 /** Renders the fixed shell; all changing content is populated with DOM APIs. */
@@ -115,7 +146,7 @@ export function renderEditorHtml(
                 <div id="address-map" class="address-map"></div>
             </section>
             <section class="generation-state" aria-labelledby="generation-title">
-                <h2 id="generation-title">Generation</h2>
+                <h2 id="generation-title">Status</h2>
                 <div id="generation-status" class="generation-status" data-phase="idle"></div>
             </section>
         </footer>
@@ -132,6 +163,7 @@ export function buildSocEditorViewModel(
     documentVersion: number,
     catalog: ModuleCatalog,
     selectedPath?: SocJsonPath,
+    generation: SocGenerationState = IDLE_GENERATION,
 ): SocEditorViewModel {
     const parsed = parseSocConfig(source, sourceFile, catalog);
     const catalogPresentation = presentCatalog(catalog);
@@ -150,7 +182,7 @@ export function buildSocEditorViewModel(
             interruptRows: [],
             portRows: [],
             dependencyRows: [],
-            generation: IDLE_GENERATION,
+            generation: { ...generation },
         };
     }
 
@@ -191,8 +223,25 @@ export function buildSocEditorViewModel(
         })) : [],
         portRows: plan ? plan.topPorts.map((port) => ({ ...port })) : [],
         dependencyRows: plan ? presentDependencies(parsed.config, catalog, plan.rtlFiles.length) : [],
-        generation: IDLE_GENERATION,
+        generation: { ...generation },
     };
+}
+
+/** Executes a contributed SoC action and reports honest, ordered UI status transitions. */
+export async function executeSocEditorCommand(
+    type: SocEditorCommandType,
+    documentUri: vscode.Uri,
+    executeCommand: (command: string, ...args: unknown[]) => PromiseLike<unknown>,
+    postStatus: (status: SocGenerationState) => PromiseLike<unknown>,
+): Promise<void> {
+    const action = SOC_EDITOR_COMMAND_STATUS[type];
+    await postStatus(action.start);
+    try {
+        await executeCommand(action.command, documentUri);
+        await postStatus(action.success);
+    } catch {
+        await postStatus(action.failure);
+    }
 }
 
 /** Permits only schema-owned leaf fields for an existing configuration node. */
@@ -246,6 +295,27 @@ export function isEditableSocPath(
         && config.interrupt.sources[pathValue[2]] !== undefined
         && typeof pathValue[3] === 'string'
         && new Set(['source', 'id', 'trigger']).has(pathValue[3]);
+}
+
+/** Identifies editable scalar fields whose omission is valid in the active schema node. */
+export function isUnsettableSocPath(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+    pathValue: readonly (string | number)[],
+): boolean {
+    if (!isEditableSocPath(config, catalog, pathValue)) return false;
+    if (pathValue.length === 2 && pathValue[0] === 'cpu') {
+        return pathValue[1] === 'debug' || pathValue[1] === 'jtagIdCode';
+    }
+    if (pathValue.length === 3 && pathValue[0] === 'memory') {
+        return pathValue[2] === 'initFile';
+    }
+    if (pathValue[0] === 'peripherals' && typeof pathValue[1] === 'number') {
+        return pathValue.length === 3 && pathValue[2] === 'baseAddress'
+            || pathValue.length === 4 && pathValue[2] === 'parameters';
+    }
+    return pathValue.length === 3 && pathValue[0] === 'externalInterfaces'
+        && typeof pathValue[1] === 'number' && pathValue[2] === 'baseAddress';
 }
 
 /** Applies all structured updates through one native workspace replacement. */
@@ -306,27 +376,34 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
         let selectedPath: SocJsonPath | undefined = ['cpu'];
         let lastPostedVersion = 0;
         let messageQueue = Promise.resolve();
+        let actionStatus: SocGenerationState = { ...IDLE_GENERATION };
         const subscriptions: vscode.Disposable[] = [];
 
         const postState = async (status?: string): Promise<void> => {
             if (!ready || disposed) return;
+            if (status) {
+                actionStatus = { phase: 'error', message: status };
+            }
             const state = buildSocEditorViewModel(
                 document.getText(),
                 document.fileName,
                 document.version,
                 this.catalog,
                 selectedPath,
+                actionStatus,
             );
             selectedPath = state.selectedPath;
             lastPostedVersion = document.version;
             await panel.webview.postMessage({ type: 'state', value: state } satisfies HostToWebviewMessage);
-            if (status) {
-                await panel.webview.postMessage({
-                    type: 'generationStatus',
-                    phase: 'error',
-                    message: status,
-                } satisfies HostToWebviewMessage);
-            }
+        };
+        const postStatus = async (status: SocGenerationState): Promise<void> => {
+            actionStatus = { ...status };
+            if (!ready || disposed) return;
+            await panel.webview.postMessage({
+                type: 'generationStatus',
+                phase: status.phase,
+                message: status.message,
+            } satisfies HostToWebviewMessage);
         };
 
         subscriptions.push(
@@ -348,6 +425,7 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
                         ready = true;
                     },
                     postState,
+                    postStatus,
                 )).catch(async () => {
                     try {
                         await postState('The editor could not process that request.');
@@ -370,6 +448,7 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
         setSelectedPath: (pathValue: SocJsonPath | undefined) => void,
         markReady: () => void,
         postState: (status?: string) => Promise<void>,
+        postStatus: (status: SocGenerationState) => Promise<void>,
     ): Promise<void> {
         const message = parseWebviewMessage(value);
         if (!message) return;
@@ -398,10 +477,15 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             return;
         }
         if (message.type === 'autoAssign' || message.type === 'validate' || message.type === 'generate') {
-            await this.vscodeApi.commands.executeCommand(SOC_COMMANDS[message.type], document.uri);
+            await executeSocEditorCommand(
+                message.type,
+                document.uri,
+                (command, ...args) => this.vscodeApi.commands.executeCommand(command, ...args),
+                postStatus,
+            );
             return;
         }
-        if (message.type !== 'setValue' && message.type !== 'addInstance'
+        if (message.type !== 'setValue' && message.type !== 'unsetValue' && message.type !== 'addInstance'
             && message.type !== 'removeInstance') {
             return;
         }
@@ -411,7 +495,7 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             await postState('Invalid JSON is read-only. Reopen as text to repair it.');
             return;
         }
-        const updates = mutationUpdates(parsed.config, this.catalog, message);
+        const updates = buildSocDocumentUpdates(parsed.config, this.catalog, message);
         if (!updates) {
             await postState('That property is not editable for the selected configuration node.');
             return;
@@ -430,13 +514,18 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
     }
 }
 
-function mutationUpdates(
+export function buildSocDocumentUpdates(
     config: SocSourceConfig,
     catalog: ModuleCatalog,
     message: Extract<WebviewToHostMessage, {
-        type: 'setValue' | 'addInstance' | 'removeInstance';
+        type: 'setValue' | 'unsetValue' | 'addInstance' | 'removeInstance';
     }>,
 ): readonly JsonValueUpdate[] | undefined {
+    if (message.type === 'unsetValue') {
+        return isUnsettableSocPath(config, catalog, message.path)
+            ? [{ path: message.path, value: undefined }]
+            : undefined;
+    }
     if (message.type === 'setValue') {
         if (!isEditableSocPath(config, catalog, message.path)) return undefined;
         return normalizeDependentUpdates(config, message.path, message.value);
@@ -627,28 +716,27 @@ function cloneConfig(config: SocSourceConfig): JsonObject {
     return redactPresentationPaths(JSON.parse(JSON.stringify(config))) as JsonObject;
 }
 
-function redactPresentationPaths(value: unknown): unknown {
+function redactPresentationPaths(
+    value: unknown,
+    pathValue: readonly (string | number)[] = [],
+): unknown {
     if (typeof value === 'string') {
-        return isHostOrAssetPath(value) ? '' : value;
+        const safe = isConfigRelativePathField(pathValue)
+            ? isSafeConfigRelativePath(value)
+            : isSafeNonPathString(value);
+        return safe ? value : '';
     }
     if (Array.isArray(value)) {
-        return value.map(redactPresentationPaths);
+        return value.map((child, index) => redactPresentationPaths(child, [...pathValue, index]));
     }
     if (value && typeof value === 'object') {
         const result: Record<string, unknown> = {};
         for (const [key, child] of Object.entries(value)) {
-            result[key] = redactPresentationPaths(child);
+            result[key] = redactPresentationPaths(child, [...pathValue, key]);
         }
         return result;
     }
     return value;
-}
-
-function isHostOrAssetPath(value: string): boolean {
-    return path.posix.isAbsolute(value) || path.win32.isAbsolute(value)
-        || value.includes('\\') || value.split('/').includes('..')
-        || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
-        || /^(?:resources|rtl|catalog|schema|templates|webview)(?:\/|$)/i.test(value);
 }
 
 function deduplicateDiagnostics(diagnostics: readonly SocDiagnostic[]): readonly SocDiagnostic[] {

@@ -301,6 +301,10 @@ p {
 }
 
 .field-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
 }
 
@@ -315,6 +319,16 @@ p {
     height: 16px;
     min-height: 16px;
     accent-color: var(--vscode-checkbox-background);
+}
+
+.field-reset {
+    width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-color: transparent;
+    color: var(--vscode-icon-foreground);
+    background: transparent;
+    font-size: 17px;
 }
 
 .group-heading {
@@ -521,11 +535,21 @@ p {
     background: var(--vscode-testing-iconPassed);
 }
 
+.generation-status[data-phase='success'] .status-indicator {
+    background: var(--vscode-testing-iconPassed);
+}
+
+.generation-status[data-phase='working'] .status-indicator,
+.generation-status[data-phase='validating'] .status-indicator,
+.generation-status[data-phase='generating'] .status-indicator {
+    background: var(--vscode-charts-blue);
+}
+
 .generation-status[data-phase='error'] .status-indicator {
     background: var(--vscode-testing-iconFailed);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 800px) {
     .editor-shell {
         height: auto;
         min-height: 100vh;

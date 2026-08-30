@@ -64,7 +64,8 @@ export interface SocDependencyRow {
     detail?: string;
 }
 
-export type SocGenerationPhase = 'idle' | 'validating' | 'generating' | 'generated' | 'error';
+export type SocGenerationPhase =
+    | 'idle' | 'working' | 'validating' | 'generating' | 'success' | 'generated' | 'error';
 
 export interface SocGenerationState {
     phase: SocGenerationPhase;
@@ -94,6 +95,7 @@ export type WebviewToHostMessage =
     | { type: 'ready' }
     | { type: 'select'; documentVersion: number; path: SocJsonPath }
     | { type: 'setValue'; documentVersion: number; path: SocJsonPath; value: JsonValue }
+    | { type: 'unsetValue'; documentVersion: number; path: SocJsonPath }
     | {
         type: 'addInstance';
         documentVersion: number;
@@ -169,11 +171,8 @@ function isSafePathSegment(value: unknown): value is string | number {
 }
 
 function isJsonValue(value: unknown, seen: Set<object>): value is JsonValue {
-    if (value === null || typeof value === 'boolean') {
+    if (value === null || typeof value === 'boolean' || typeof value === 'string') {
         return true;
-    }
-    if (typeof value === 'string') {
-        return !isForbiddenHostOrAssetValue(value);
     }
     if (typeof value === 'number') {
         return Number.isFinite(value);
@@ -201,15 +200,6 @@ function isJsonValue(value: unknown, seen: Set<object>): value is JsonValue {
         }
     }
     return true;
-}
-
-function isForbiddenHostOrAssetValue(value: string): boolean {
-    const pathSegments = value.split('/');
-    return value.startsWith('/') || value.startsWith('\\') || value.includes('\\')
-        || /^[A-Za-z]:/.test(value)
-        || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
-        || pathSegments.includes('..')
-        || /^(?:resources|rtl|catalog|schema|templates|webview)(?:\/|$)/i.test(value);
 }
 
 function isPath(value: unknown): value is SocJsonPath {
@@ -261,11 +251,18 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
                 && hasOwn(value, 'path') && isPath(value.path)
                 ? { type: 'select', documentVersion: value.documentVersion, path: value.path }
                 : undefined;
+        case 'unsetValue':
+            return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path'])
+                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
+                && hasOwn(value, 'path') && isPath(value.path)
+                ? { type: 'unsetValue', documentVersion: value.documentVersion, path: value.path }
+                : undefined;
         case 'setValue':
             return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path', 'value'])
                 && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
                 && hasOwn(value, 'path') && hasOwn(value, 'value') && isPath(value.path)
                 && isJsonValue(value.value, new Set<object>())
+                && isSafeValueForPath(value.path, value.value)
                 ? {
                     type: 'setValue',
                     documentVersion: value.documentVersion,
@@ -304,6 +301,46 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         default:
             return undefined;
     }
+}
+
+/** Only these schema-owned fields may carry source-relative path syntax. */
+export function isConfigRelativePathField(pathValue: SocJsonPath): boolean {
+    return pathValue.length === 2
+            && pathValue[0] === 'project' && pathValue[1] === 'outputDir'
+        || pathValue.length === 3
+            && pathValue[0] === 'memory'
+            && (pathValue[1] === 'ilb' || pathValue[1] === 'dlb')
+            && pathValue[2] === 'initFile';
+}
+
+/** Mirrors the core source-relative path rules without resolving anything on the host. */
+export function isSafeConfigRelativePath(value: unknown): value is string {
+    if (typeof value !== 'string' || value.startsWith('/') || value.startsWith('\\')
+        || /^[A-Za-z]:/.test(value) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
+        return false;
+    }
+    return value.split(/[\\/]+/).every((segment) => segment !== '.' && segment !== '..');
+}
+
+/** Non-path schema values may not smuggle host or packaged-resource references. */
+export function isSafeNonPathString(value: string): boolean {
+    return !value.includes('/') && !value.includes('\\')
+        && !/^[A-Za-z]:/.test(value)
+        && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
+}
+
+function isSafeValueForPath(pathValue: SocJsonPath, value: JsonValue): boolean {
+    if (isConfigRelativePathField(pathValue)) {
+        return isSafeConfigRelativePath(value);
+    }
+    return everyString(value, isSafeNonPathString);
+}
+
+function everyString(value: JsonValue, predicate: (value: string) => boolean): boolean {
+    if (typeof value === 'string') return predicate(value);
+    if (value === null || typeof value !== 'object') return true;
+    if (Array.isArray(value)) return value.every((item) => everyString(item, predicate));
+    return Object.values(value).every((item) => everyString(item, predicate));
 }
 
 /** Command messages are version-independent; document-derived messages must match exactly. */
