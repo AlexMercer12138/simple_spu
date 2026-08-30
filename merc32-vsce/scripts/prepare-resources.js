@@ -13,11 +13,23 @@ const BASE_RTL_FILES = [
     'rtl/misc/spram.v',
     'rtl/bridge/lb2apb.v',
 ];
+const DEFAULT_EXTENSION_ROOT = path.resolve(__dirname, '..');
+const DEFAULT_REPOSITORY_ROOT = path.resolve(__dirname, '..', '..');
 
 function prepareResources(options = {}) {
-    const extensionRoot = path.resolve(options.extensionRoot || path.join(__dirname, '..'));
-    const repositoryRoot = path.resolve(options.repositoryRoot
-        || path.join(__dirname, '..', '..'));
+    requireOptions(options);
+    const extensionRoot = resolveWrapperRoot(
+        options,
+        'extensionRoot',
+        DEFAULT_EXTENSION_ROOT,
+        'extension root',
+    );
+    const repositoryRoot = resolveWrapperRoot(
+        options,
+        'repositoryRoot',
+        DEFAULT_REPOSITORY_ROOT,
+        'repository root',
+    );
     return prepareResourcesAtRoots({
         ...options,
         extensionRoot,
@@ -134,13 +146,13 @@ function discoverResourceInputs(options) {
 }
 
 function requireExplicitRoots(options) {
-    if (options === null || typeof options !== 'object') {
-        throw new TypeError('Resource preparation options are required.');
-    }
-    return {
+    requireOptions(options);
+    const roots = {
         extensionRoot: requireAbsoluteDirectory(options.extensionRoot, 'extension root'),
         repositoryRoot: requireAbsoluteDirectory(options.repositoryRoot, 'repository root'),
     };
+    validateResourceRootTopology(roots);
+    return roots;
 }
 
 function requireAbsoluteDirectory(value, label) {
@@ -148,11 +160,152 @@ function requireAbsoluteDirectory(value, label) {
         throw new Error(`Resource preparation ${label} must be an absolute path.`);
     }
     const resolved = path.resolve(value);
+    assertPathHasNoLinks(resolved, label);
     const status = fs.lstatSync(resolved);
     if (status.isSymbolicLink() || !status.isDirectory()) {
         throw new Error(`Resource preparation ${label} is not an exact directory: ${resolved}.`);
     }
-    return resolved;
+    const canonical = fs.realpathSync.native(resolved);
+    if (!sameCanonicalPath(resolved, canonical)) {
+        throw new Error(`Resource preparation ${label} is linked or redirected: ${resolved}.`);
+    }
+    return canonical;
+}
+
+function resolveWrapperRoot(options, key, fallback, label) {
+    if (!Object.prototype.hasOwnProperty.call(options, key)) return fallback;
+    const value = options[key];
+    if (typeof value !== 'string' || !path.isAbsolute(value)) {
+        throw new Error(`Resource preparation ${label} override must be an absolute path.`);
+    }
+    return value;
+}
+
+function validateResourceRootTopology(roots) {
+    const resourcesRoot = path.join(roots.extensionRoot, 'resources');
+    const inputs = [
+        { label: 'repository RTL input', target: path.join(roots.repositoryRoot, 'rtl') },
+        { label: 'repository license input', target: path.join(roots.repositoryRoot, 'LICENSE') },
+        { label: 'extension catalog input', target: path.join(resourcesRoot, 'catalog') },
+        { label: 'extension templates input', target: path.join(resourcesRoot, 'templates') },
+    ];
+    const outputs = [
+        { label: 'generated RTL output', target: path.join(resourcesRoot, 'rtl') },
+        { label: 'generated licenses output', target: path.join(resourcesRoot, 'licenses') },
+        { label: 'generated manifest output', target: path.join(resourcesRoot,
+            'resource-manifest.json') },
+        { label: 'generated schema output', target: path.join(resourcesRoot,
+            'schema', 'merc32.schema.json') },
+    ];
+
+    if (samePathOrIdentity(roots.repositoryRoot, roots.extensionRoot)) {
+        throw new Error('Unsafe resource root topology: repository and extension roots are identical.');
+    }
+    for (const entry of [...inputs, ...outputs]) {
+        assertPathHasNoLinks(entry.target, entry.label);
+    }
+    for (const output of outputs) {
+        for (const input of inputs) {
+            if (pathsOverlap(output.target, input.target)
+                || sameExistingIdentity(output.target, input.target)) {
+                throw new Error(
+                    `Unsafe resource root topology: ${output.label} overlaps ${input.label}.`,
+                );
+            }
+        }
+    }
+    for (let index = 0; index < inputs.length; index += 1) {
+        for (let otherIndex = index + 1; otherIndex < inputs.length; otherIndex += 1) {
+            if (pathsOverlap(inputs[index].target, inputs[otherIndex].target)
+                || sameExistingIdentity(inputs[index].target, inputs[otherIndex].target)) {
+                throw new Error(
+                    `Unsafe resource root topology: ${inputs[index].label} overlaps ${inputs[otherIndex].label}.`,
+                );
+            }
+        }
+    }
+    for (let index = 0; index < outputs.length; index += 1) {
+        for (let otherIndex = index + 1; otherIndex < outputs.length; otherIndex += 1) {
+            if (pathsOverlap(outputs[index].target, outputs[otherIndex].target)
+                || sameExistingIdentity(outputs[index].target, outputs[otherIndex].target)) {
+                throw new Error(
+                    `Unsafe resource root topology: ${outputs[index].label} overlaps ${outputs[otherIndex].label}.`,
+                );
+            }
+        }
+    }
+}
+
+function assertPathHasNoLinks(value, label) {
+    const resolved = path.resolve(value);
+    const parsed = path.parse(resolved);
+    let current = parsed.root;
+    const components = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+    for (const component of components) {
+        current = path.join(current, component);
+        let status;
+        try {
+            status = fs.lstatSync(current);
+        } catch (error) {
+            if (error.code === 'ENOENT') return;
+            throw error;
+        }
+        if (status.isSymbolicLink()) {
+            throw new Error(`Resource preparation ${label} is linked or redirected: ${current}.`);
+        }
+        const canonical = fs.realpathSync.native(current);
+        if (!sameCanonicalPath(current, canonical)) {
+            throw new Error(`Resource preparation ${label} is linked or redirected: ${current}.`);
+        }
+    }
+}
+
+function pathsOverlap(left, right) {
+    return isSameOrDescendant(left, right) || isSameOrDescendant(right, left);
+}
+
+function isSameOrDescendant(root, candidate) {
+    const relative = path.relative(pathComparisonKey(root), pathComparisonKey(candidate));
+    return relative === '' || (!path.isAbsolute(relative)
+        && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+function samePathOrIdentity(left, right) {
+    return pathComparisonKey(left) === pathComparisonKey(right)
+        || sameExistingIdentity(left, right);
+}
+
+function sameExistingIdentity(left, right) {
+    const leftStatus = lstatOptional(left, true);
+    const rightStatus = lstatOptional(right, true);
+    return leftStatus !== undefined && rightStatus !== undefined
+        && leftStatus.dev === rightStatus.dev && leftStatus.ino === rightStatus.ino;
+}
+
+function pathComparisonKey(value) {
+    const normalized = path.normalize(path.resolve(value));
+    return process.platform === 'win32'
+        ? normalized.toLocaleLowerCase('en-US')
+        : normalized;
+}
+
+function sameCanonicalPath(left, right) {
+    return pathComparisonKey(left) === pathComparisonKey(right);
+}
+
+function lstatOptional(target, bigint = false) {
+    try {
+        return fs.lstatSync(target, bigint ? { bigint: true } : undefined);
+    } catch (error) {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+    }
+}
+
+function requireOptions(options) {
+    if (options === null || typeof options !== 'object') {
+        throw new TypeError('Resource preparation options are required.');
+    }
 }
 
 function addCatalogRtlFiles(descriptor, label, result) {
