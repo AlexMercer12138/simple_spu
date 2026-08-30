@@ -44,6 +44,7 @@ function prepareResourcesAtRoots(options) {
     const socApi = options.socApi || loadSocApi(extensionRoot);
     const { catalogRoot, catalogFiles, rtlFiles: sortedRtlFiles, staticFiles } = inputs;
     validateConcreteResourceTopology({ extensionRoot, repositoryRoot }, inputs);
+    validateGeneratedRootsForDeletion({ extensionRoot, repositoryRoot }, inputs);
 
     const validationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-resource-catalog-'));
     let schemaText;
@@ -241,20 +242,7 @@ function validateResourceRootTopology(roots) {
 
 function validateConcreteResourceTopology(roots, inputs) {
     const resourcesRoot = path.join(roots.extensionRoot, 'resources');
-    const authoritativeInputs = [
-        ...inputs.staticFiles.map((logicalPath) => ({
-            label: `extension resource input ${logicalPath}`,
-            target: path.join(resourcesRoot, ...logicalPath.split('/')),
-        })),
-        ...inputs.rtlFiles.map((logicalPath) => ({
-            label: `repository RTL input ${logicalPath}`,
-            target: path.join(roots.repositoryRoot, ...logicalPath.split('/')),
-        })),
-        {
-            label: 'repository license input LICENSE',
-            target: path.join(roots.repositoryRoot, 'LICENSE'),
-        },
-    ];
+    const authoritativeInputs = collectAuthoritativeInputs(roots, inputs);
     const writeTargets = [
         ...inputs.rtlFiles.map((logicalPath) => ({
             label: `generated RTL output ${logicalPath}`,
@@ -285,6 +273,96 @@ function validateConcreteResourceTopology(roots, inputs) {
             }
         }
     }
+}
+
+function collectAuthoritativeInputs(roots, inputs) {
+    const resourcesRoot = path.join(roots.extensionRoot, 'resources');
+    return [
+        ...inputs.staticFiles.map((logicalPath) => ({
+            label: `extension resource input ${logicalPath}`,
+            target: path.join(resourcesRoot, ...logicalPath.split('/')),
+        })),
+        ...inputs.rtlFiles.map((logicalPath) => ({
+            label: `repository RTL input ${logicalPath}`,
+            target: path.join(roots.repositoryRoot, ...logicalPath.split('/')),
+        })),
+        {
+            label: 'repository license input LICENSE',
+            target: path.join(roots.repositoryRoot, 'LICENSE'),
+        },
+    ];
+}
+
+function validateGeneratedRootsForDeletion(roots, inputs) {
+    const authoritativeByIdentity = new Map();
+    for (const input of collectAuthoritativeInputs(roots, inputs)) {
+        const status = fs.lstatSync(input.target, { bigint: true });
+        if (status.isSymbolicLink() || !status.isFile()) {
+            throw new Error(`Unsafe resource topology: ${input.label} is not an exact file.`);
+        }
+        const key = fileIdentityKey(status);
+        const labels = authoritativeByIdentity.get(key) || [];
+        labels.push(input.label);
+        authoritativeByIdentity.set(key, labels);
+    }
+
+    const resourcesRoot = path.join(roots.extensionRoot, 'resources');
+    for (const [logicalPath, label] of [
+        ['rtl', 'generated RTL root'],
+        ['licenses', 'generated license root'],
+    ]) {
+        const target = path.join(resourcesRoot, logicalPath);
+        validateGeneratedDeletionEntry(
+            target,
+            label,
+            authoritativeByIdentity,
+            true,
+        );
+    }
+}
+
+function validateGeneratedDeletionEntry(target, label, authoritativeByIdentity, root = false) {
+    const status = lstatOptional(target, true);
+    if (status === undefined) return;
+    if (status.isSymbolicLink()) {
+        throw new Error(`Unsafe resource topology: ${label} is linked or redirected.`);
+    }
+    const canonical = fs.realpathSync.native(target);
+    if (!sameCanonicalPath(target, canonical)) {
+        throw new Error(`Unsafe resource topology: ${label} is linked or redirected.`);
+    }
+    if (status.isFile()) {
+        if (root) {
+            throw new Error(`Unsafe resource topology: ${label} is not an exact directory.`);
+        }
+        const aliases = authoritativeByIdentity.get(fileIdentityKey(status));
+        if (aliases !== undefined) {
+            throw new Error(
+                `Unsafe resource topology: ${label} aliases ${aliases.join(', ')}.`,
+            );
+        }
+        return;
+    }
+    if (!status.isDirectory()) {
+        throw new Error(`Unsafe resource topology: ${label} has an unsupported entry type.`);
+    }
+
+    const names = fs.readdirSync(target);
+    for (const name of names) {
+        const child = path.join(target, name);
+        if (path.dirname(child) !== target || path.basename(child) !== name) {
+            throw new Error(`Unsafe resource topology: ${label} contains an unsafe component.`);
+        }
+        validateGeneratedDeletionEntry(
+            child,
+            `${label}/${name}`,
+            authoritativeByIdentity,
+        );
+    }
+}
+
+function fileIdentityKey(status) {
+    return `${status.dev.toString()}:${status.ino.toString()}`;
 }
 
 function assertPathHasNoLinks(value, label) {

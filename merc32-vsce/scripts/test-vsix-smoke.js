@@ -1,6 +1,9 @@
 const assert = require('assert');
 const crypto = require('crypto');
+const dns = require('dns');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -9,7 +12,6 @@ const { fileURLToPath } = require('url');
 const AdmZip = require('adm-zip');
 const { createVSIX } = require('@vscode/vsce');
 const {
-    download,
     resolveCliPathFromVSCodeExecutablePath,
 } = require('@vscode/test-electron');
 
@@ -18,6 +20,17 @@ const SMOKE_EXTENSION_ID = 'merc32-smoke.merc32-vsix-smoke';
 const VSCODE_VERSION = '1.74.3';
 const TEMP_PREFIX = 'merc32-vsix-smoke-';
 const RESOURCE_MANIFEST = 'extension/resources/resource-manifest.json';
+const NETWORK_LAUNCH_ARGS = Object.freeze([
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-domain-reliability',
+    '--disable-sync',
+    '--host-resolver-rules=MAP * ~NOTFOUND',
+    '--metrics-recording-only',
+    '--no-pings',
+    '--proxy-server=http://127.0.0.1:9',
+    '--proxy-bypass-list=<-loopback>',
+]);
 const REQUIRED_BASE_RTL = Object.freeze([
     'rtl/cpu/MERC32_top.v',
     'rtl/cpu/core.v',
@@ -39,6 +52,7 @@ async function main() {
     const tempReceipt = createOwnedTempRoot();
     let result;
     try {
+        assertColdCacheFailsWithoutNetwork(tempReceipt.root);
         result = await testVsix({
             extensionRoot,
             inputVsix,
@@ -50,10 +64,53 @@ async function main() {
     }
 
     console.log(`VSIX archive audit passed (${result.entryCount} files).`);
+    console.log('VSIX cold-cache network-denial contract passed.');
     console.log('VSIX uncompressed file-map determinism passed (ZIP timestamps ignored).');
     if (result.hostOutput) process.stdout.write(result.hostOutput);
     console.log('Installed VSIX command, workspaceState artifacts, and Icarus smoke passed.');
     console.log(`VSIX smoke temp root removed: ${tempReceipt.root}`);
+}
+
+function assertColdCacheFailsWithoutNetwork(tempRoot) {
+    const coldExtensionRoot = createChildDirectory(tempRoot, 'cold-cache-extension');
+    const attempts = [];
+    const patches = [
+        [http, 'request'],
+        [http, 'get'],
+        [https, 'request'],
+        [https, 'get'],
+        [dns, 'lookup'],
+        [dns, 'resolve'],
+    ];
+    const originals = patches.map(([owner, name]) => [owner, name, owner[name]]);
+    const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    const forbid = (name) => (...args) => {
+        attempts.push({ name, argumentCount: args.length });
+        throw new Error(`Forbidden cold-cache network API: ${name}`);
+    };
+    for (const [owner, name] of patches) owner[name] = forbid(name);
+    Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        value: forbid('fetch'),
+        writable: true,
+    });
+
+    let failure;
+    try {
+        resolveCachedVSCodeExecutable(coldExtensionRoot);
+    } catch (error) {
+        failure = error;
+    } finally {
+        for (const [owner, name, original] of originals) owner[name] = original;
+        if (fetchDescriptor === undefined) delete globalThis.fetch;
+        else Object.defineProperty(globalThis, 'fetch', fetchDescriptor);
+    }
+    assert.ok(failure instanceof Error, 'cold VSCode cache was accepted');
+    assert.match(failure.message,
+        /Cached VSCode 1\.74\.3.*npm run test:extension/u,
+        `cold-cache failure lacks bootstrap guidance: ${failure.message}`);
+    assert.deepStrictEqual(attempts, [],
+        'cold-cache resolution attempted network access');
 }
 
 async function testVsix(options) {
@@ -61,6 +118,7 @@ async function testVsix(options) {
     fs.copyFileSync(options.inputVsix, firstVsix, fs.constants.COPYFILE_EXCL);
     const first = auditVsix(firstVsix, options.extensionRoot);
     assertVsixContents(first, options.extensionRoot);
+    runArchiveMutationContracts(firstVsix, options.extensionRoot, options.tempRoot);
     assertPackageContract(options.extensionRoot);
 
     packageAgain(options.extensionRoot);
@@ -150,6 +208,7 @@ function assertVsixContents(audit, extensionRoot) {
         assert.strictEqual(sha256(bytes), record.sha256,
             `resource hash mismatch for ${record.path}`);
     }
+    assertExactResourceClosure(audit, resources);
 
     for (const webviewPath of ['webview/socEditor.css', 'webview/socEditor.js']) {
         assert.ok(resources.has(webviewPath),
@@ -172,6 +231,131 @@ function assertVsixContents(audit, extensionRoot) {
 
     assertRuntimeDependencies(audit, extensionRoot);
     assertArchiveExclusions(audit);
+}
+
+function assertExactResourceClosure(audit, resources) {
+    const prefix = 'extension/resources/';
+    const foldedPrefix = prefix.toLocaleLowerCase('en-US');
+    const packaged = audit.fileMap
+        .map((entry) => entry.path)
+        .filter((entry) => entry.toLocaleLowerCase('en-US').startsWith(foldedPrefix))
+        .map((entry) => {
+            assert.ok(entry.startsWith(prefix),
+                `case-insensitive resource path alias ${entry}`);
+            return entry.slice(prefix.length);
+        });
+    const folded = new Map();
+    for (const resourcePath of packaged) {
+        const key = resourcePath.toLocaleLowerCase('en-US');
+        assert.ok(!folded.has(key),
+            `case-insensitive resource path alias ${folded.get(key)} and ${resourcePath}`);
+        folded.set(key, resourcePath);
+    }
+
+    const expected = new Set([...resources.keys(), 'resource-manifest.json']);
+    const actual = new Set(packaged);
+    const extra = [...actual].filter((entry) => !expected.has(entry)).sort(compareText);
+    const missing = [...expected].filter((entry) => !actual.has(entry)).sort(compareText);
+    assert.deepStrictEqual({ extra, missing }, { extra: [], missing: [] },
+        'resource manifest file set does not match packaged resources');
+}
+
+function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
+    const contracts = [
+        {
+            label: 'unmanifested resource file',
+            expected: /resource manifest file set does not match packaged resources/u,
+            mutate(zip) {
+                zip.addFile('extension/resources/notes.txt',
+                    Buffer.from('unmanifested resource\n', 'utf8'));
+            },
+        },
+        {
+            label: 'catalog file omitted from resource manifest',
+            expected: /resource manifest file set does not match packaged resources/u,
+            mutate(zip) {
+                const manifest = readZipJson(zip, RESOURCE_MANIFEST);
+                const record = requireCatalogManifestRecord(manifest);
+                manifest.files = manifest.files.filter((entry) => entry.path !== record.path);
+                updateZipJson(zip, RESOURCE_MANIFEST, manifest);
+            },
+        },
+        {
+            label: 'case-only resource path alias',
+            expected: /case-insensitive resource path alias/u,
+            mutate(zip) {
+                const manifest = readZipJson(zip, RESOURCE_MANIFEST);
+                const record = requireCatalogManifestRecord(manifest);
+                const aliasPath = toggleFileNameCase(record.path);
+                const archivePath = `extension/resources/${record.path}`;
+                const source = zip.getEntry(archivePath);
+                assert.ok(source && !source.isDirectory,
+                    `mutation source is missing ${archivePath}`);
+                zip.addFile(`extension/resources/${aliasPath}`, source.getData());
+                manifest.files.push({ ...record, path: aliasPath });
+                updateZipJson(zip, RESOURCE_MANIFEST, manifest);
+            },
+        },
+    ];
+    const failures = [];
+    for (const [index, contract] of contracts.entries()) {
+        const mutatedVsix = path.join(tempRoot, `archive-mutation-${index}.vsix`);
+        const zip = loadWritableZip(baseVsix);
+        contract.mutate(zip);
+        zip.writeZip(mutatedVsix);
+        try {
+            assert.throws(
+                () => assertVsixContents(auditVsix(mutatedVsix, extensionRoot), extensionRoot),
+                contract.expected,
+                contract.label,
+            );
+        } catch (error) {
+            failures.push(`${contract.label}: ${error.actual?.message || error.message}`);
+        }
+    }
+    assert.deepStrictEqual(failures, [],
+        `VSIX resource mutation contract failure(s):\n${failures.join('\n')}`);
+}
+
+function loadWritableZip(vsixFile) {
+    const zip = new AdmZip(vsixFile);
+    for (const entry of zip.getEntries()) {
+        if (!entry.isDirectory) entry.setData(entry.getData());
+        entry.header.flags_desc = false;
+    }
+    return zip;
+}
+
+function readZipJson(zip, logicalPath) {
+    const entry = zip.getEntry(logicalPath);
+    assert.ok(entry && !entry.isDirectory, `mutation archive is missing ${logicalPath}`);
+    return JSON.parse(entry.getData().toString('utf8'));
+}
+
+function updateZipJson(zip, logicalPath, value) {
+    zip.updateFile(logicalPath, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'));
+}
+
+function requireCatalogManifestRecord(manifest) {
+    assert.ok(Array.isArray(manifest.files), 'mutation manifest has no files array');
+    const record = manifest.files.find((entry) => entry.path.startsWith('catalog/')
+        && entry.path.endsWith('.json'));
+    assert.ok(record, 'mutation manifest has no catalog record');
+    return record;
+}
+
+function toggleFileNameCase(resourcePath) {
+    const slash = resourcePath.lastIndexOf('/');
+    const prefix = resourcePath.slice(0, slash + 1);
+    const fileName = resourcePath.slice(slash + 1);
+    const index = fileName.search(/[A-Za-z]/u);
+    assert.notStrictEqual(index, -1,
+        `mutation resource filename has no ASCII letter: ${resourcePath}`);
+    const character = fileName[index];
+    const toggled = character === character.toLocaleLowerCase('en-US')
+        ? character.toLocaleUpperCase('en-US')
+        : character.toLocaleLowerCase('en-US');
+    return `${prefix}${fileName.slice(0, index)}${toggled}${fileName.slice(index + 1)}`;
 }
 
 function collectRequiredRtl(audit) {
@@ -242,6 +426,8 @@ function assertArchiveExclusions(audit) {
             || segment === 'fixtures' || segment === 'test' || segment === 'tests'),
         `VSIX contains excluded repository/test path ${name}`);
         assert.ok(!name.endsWith('.map'), `VSIX contains source map ${name}`);
+        assert.ok(!name.toLocaleLowerCase('en-US').endsWith('.ts'),
+            `VSIX contains TypeScript source or declaration ${name}`);
         assert.ok(!name.includes('/rtl/sim/'), `VSIX contains RTL simulation source ${name}`);
         assert.ok(!name.endsWith('_manual.md'),
             `VSIX contains readable RTL maintenance documentation ${name}`);
@@ -292,6 +478,7 @@ async function runInstalledSmoke(options) {
     const extensionsDir = createChildDirectory(options.tempRoot, 'extensions');
     const userDataDir = createChildDirectory(options.tempRoot, 'user-data');
     const workspaceDir = createChildDirectory(options.tempRoot, 'workspace');
+    const networkGuardLog = path.join(options.tempRoot, 'network-attempts.log');
     const configFile = path.join(workspaceDir, 'all-peripherals.merc32.json');
     fs.copyFileSync(
         path.join(options.extensionRoot, 'scripts', 'fixtures', 'soc',
@@ -300,15 +487,15 @@ async function runInstalledSmoke(options) {
         fs.constants.COPYFILE_EXCL,
     );
 
-    const cachePath = path.join(options.extensionRoot, '.vscode-test');
-    const executable = await download({
-        version: VSCODE_VERSION,
-        cachePath,
+    const executable = resolveCachedVSCodeExecutable(options.extensionRoot);
+    const guardedEnvironment = offlineEnvironment({
+        MERC32_SMOKE_NETWORK_GUARD_LOG: networkGuardLog,
     });
-    requireExactFile(executable, `cached VSCode ${VSCODE_VERSION} executable`);
-    installVsix(executable, options.vsixFile, extensionsDir, userDataDir);
+    installVsix(executable, options.vsixFile, extensionsDir, userDataDir,
+        guardedEnvironment);
     const installedExtension = findInstalledExtension(extensionsDir, EXTENSION_ID);
-    installVsix(executable, harnessVsix, extensionsDir, userDataDir);
+    installVsix(executable, harnessVsix, extensionsDir, userDataDir,
+        guardedEnvironment);
     const harnessDir = findInstalledExtension(extensionsDir, SMOKE_EXTENSION_ID);
     const harnessManifest = JSON.parse(fs.readFileSync(
         path.join(harnessDir, 'package.json'), 'utf8'));
@@ -323,7 +510,7 @@ async function runInstalledSmoke(options) {
         `--extensions-dir=${extensionsDir}`,
         '--new-window',
         '--no-sandbox',
-        '--no-proxy-server',
+        ...NETWORK_LAUNCH_ARGS,
         '--disable-gpu-sandbox',
         '--disable-telemetry',
         '--disable-updates',
@@ -336,10 +523,15 @@ async function runInstalledSmoke(options) {
         !argument.startsWith('--extensionDevelopmentPath')
             && !argument.startsWith('--extensionTestsPath')),
     'installed smoke must not use extension development or test paths');
+    for (const argument of NETWORK_LAUNCH_ARGS) {
+        assert.ok(launchArgs.includes(argument),
+            `installed smoke is missing network-denial flag ${argument}`);
+    }
     const hostEnvironment = offlineEnvironment({
         MERC32_SMOKE_CONFIG: configFile,
         MERC32_SMOKE_EXTENSIONS_DIR: extensionsDir,
         MERC32_SMOKE_INSTALLED_EXTENSION: installedExtension,
+        MERC32_SMOKE_NETWORK_GUARD_LOG: networkGuardLog,
         MERC32_SMOKE_OUTPUT: outputDir,
         MERC32_SMOKE_REPOSITORY: options.repositoryRoot,
         MERC32_SMOKE_RESULT: resultFile,
@@ -360,6 +552,7 @@ async function runInstalledSmoke(options) {
     const smokeResult = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     assert.strictEqual(smokeResult.status, 'passed',
         `installed smoke harness failed: ${smokeResult.error || 'unknown failure'}`);
+    assertNoRecordedNetworkAttempts(networkGuardLog);
     return {
         configFile,
         hostOutput: `${host.stdout || ''}${host.stderr || ''}`,
@@ -368,7 +561,48 @@ async function runInstalledSmoke(options) {
     };
 }
 
-function installVsix(executable, vsixFile, extensionsDir, userDataDir) {
+function resolveCachedVSCodeExecutable(extensionRoot) {
+    const platform = vscodeCachePlatform();
+    const cacheRoot = path.join(
+        extensionRoot,
+        '.vscode-test',
+        `vscode-${platform}-${VSCODE_VERSION}`,
+    );
+    const executable = process.platform === 'win32'
+        ? path.join(cacheRoot, 'Code.exe')
+        : process.platform === 'darwin'
+            ? path.join(cacheRoot, 'Visual Studio Code.app', 'Contents', 'MacOS', 'Electron')
+            : path.join(cacheRoot, 'code');
+    try {
+        requireExactDirectory(cacheRoot, `cached VSCode ${VSCODE_VERSION} install`);
+        requireExactFile(path.join(cacheRoot, 'is-complete'),
+            `cached VSCode ${VSCODE_VERSION} completion marker`);
+        requireExactFile(executable, `cached VSCode ${VSCODE_VERSION} executable`);
+        requireExactFile(resolveCliPathFromVSCodeExecutablePath(executable),
+            `cached VSCode ${VSCODE_VERSION} CLI`);
+    } catch (error) {
+        throw new Error(
+            `Cached VSCode ${VSCODE_VERSION} is unavailable at ${cacheRoot}. `
+                + 'Run npm run test:extension to bootstrap and verify the Task 6 cache.',
+            { cause: error },
+        );
+    }
+    return executable;
+}
+
+function vscodeCachePlatform() {
+    if (process.platform === 'win32') {
+        return process.arch === 'arm64' ? 'win32-arm64-archive' : 'win32-x64-archive';
+    }
+    if (process.platform === 'darwin') {
+        return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin';
+    }
+    if (process.arch === 'arm64') return 'linux-arm64';
+    if (process.arch === 'arm') return 'linux-armhf';
+    return 'linux-x64';
+}
+
+function installVsix(executable, vsixFile, extensionsDir, userDataDir, environment) {
     const cli = resolveCliPathFromVSCodeExecutablePath(executable);
     requireExactFile(cli, 'cached VSCode CLI');
     const result = spawnSync(cli, [
@@ -378,7 +612,7 @@ function installVsix(executable, vsixFile, extensionsDir, userDataDir) {
         `--user-data-dir=${userDataDir}`,
     ], {
         encoding: 'utf8',
-        env: offlineEnvironment(),
+        env: environment,
         maxBuffer: 16 * 1024 * 1024,
         shell: process.platform === 'win32',
         timeout: 60_000,
@@ -468,15 +702,22 @@ function collectArtifactRecords(value, records) {
 }
 
 function offlineEnvironment(additions = {}) {
-    const env = { ...process.env, ...additions };
+    const env = { ...process.env };
     for (const name of [
         'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
         'all_proxy', 'http_proxy', 'https_proxy', 'no_proxy',
         'npm_config_proxy', 'npm_config_https_proxy',
     ]) delete env[name];
-    env.NO_PROXY = '*';
-    env.no_proxy = '*';
+    delete env.NODE_OPTIONS;
+    Object.assign(env, additions);
     return env;
+}
+
+function assertNoRecordedNetworkAttempts(logFile) {
+    if (!fs.existsSync(logFile)) return;
+    const attempts = fs.readFileSync(logFile, 'utf8').trim();
+    assert.strictEqual(attempts, '',
+        `installed smoke attempted forbidden network access:\n${attempts}`);
 }
 
 function createOwnedTempRoot() {
@@ -634,6 +875,14 @@ function normalizeResourcePath(value) {
 
 function requireExactFile(target, label) {
     assert.ok(isExactFile(target), `${label} is missing or not an exact file: ${target}`);
+}
+
+function requireExactDirectory(target, label) {
+    const status = fs.lstatSync(target);
+    assert.ok(status.isDirectory() && !status.isSymbolicLink(),
+        `${label} is missing or not an exact directory: ${target}`);
+    assert.ok(samePath(fs.realpathSync.native(target), target),
+        `${label} is linked or redirected: ${target}`);
 }
 
 function isExactFile(target) {

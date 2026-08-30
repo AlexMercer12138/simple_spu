@@ -22,3 +22,5 @@ tsconfig.json
 # Runtime payload intentionally retained and archive-audited:
 # out/**, resources/**, and npm's production dependency closure.
 **/*.map
+**/*.ts
+**/*.d.ts

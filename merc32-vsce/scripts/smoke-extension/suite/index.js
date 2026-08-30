@@ -1,13 +1,63 @@
 const assert = require('assert');
+const dns = require('dns');
 const fs = require('fs');
+const http = require('http');
+const http2 = require('http2');
+const https = require('https');
+const net = require('net');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const tls = require('tls');
+
+installNetworkGuard(process.env.MERC32_SMOKE_NETWORK_GUARD_LOG);
 
 const vscode = require('vscode');
 
 const EXTENSION_ID = 'Vikai-mercer.merc32-vsce';
 const SMOKE_EXTENSION_ID = 'merc32-smoke.merc32-vsix-smoke';
 const GENERATE_COMMAND = 'merc32.soc.generate';
+
+function installNetworkGuard(logFile) {
+    if (!logFile) return;
+    const deny = (api) => {
+        fs.appendFileSync(logFile, `${process.pid} ${api}\n`);
+        throw new Error(`MERC32 installed smoke denied network API ${api}.`);
+    };
+    const replace = (owner, name) => {
+        owner[name] = (...args) => deny(`${name}(${args.length})`);
+    };
+    const dnsNames = [
+        'lookup', 'lookupService', 'resolve', 'resolve4', 'resolve6', 'resolveAny',
+        'resolveCaa', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs',
+        'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTxt', 'reverse',
+    ];
+    for (const [owner, names] of [
+        [http, ['request', 'get']],
+        [https, ['request', 'get']],
+        [http2, ['connect']],
+        [tls, ['connect']],
+        [dns, dnsNames],
+    ]) {
+        for (const name of names) replace(owner, name);
+    }
+    if (dns.promises) {
+        for (const name of dnsNames) replace(dns.promises, name);
+    }
+
+    const isIpc = (args) => typeof args[0] === 'string'
+        || (args[0] && typeof args[0] === 'object' && typeof args[0].path === 'string');
+    for (const name of ['connect', 'createConnection']) {
+        const original = net[name];
+        net[name] = function (...args) {
+            if (isIpc(args)) return Reflect.apply(original, this, args);
+            return deny(`net.${name}`);
+        };
+    }
+    if (typeof globalThis.fetch === 'function') {
+        globalThis.fetch = (...args) => deny(`fetch(${args.length})`);
+    }
+    process.env.MERC32_SMOKE_NETWORK_GUARD_ACTIVE = '1';
+}
 
 async function run() {
     const configFile = requiredEnvironment('MERC32_SMOKE_CONFIG');
@@ -17,9 +67,10 @@ async function run() {
     const repositoryRoot = requiredEnvironment('MERC32_SMOKE_REPOSITORY');
     const tempRoot = requiredEnvironment('MERC32_SMOKE_TEMP_ROOT');
     const workspaceRoot = requiredEnvironment('MERC32_SMOKE_WORKSPACE');
+    const networkGuardLog = requiredEnvironment('MERC32_SMOKE_NETWORK_GUARD_LOG');
 
     assert.strictEqual(vscode.version, requiredEnvironment('MERC32_SMOKE_VSCODE_VERSION'));
-    assertOfflineHostEnvironment();
+    assertOfflineHostEnvironment(tempRoot, networkGuardLog);
     assert.ok(process.argv.every((argument) =>
         !String(argument).startsWith('--extensionDevelopmentPath')
             && !String(argument).startsWith('--extensionTestsPath')),
@@ -119,6 +170,7 @@ async function run() {
         `iverilog elaboration failed:\n${elaboration.stdout || ''}${elaboration.stderr || ''}`);
     requireExactFile(path.join(outputDir, 'all_peripherals.vvp'),
         'Icarus elaboration output');
+    assertNoNetworkAttempts(networkGuardLog);
 
     console.log(`Installed ${EXTENSION_ID} generated the maximal SoC through ${GENERATE_COMMAND}.`);
     console.log(`Icarus elaborated ${fileList.length} RTL sources with top all_peripherals_soc.`);
@@ -145,17 +197,26 @@ async function activate() {
     void vscode.commands.executeCommand('workbench.action.quit');
 }
 
-function assertOfflineHostEnvironment() {
+function assertOfflineHostEnvironment(tempRoot, networkGuardLog) {
     for (const name of [
-        'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY',
-        'all_proxy', 'http_proxy', 'https_proxy',
+        'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+        'all_proxy', 'http_proxy', 'https_proxy', 'no_proxy',
         'npm_config_proxy', 'npm_config_https_proxy',
     ]) {
         assert.strictEqual(process.env[name], undefined,
             `installed smoke host inherited network proxy variable ${name}`);
     }
-    assert.strictEqual(process.env.NO_PROXY, '*');
-    assert.strictEqual(process.env.no_proxy, '*');
+    assert.strictEqual(process.env.MERC32_SMOKE_NETWORK_GUARD_ACTIVE, '1',
+        'installed smoke network guard was not preloaded');
+    assertContained(tempRoot, networkGuardLog, 'network guard log');
+    assertNoNetworkAttempts(networkGuardLog);
+}
+
+function assertNoNetworkAttempts(networkGuardLog) {
+    if (!fs.existsSync(networkGuardLog)) return;
+    const attempts = fs.readFileSync(networkGuardLog, 'utf8').trim();
+    assert.strictEqual(attempts, '',
+        `installed smoke attempted forbidden network access:\n${attempts}`);
 }
 
 function requiredEnvironment(name) {

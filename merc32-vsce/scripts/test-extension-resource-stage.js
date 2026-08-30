@@ -93,6 +93,10 @@ function run() {
             testRootAncestorAlias],
         ['rejects concrete input/output hardlink aliases before mutation',
             testConcreteInputOutputHardlinks],
+        ['rejects stale generated hardlinks to every authoritative input class',
+            testStaleGeneratedHardlinks],
+        ['deletes unrelated stale generated files and directories',
+            testUnrelatedStaleGeneratedEntries],
         ['accepts distinct concrete input and output identities',
             testDistinctConcreteInputOutputIdentities],
     ];
@@ -465,6 +469,98 @@ function testConcreteInputOutputHardlinks() {
     }
 }
 
+function testStaleGeneratedHardlinks() {
+    const inputClasses = [
+        {
+            name: 'catalog',
+            role: 'extension',
+            path: ['resources', 'catalog', 'protocols.json'],
+        },
+        {
+            name: 'template',
+            role: 'extension',
+            path: ['resources', 'templates', 'main.c.tpl'],
+        },
+        {
+            name: 'webview',
+            role: 'extension',
+            path: ['resources', 'webview', 'socEditor.css'],
+        },
+        {
+            name: 'readable-rtl',
+            role: 'repository',
+            path: ['rtl', 'cpu', 'core.v'],
+        },
+        {
+            name: 'license',
+            role: 'repository',
+            path: ['LICENSE'],
+        },
+    ];
+    const failures = [];
+    for (const generatedRootName of ['rtl', 'licenses']) {
+        for (const inputClass of inputClasses) {
+            const label = `${generatedRootName} stale hardlink to ${inputClass.name}`;
+            try {
+                withTopologyFixture(label, (root) => ({
+                    repositoryRoot: path.join(root, 'repository'),
+                    extensionRoot: path.join(root, 'extension'),
+                }), ({ fixtureRoot, repositoryRoot, extensionRoot }) => {
+                    const roleRoots = { repository: repositoryRoot, extension: extensionRoot };
+                    const authoritative = path.join(
+                        roleRoots[inputClass.role], ...inputClass.path);
+                    const stale = path.join(extensionRoot, 'resources', generatedRootName,
+                        'stale', inputClass.name, 'victim.bin');
+                    fs.mkdirSync(path.dirname(stale), { recursive: true });
+                    fs.linkSync(authoritative, stale);
+                    assertTopologyRejectedWithoutMutation(
+                        fixtureRoot,
+                        () => prepareApi.prepareResourcesAtRoots({
+                            repositoryRoot,
+                            extensionRoot,
+                            socApi: fixtureSocApi,
+                            sourceRevision: 'stale-hardlink-revision',
+                        }),
+                        label,
+                    );
+                });
+            } catch (error) {
+                failures.push(new Error(`${label}: ${error.message}`, { cause: error }));
+            }
+        }
+    }
+    if (failures.length > 0) {
+        throw new AggregateError(failures,
+            `${failures.length} stale generated hardlink contract(s) failed.`);
+    }
+}
+
+function testUnrelatedStaleGeneratedEntries() {
+    withTopologyFixture('unrelated stale generated entries', (root) => ({
+        repositoryRoot: path.join(root, 'repository'),
+        extensionRoot: path.join(root, 'extension'),
+    }), ({ repositoryRoot, extensionRoot }) => {
+        const staleEntries = [
+            path.join(extensionRoot, 'resources', 'rtl', 'stale', 'nested', 'notes.txt'),
+            path.join(extensionRoot, 'resources', 'licenses', 'stale', 'nested', 'notes.txt'),
+        ];
+        for (const stale of staleEntries) {
+            fs.mkdirSync(path.dirname(stale), { recursive: true });
+            fs.writeFileSync(stale, 'ordinary stale file\n');
+        }
+        const result = prepareApi.prepareResourcesAtRoots({
+            repositoryRoot,
+            extensionRoot,
+            socApi: fixtureSocApi,
+            sourceRevision: 'ordinary-stale-revision',
+        });
+        assert.strictEqual(result.sourceRevision, 'ordinary-stale-revision');
+        for (const stale of staleEntries) {
+            assert.ok(!fs.existsSync(stale), `ordinary stale entry survived: ${stale}`);
+        }
+    });
+}
+
 function testDistinctConcreteInputOutputIdentities() {
     withTopologyFixture('distinct concrete identities', (root) => ({
         repositoryRoot: path.join(root, 'repository'),
@@ -598,6 +694,7 @@ function snapshotTree(root) {
         const metadata = [
             status.dev.toString(),
             status.ino.toString(),
+            status.nlink.toString(),
             status.size.toString(),
             status.mtimeNs.toString(),
             status.ctimeNs.toString(),
