@@ -3,26 +3,36 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const {
-    buildResourceProbePlan,
-    createNodeFsAdapter,
-    runResourceProbe,
-} = require('./extension-resource-probe');
-const { prepareResources } = require('./prepare-resources');
+const { runIsolatedResourcePreparation } = require('./extension-resource-stage');
+const { prepareResourcesAtRoots } = require('./prepare-resources');
 
 const extensionRoot = path.resolve(__dirname, '..');
-const resourcesRoot = path.join(extensionRoot, 'resources');
+const repositoryRoot = path.resolve(extensionRoot, '..');
 
 function run() {
-    const plan = buildResourceProbePlan(extensionRoot, crypto.randomBytes(12).toString('hex'));
-    runResourceProbe({
-        plan,
-        fsApi: createNodeFsAdapter(fs),
-        beforeMutation: assertPackageScriptContract,
-        prepare: () => prepareResources(),
-        assertPrepared: assertPreparedResources,
+    assertPackageScriptContract();
+    const liveSnapshot = snapshotLiveGeneratedResources();
+    let stageRoot;
+    const result = runIsolatedResourcePreparation({
+        extensionRoot,
+        repositoryRoot,
+        socApiRoot: extensionRoot,
+        prepareResourcesFn: (options, stage) => {
+            stageRoot = stage.stageRoot;
+            return prepareResourcesAtRoots(options);
+        },
     });
-    console.log('Extension resource preparation contract passed; prior outputs restored.');
+    assert.ok(result.files.includes('rtl/cpu/MERC32_top.v'),
+        'isolated preparation did not produce the CPU top');
+    assert.ok(result.files.includes('licenses/LICENSE'),
+        'isolated preparation did not produce the packaged license');
+    assert.ok(result.files.includes('schema/merc32.schema.json'),
+        'isolated preparation did not produce the generated schema');
+    assert.deepStrictEqual(snapshotLiveGeneratedResources(), liveSnapshot,
+        'isolated preparation changed live extension resources');
+    assert.strictEqual(lstatOptional(stageRoot), undefined,
+        'isolated preparation leaked its owned staging root');
+    console.log('Extension resource preparation passed in an isolated fresh fixture.');
 }
 
 function assertPackageScriptContract() {
@@ -31,13 +41,13 @@ function assertPackageScriptContract() {
     const scripts = packageJson.scripts || {};
     assert.strictEqual(
         scripts['test:extension:resources:unit'],
-        'node scripts/test-extension-resource-probe.js',
-        'test:extension:resources:unit must execute the resource fault-injection suite',
+        'node scripts/test-extension-resource-stage.js',
+        'test:extension:resources:unit must execute the staging boundary suite',
     );
     assert.strictEqual(
         scripts['test:extension:resources'],
         'npm run test:extension:resources:unit && node scripts/test-extension-resources.js',
-        'test:extension:resources must execute unit and real-path resource contracts',
+        'test:extension:resources must execute focused and real staging contracts',
     );
     assert.deepStrictEqual(
         splitCommandStages(scripts['test:extension']),
@@ -47,7 +57,7 @@ function assertPackageScriptContract() {
             'npm run compile',
             'node out/test/runTest.js',
         ],
-        'test:extension must verify and prepare resources before compile and host launch',
+        'test:extension must prove freshness, prepare live resources, compile, and launch',
     );
     assert.ok(
         !scripts['test:extension'].includes('--unhandled-rejections'),
@@ -60,46 +70,56 @@ function splitCommandStages(command) {
     return command.split(/\s*&&\s*/u);
 }
 
-function assertPreparedResources() {
-    assertDirectory(path.join(resourcesRoot, 'rtl'), 'generated RTL directory');
-    assertFile(path.join(resourcesRoot, 'licenses', 'LICENSE'), 'packaged license');
-    const manifestFile = path.join(resourcesRoot, 'resource-manifest.json');
-    assertFile(manifestFile, 'resource manifest');
-
-    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-    assert.strictEqual(manifest.manifestVersion, 1, 'unexpected resource manifest version');
-    assert.strictEqual(typeof manifest.sourceRevision, 'string');
-    assert.ok(manifest.sourceRevision.length > 0, 'resource manifest source revision is empty');
-    assert.ok(Array.isArray(manifest.files), 'resource manifest files must be an array');
-
-    const manifestPaths = new Set();
-    for (const entry of manifest.files) {
-        assert.ok(entry && typeof entry === 'object', 'resource manifest entry must be an object');
-        assert.strictEqual(typeof entry.path, 'string', 'resource manifest path must be a string');
-        assert.match(entry.sha256, /^[0-9a-f]{64}$/u, `invalid checksum for ${entry.path}`);
-        assert.ok(!manifestPaths.has(entry.path), `duplicate resource manifest path: ${entry.path}`);
-        manifestPaths.add(entry.path);
-    }
-
-    for (const logicalPath of [
-        'rtl/cpu/MERC32_top.v',
-        'licenses/LICENSE',
-        'schema/merc32.schema.json',
-    ]) {
-        assert.ok(manifestPaths.has(logicalPath), `resource manifest is missing ${logicalPath}`);
-        assertFile(
-            path.join(resourcesRoot, ...logicalPath.split('/')),
-            `manifest resource ${logicalPath}`,
-        );
-    }
+function snapshotLiveGeneratedResources() {
+    return [
+        'resources/rtl',
+        'resources/licenses',
+        'resources/resource-manifest.json',
+        'resources/schema/merc32.schema.json',
+    ].map((logicalPath) => [
+        logicalPath,
+        snapshotEntry(path.join(extensionRoot, ...logicalPath.split('/'))),
+    ]);
 }
 
-function assertDirectory(target, label) {
-    assert.ok(fs.lstatSync(target).isDirectory(), `${label} is not a directory`);
+function snapshotEntry(target) {
+    const status = lstatOptional(target, true);
+    if (status === undefined) return undefined;
+    if (status.isSymbolicLink()) return Object.freeze({ kind: 'link' });
+    if (status.isFile()) {
+        return Object.freeze({
+            kind: 'file',
+            dev: status.dev.toString(),
+            ino: status.ino.toString(),
+            size: status.size.toString(),
+            mtimeNs: status.mtimeNs.toString(),
+            sha256: sha256File(target),
+        });
+    }
+    assert.ok(status.isDirectory(), `live resource has unsupported type: ${target}`);
+    return Object.freeze({
+        kind: 'directory',
+        dev: status.dev.toString(),
+        ino: status.ino.toString(),
+        entries: Object.freeze(fs.readdirSync(target).sort().map((name) => [
+            name,
+            snapshotEntry(path.join(target, name)),
+        ])),
+    });
 }
 
-function assertFile(target, label) {
-    assert.ok(fs.lstatSync(target).isFile(), `${label} is not a file`);
+function sha256File(target) {
+    return crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+}
+
+function lstatOptional(target, bigint = false) {
+    if (target === undefined) return undefined;
+    try {
+        return fs.lstatSync(target, bigint ? { bigint: true } : undefined);
+    } catch (error) {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+    }
 }
 
 run();

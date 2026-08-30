@@ -18,49 +18,19 @@ function prepareResources(options = {}) {
     const extensionRoot = path.resolve(options.extensionRoot || path.join(__dirname, '..'));
     const repositoryRoot = path.resolve(options.repositoryRoot
         || path.join(__dirname, '..', '..'));
+    return prepareResourcesAtRoots({
+        ...options,
+        extensionRoot,
+        repositoryRoot,
+    });
+}
+
+function prepareResourcesAtRoots(options) {
+    const { extensionRoot, repositoryRoot } = requireExplicitRoots(options);
+    const inputs = discoverResourceInputs({ extensionRoot, repositoryRoot });
     const resourcesRoot = path.join(extensionRoot, 'resources');
-    const catalogRoot = path.join(resourcesRoot, 'catalog');
-    const moduleCatalogRoot = path.join(catalogRoot, 'modules');
     const socApi = options.socApi || loadSocApi(extensionRoot);
-
-    requireExactDirectory(resourcesRoot, resourcesRoot, '.');
-    requireExactDirectory(resourcesRoot, catalogRoot, 'catalog');
-    requireExactDirectory(resourcesRoot, moduleCatalogRoot, 'catalog/modules');
-    requireExactFile(resourcesRoot, path.join(catalogRoot, 'protocols.json'),
-        'catalog/protocols.json');
-
-    const catalogFiles = fs.readdirSync(moduleCatalogRoot, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-        .map((entry) => `catalog/modules/${entry.name}`)
-        .sort();
-    if (catalogFiles.length === 0) throw new Error('Module catalog is empty.');
-
-    const rtlFiles = new Set(BASE_RTL_FILES);
-    for (const logicalPath of catalogFiles) {
-        const descriptor = readJson(path.join(resourcesRoot, ...logicalPath.split('/')), logicalPath);
-        addCatalogRtlFiles(descriptor, logicalPath, rtlFiles);
-    }
-    const protocols = readJson(path.join(catalogRoot, 'protocols.json'),
-        'catalog/protocols.json');
-    if (!Array.isArray(protocols)) throw new Error('catalog/protocols.json must contain an array.');
-    protocols.forEach((descriptor, index) => addCatalogRtlFiles(
-        descriptor, `catalog/protocols.json[${index}]`, rtlFiles));
-
-    const sortedRtlFiles = [...rtlFiles].sort();
-    for (const logicalPath of sortedRtlFiles) {
-        requireSourceFile(repositoryRoot, logicalPath);
-    }
-    const staticFiles = [
-        ...catalogFiles,
-        'catalog/protocols.json',
-        'templates/README.md.tpl',
-        'templates/main.c.tpl',
-    ].sort();
-    for (const logicalPath of staticFiles) {
-        requireExactFile(resourcesRoot,
-            path.join(resourcesRoot, ...logicalPath.split('/')), logicalPath);
-    }
-    requireSourceFile(repositoryRoot, 'LICENSE');
+    const { catalogRoot, catalogFiles, rtlFiles: sortedRtlFiles, staticFiles } = inputs;
 
     const validationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-resource-catalog-'));
     let schemaText;
@@ -108,6 +78,81 @@ function prepareResources(options = {}) {
     };
     fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
     return Object.freeze({ files: Object.freeze(files), sourceRevision });
+}
+
+function discoverResourceInputs(options) {
+    const { extensionRoot, repositoryRoot } = requireExplicitRoots(options);
+    const resourcesRoot = path.join(extensionRoot, 'resources');
+    const catalogRoot = path.join(resourcesRoot, 'catalog');
+    const moduleCatalogRoot = path.join(catalogRoot, 'modules');
+
+    requireExactDirectory(resourcesRoot, resourcesRoot, '.');
+    requireExactDirectory(resourcesRoot, catalogRoot, 'catalog');
+    requireExactDirectory(resourcesRoot, moduleCatalogRoot, 'catalog/modules');
+    requireExactFile(resourcesRoot, path.join(catalogRoot, 'protocols.json'),
+        'catalog/protocols.json');
+
+    const catalogFiles = fs.readdirSync(moduleCatalogRoot, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => `catalog/modules/${entry.name}`)
+        .sort();
+    if (catalogFiles.length === 0) throw new Error('Module catalog is empty.');
+
+    const rtlFiles = new Set(BASE_RTL_FILES);
+    for (const logicalPath of catalogFiles) {
+        const descriptor = readJson(path.join(resourcesRoot, ...logicalPath.split('/')), logicalPath);
+        addCatalogRtlFiles(descriptor, logicalPath, rtlFiles);
+    }
+    const protocols = readJson(path.join(catalogRoot, 'protocols.json'),
+        'catalog/protocols.json');
+    if (!Array.isArray(protocols)) throw new Error('catalog/protocols.json must contain an array.');
+    protocols.forEach((descriptor, index) => addCatalogRtlFiles(
+        descriptor, `catalog/protocols.json[${index}]`, rtlFiles));
+
+    const sortedRtlFiles = [...rtlFiles].sort();
+    for (const logicalPath of sortedRtlFiles) {
+        requireSourceFile(repositoryRoot, logicalPath);
+    }
+    const staticFiles = [
+        ...catalogFiles,
+        'catalog/protocols.json',
+        'templates/README.md.tpl',
+        'templates/main.c.tpl',
+    ].sort();
+    for (const logicalPath of staticFiles) {
+        requireExactFile(resourcesRoot,
+            path.join(resourcesRoot, ...logicalPath.split('/')), logicalPath);
+    }
+    requireSourceFile(repositoryRoot, 'LICENSE');
+
+    return Object.freeze({
+        catalogRoot,
+        catalogFiles: Object.freeze(catalogFiles),
+        rtlFiles: Object.freeze(sortedRtlFiles),
+        staticFiles: Object.freeze(staticFiles),
+    });
+}
+
+function requireExplicitRoots(options) {
+    if (options === null || typeof options !== 'object') {
+        throw new TypeError('Resource preparation options are required.');
+    }
+    return {
+        extensionRoot: requireAbsoluteDirectory(options.extensionRoot, 'extension root'),
+        repositoryRoot: requireAbsoluteDirectory(options.repositoryRoot, 'repository root'),
+    };
+}
+
+function requireAbsoluteDirectory(value, label) {
+    if (typeof value !== 'string' || !path.isAbsolute(value)) {
+        throw new Error(`Resource preparation ${label} must be an absolute path.`);
+    }
+    const resolved = path.resolve(value);
+    const status = fs.lstatSync(resolved);
+    if (status.isSymbolicLink() || !status.isDirectory()) {
+        throw new Error(`Resource preparation ${label} is not an exact directory: ${resolved}.`);
+    }
+    return resolved;
 }
 
 function addCatalogRtlFiles(descriptor, label, result) {
@@ -234,4 +279,10 @@ if (require.main === module) {
     }
 }
 
-module.exports = { prepareResources };
+module.exports = {
+    discoverResourceInputs,
+    loadSocApi,
+    prepareResources,
+    prepareResourcesAtRoots,
+    readSourceRevision,
+};
