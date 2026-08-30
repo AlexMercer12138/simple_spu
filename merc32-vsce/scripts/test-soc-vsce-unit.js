@@ -92,6 +92,14 @@ const {
     isUnsettableSocPath,
     renderEditorHtml,
 } = require('../out/socEditorProvider');
+const {
+    buildGenerateSocOptions,
+    createConfigText,
+    registerSocCommands,
+    resolveSocConfigUri,
+    runAutoAssign,
+    runSocGeneration,
+} = require('../out/socCommands');
 
 assert.strictEqual(SOC_CONFIG_SUFFIX, '.merc32.json');
 assert.strictEqual(SOC_EDITOR_VIEW_TYPE, 'merc32.socConfigEditor');
@@ -630,10 +638,498 @@ const fakeDocument = {
         + standardJsonLf.slice(appliedRange.end.offset);
     assert.ok(appliedText.includes('"debug": true'));
 
-    for (const [type, expectedCommand, outcome, expectedPhases] of [
-        ['autoAssign', 'merc32.soc.autoAssign', true, ['working', 'success']],
-        ['validate', 'merc32.soc.validate', undefined, ['validating', 'success']],
-        ['generate', 'merc32.soc.generate', true, ['generating', 'generated']],
+    const starterText = createConfigText('control_board');
+    const starter = JSON.parse(starterText);
+    assert.deepStrictEqual(starter, {
+        schemaVersion: 1,
+        project: {
+            name: 'control_board',
+            outputDir: 'generated/control_board',
+        },
+        cpu: { debug: false },
+        memory: {
+            ilb: { type: 'internal_ram', size: '32KiB' },
+            dlb: { type: 'internal_ram', size: '32KiB' },
+        },
+        peripherals: [],
+        externalInterfaces: [],
+        interrupt: { mode: 'none' },
+    }, 'starter configuration drifted from the schema-version-1 contract');
+    assert.ok(starterText.endsWith('\n'));
+    assert.ok(parseSocConfig(starterText, 'control_board.merc32.json', catalog).config,
+        'starter configuration is not accepted by the real parser');
+
+    const uri = (name) => ({
+        scheme: 'file',
+        path: `/workspace/${name}`,
+        fsPath: `C:\\workspace\\${name}`,
+        with(change) {
+            const nextPath = change.path === undefined ? this.path : change.path;
+            return {
+                ...this,
+                ...change,
+                path: nextPath,
+                fsPath: nextPath.replace('/workspace/', 'C:\\workspace\\').replace(/\//g, '\\'),
+            };
+        },
+        toString() { return `file://${this.path}`; },
+    });
+    const explicitUri = uri('explicit.merc32.json');
+    const activeUri = uri('active.merc32.json');
+    const workspaceUri = uri('workspace.merc32.json');
+    const otherWorkspaceUri = uri('other.merc32.json');
+    const resolverCalls = [];
+    const resolverVscode = {
+        Uri: {
+            isUri(value) {
+                return Boolean(value && value.scheme === 'file' && typeof value.path === 'string');
+            },
+        },
+        window: {
+            tabGroups: {
+                activeTabGroup: {
+                    activeTab: {
+                        input: { viewType: SOC_EDITOR_VIEW_TYPE, uri: activeUri },
+                    },
+                },
+            },
+            async showQuickPick(items) {
+                resolverCalls.push(['quickPick', items]);
+                return items.find((item) => item.uri === otherWorkspaceUri);
+            },
+        },
+        workspace: {
+            async findFiles(include, exclude) {
+                resolverCalls.push(['findFiles', include, exclude]);
+                return [workspaceUri];
+            },
+            asRelativePath(value) { return value.path.slice('/workspace/'.length); },
+        },
+    };
+    assert.strictEqual(await resolveSocConfigUri(explicitUri, resolverVscode), explicitUri,
+        'explicit configuration URI did not win target resolution');
+    assert.strictEqual(resolverCalls.length, 0, 'explicit resolution consulted lower-priority state');
+    assert.strictEqual(await resolveSocConfigUri(uri('ordinary.json'), resolverVscode), undefined,
+        'an explicit ordinary JSON URI fell through to another configuration');
+    assert.strictEqual(resolverCalls.length, 0, 'an explicit ordinary JSON URI triggered discovery');
+    assert.strictEqual(await resolveSocConfigUri(undefined, resolverVscode), activeUri,
+        'active custom-editor URI did not win target resolution');
+    assert.strictEqual(resolverCalls.length, 0, 'active custom editor triggered a workspace scan');
+
+    resolverVscode.window.tabGroups.activeTabGroup.activeTab = undefined;
+    assert.strictEqual(await resolveSocConfigUri(undefined, resolverVscode), workspaceUri,
+        'the only workspace configuration was not selected');
+    assert.deepStrictEqual(resolverCalls.shift(), [
+        'findFiles', '**/*.merc32.json', '**/{.git,node_modules}/**',
+    ]);
+
+    resolverVscode.workspace.findFiles = async (include, exclude) => {
+        resolverCalls.push(['findFiles', include, exclude]);
+        return [workspaceUri, otherWorkspaceUri];
+    };
+    assert.strictEqual(await resolveSocConfigUri(undefined, resolverVscode), otherWorkspaceUri,
+        'multiple workspace configurations did not require the explicit Quick Pick choice');
+    assert.strictEqual(resolverCalls.filter(([kind]) => kind === 'quickPick').length, 1);
+
+    const assignmentDocument = {
+        ...fakeDocument,
+        uri: explicitUri,
+        fileName: explicitUri.fsPath,
+        isDirty: false,
+        save: () => { throw new Error('Auto-assign must not save the document'); },
+    };
+    const assignmentCalls = [];
+    const assignmentVscode = {
+        Uri: resolverVscode.Uri,
+        window: {
+            tabGroups: { activeTabGroup: { activeTab: undefined } },
+            async showWarningMessage(message, options, ...actions) {
+                assignmentCalls.push(['preview', message, options, actions]);
+                return 'Assign';
+            },
+            async showErrorMessage(message) { assignmentCalls.push(['error', message]); },
+        },
+        workspace: {
+            async findFiles() { throw new Error('explicit auto-assign target must not scan'); },
+            async openTextDocument(value) {
+                assert.strictEqual(value, explicitUri);
+                return assignmentDocument;
+            },
+        },
+    };
+    let assignmentUpdates;
+    const assignmentOutcome = await runAutoAssign(explicitUri, {
+        catalog,
+        diagnostics: { refresh: () => [] },
+        output: { appendLine() {}, show() {} },
+        vscodeApi: assignmentVscode,
+        applyUpdates: async (document, updates) => {
+            assert.strictEqual(document, assignmentDocument);
+            assignmentUpdates = updates;
+            return true;
+        },
+    });
+    assert.strictEqual(assignmentOutcome, true);
+    assert.deepStrictEqual(assignmentUpdates, [{
+        path: ['peripherals', 0, 'baseAddress'], value: '0x10000000',
+    }]);
+    assert.strictEqual(assignmentCalls[0][2].modal, true);
+    assert.strictEqual(assignmentCalls[0][2].detail,
+        'peripherals.0.baseAddress -> 0x10000000');
+    assert.deepStrictEqual(assignmentCalls[0][3], ['Assign']);
+
+    assignmentVscode.window.showWarningMessage = async () => undefined;
+    assignmentUpdates = undefined;
+    assert.strictEqual(await runAutoAssign(explicitUri, {
+        catalog,
+        diagnostics: { refresh: () => [] },
+        output: { appendLine() {}, show() {} },
+        vscodeApi: assignmentVscode,
+        applyUpdates: async (_document, updates) => {
+            assignmentUpdates = updates;
+            return true;
+        },
+    }), false, 'cancelled assignment did not return the failure/cancellation outcome');
+    assert.strictEqual(assignmentUpdates, undefined, 'cancelled assignment edited the document');
+
+    const assetRoot = 'C:\\extension\\resources';
+    assert.deepStrictEqual(buildGenerateSocOptions(explicitUri.fsPath, assetRoot, 'normal'), {
+        configFile: explicitUri.fsPath,
+        assetRoot,
+    });
+    assert.deepStrictEqual(buildGenerateSocOptions(explicitUri.fsPath, assetRoot, 'force'), {
+        configFile: explicitUri.fsPath,
+        assetRoot,
+        force: true,
+    });
+    assert.deepStrictEqual(buildGenerateSocOptions(explicitUri.fsPath, assetRoot, 'adopt'), {
+        configFile: explicitUri.fsPath,
+        assetRoot,
+        adoptOutput: true,
+    });
+
+    const generationCalls = [];
+    const dirtyGenerationDocument = {
+        ...assignmentDocument,
+        isDirty: true,
+        async save() {
+            generationCalls.push(['save']);
+            return false;
+        },
+    };
+    const extensionUri = {
+        scheme: 'file',
+        path: '/extension',
+        fsPath: 'C:\\extension',
+        toString() { return 'file:///extension'; },
+    };
+    const generationVscode = {
+        Uri: {
+            ...resolverVscode.Uri,
+            joinPath(base, segment) {
+                return {
+                    scheme: base.scheme,
+                    path: `${base.path}/${segment}`,
+                    fsPath: `${base.fsPath}\\${segment}`,
+                    toString() { return `file://${this.path}`; },
+                };
+            },
+            file(value) { return uri(value.replace(/^.*[\\/]/, '')); },
+        },
+        ProgressLocation: { Notification: 15 },
+        window: {
+            tabGroups: { activeTabGroup: { activeTab: undefined } },
+            async withProgress(_options, task) {
+                return task({ report(value) { generationCalls.push(['progress', value.message]); } });
+            },
+            async showErrorMessage(message) { generationCalls.push(['error', message]); },
+        },
+        workspace: {
+            async findFiles() { throw new Error('explicit generation target must not scan'); },
+            async openTextDocument() { return dirtyGenerationDocument; },
+        },
+        commands: {
+            async executeCommand(...args) { generationCalls.push(['command', ...args]); },
+        },
+    };
+    const generationServices = {
+        extensionUri,
+        catalog,
+        diagnostics: { refresh: () => [] },
+        output: { appendLine(value) { generationCalls.push(['output', value]); }, show() {} },
+        vscodeApi: generationVscode,
+        generate: (options) => {
+            generationCalls.push(['generate', options]);
+            return {
+                outputDir: 'C:\\workspace\\generated\\edit_soc',
+                manifestFile: 'C:\\workspace\\generated\\edit_soc\\manifest.json',
+                files: [], warnings: [], skippedUserFiles: [],
+            };
+        },
+    };
+    assert.strictEqual(await runSocGeneration(explicitUri, 'normal', generationServices), false,
+        'save cancellation did not stop generation');
+    assert.deepStrictEqual(generationCalls, [['save']]);
+
+    dirtyGenerationDocument.save = async () => {
+        generationCalls.push(['save']);
+        throw new Error('disk full');
+    };
+    generationCalls.length = 0;
+    assert.strictEqual(await runSocGeneration(explicitUri, 'normal', generationServices), false,
+        'save failure did not return the handled failure outcome');
+    assert.deepStrictEqual(generationCalls.map(([kind]) => kind), ['save', 'error']);
+
+    dirtyGenerationDocument.save = async () => {
+        generationCalls.push(['save']);
+        return true;
+    };
+    generationCalls.length = 0;
+    let generatedRecord;
+    const statusMessages = [];
+    const successfulServices = {
+        ...generationServices,
+        artifacts: {
+            async recordGeneratedSoc(record) { generatedRecord = record; },
+        },
+    };
+    assert.strictEqual(await runSocGeneration(
+        explicitUri,
+        'force',
+        successfulServices,
+        async (status) => { statusMessages.push(status.message); },
+    ), true);
+    const generateCall = generationCalls.find(([kind]) => kind === 'generate');
+    assert.deepStrictEqual(generateCall[1], {
+        configFile: explicitUri.fsPath,
+        assetRoot: 'C:\\extension\\resources',
+        force: true,
+    });
+    assert.ok(!Object.prototype.hasOwnProperty.call(generateCall[1], 'adoptOutput'),
+        'force generation also enabled adoption');
+    assert.ok(statusMessages.some((message) => /planning/i.test(message)));
+    assert.ok(statusMessages.some((message) => /staging/i.test(message) && /activation/i.test(message)));
+    assert.strictEqual(generatedRecord.configUri, explicitUri);
+    assert.ok(generationCalls.some(([kind, command]) =>
+        kind === 'command' && command === 'revealFileInOS'));
+
+    generationCalls.length = 0;
+    successfulServices.generate = () => {
+        throw new (require('../out/soc').SocGenerationError)(
+            'Generated files conflict with the existing output.',
+            [],
+            [{ path: 'rtl/edit_soc.v', reason: 'modified-managed' }],
+        );
+    };
+    assert.strictEqual(await runSocGeneration(explicitUri, 'normal', successfulServices), false,
+        'handled generator conflict did not return false');
+    assert.ok(generationCalls.some(([kind, value]) =>
+        kind === 'output' && /rtl\/edit_soc\.v.*modified-managed/.test(value)));
+    assert.strictEqual(generationCalls.filter(([kind]) => kind === 'error').length, 1);
+
+    const commandHandlers = new Map();
+    const registeredCalls = [];
+    const createdUri = uri('Control Board.merc32.json');
+    let saveDialogUri = createdUri;
+    let confirmAction;
+    let registeredDocumentText = starterText;
+    const registeredVscode = {
+        ...generationVscode,
+        Uri: {
+            ...generationVscode.Uri,
+            file(value) {
+                const normalized = value.replace(/\\/g, '/');
+                return {
+                    scheme: 'file',
+                    path: normalized.startsWith('/') ? normalized : `/${normalized}`,
+                    fsPath: value,
+                    toString() { return `file://${this.path}`; },
+                };
+            },
+        },
+        commands: {
+            registerCommand(command, handler) {
+                commandHandlers.set(command, handler);
+                return { dispose() {} };
+            },
+            async executeCommand(...args) {
+                registeredCalls.push(['executeCommand', ...args]);
+            },
+        },
+        window: {
+            ...generationVscode.window,
+            async showSaveDialog(options) {
+                registeredCalls.push(['saveDialog', options]);
+                return saveDialogUri;
+            },
+            async showWarningMessage(message, options, ...actions) {
+                registeredCalls.push(['confirm', message, options, actions]);
+                return confirmAction;
+            },
+            async showErrorMessage(message) {
+                registeredCalls.push(['error', message]);
+            },
+        },
+        workspace: {
+            ...generationVscode.workspace,
+            workspaceFolders: [{ uri: uri('') }],
+            fs: {
+                async stat(value) {
+                    registeredCalls.push(['stat', value]);
+                    throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+                },
+                async writeFile(value, bytes) {
+                    registeredCalls.push(['writeFile', value, Buffer.from(bytes).toString('utf8')]);
+                },
+                async rename(source, target, options) {
+                    registeredCalls.push(['rename', source, target, options]);
+                },
+                async delete(value, options) {
+                    registeredCalls.push(['delete', value, options]);
+                    throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+                },
+            },
+            async openTextDocument(value) {
+                registeredCalls.push(['openTextDocument', value]);
+                return {
+                    ...assignmentDocument,
+                    uri: value,
+                    fileName: value.fsPath,
+                    getText: () => registeredDocumentText,
+                    isDirty: false,
+                };
+            },
+        },
+    };
+    const registeredOutput = [];
+    const registeredGeneratedOptions = [];
+    const registeredServices = {
+        catalog,
+        diagnostics: { refresh: (document) => {
+            registeredCalls.push(['diagnostics', document.uri]);
+            return [];
+        } },
+        output: {
+            appendLine(value) { registeredOutput.push(value); },
+            show(value) { registeredCalls.push(['outputShow', value]); },
+        },
+        vscodeApi: registeredVscode,
+        generate(options) {
+            registeredGeneratedOptions.push(options);
+            return {
+                outputDir: 'C:\\workspace\\generated\\control_board',
+                manifestFile: 'C:\\workspace\\generated\\control_board\\manifest.json',
+                files: ['rtl/control_board.v'], warnings: [], skippedUserFiles: [],
+            };
+        },
+    };
+    const disposables = registerSocCommands({ extensionUri }, registeredServices);
+    assert.strictEqual(disposables.length, 8);
+
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.createConfig)(), true);
+    const saveDialog = registeredCalls.find(([kind]) => kind === 'saveDialog');
+    assert.ok(saveDialog[1].defaultUri.path.endsWith('/soc.merc32.json'));
+    assert.ok(registeredCalls.findIndex(([kind]) => kind === 'stat')
+        < registeredCalls.findIndex(([kind]) => kind === 'writeFile'));
+    const writeCall = registeredCalls.find(([kind]) => kind === 'writeFile');
+    assert.notStrictEqual(writeCall[1], createdUri,
+        'Create passed the selected URI to overwrite-capable writeFile');
+    const createdText = writeCall[2];
+    assert.strictEqual(JSON.parse(createdText).project.name, 'Control_Board');
+    assert.strictEqual(JSON.parse(createdText).project.outputDir, 'generated/Control_Board');
+    const renameCall = registeredCalls.find(([kind]) => kind === 'rename');
+    assert.strictEqual(renameCall[1], writeCall[1]);
+    assert.strictEqual(renameCall[2], createdUri);
+    assert.deepStrictEqual(renameCall[3], { overwrite: false });
+    assert.ok(registeredCalls.some(([kind, command, value, viewType]) =>
+        kind === 'executeCommand' && command === 'vscode.openWith'
+        && value === createdUri && viewType === SOC_EDITOR_VIEW_TYPE));
+
+    registeredCalls.length = 0;
+    registeredVscode.workspace.fs.stat = async (value) => {
+        registeredCalls.push(['stat', value]);
+        return { type: 1, ctime: 0, mtime: 0, size: 1 };
+    };
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.createConfig)(), false);
+    assert.ok(!registeredCalls.some(([kind]) => kind === 'writeFile'),
+        'Create overwrote an existing configuration');
+
+    registeredCalls.length = 0;
+    registeredVscode.workspace.fs.stat = async (value) => {
+        registeredCalls.push(['stat', value]);
+        throw Object.assign(new Error('missing'), { code: 'FileNotFound' });
+    };
+    registeredVscode.workspace.fs.rename = async (source, target, options) => {
+        registeredCalls.push(['rename', source, target, options]);
+        throw Object.assign(new Error('raced'), { code: 'FileExists' });
+    };
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.createConfig)(), false);
+    assert.ok(registeredCalls.some(([kind]) => kind === 'delete'),
+        'raced temporary configuration was not cleaned up');
+    assert.ok(!registeredCalls.some(([kind, command]) =>
+        kind === 'executeCommand' && command === 'vscode.openWith'));
+
+    registeredCalls.length = 0;
+    saveDialogUri = uri('ordinary.json');
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.createConfig)(), false);
+    assert.ok(!registeredCalls.some(([kind]) => kind === 'stat' || kind === 'writeFile'),
+        'invalid compound suffix reached filesystem mutation');
+    saveDialogUri = createdUri;
+
+    registeredCalls.length = 0;
+    registeredOutput.length = 0;
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.validate)(explicitUri), true);
+    assert.ok(registeredOutput.includes('Warnings: none'));
+    assert.ok(registeredOutput.includes('Address table:'));
+    assert.ok(registeredOutput.includes('(no PLB endpoints)'));
+
+    registeredOutput.length = 0;
+    registeredDocumentText = standardJsonLf.replace(
+        '      "name": "uart0"\n',
+        '      "name": "uart0",\n      "baseAddress": "0x10000000"\n',
+    );
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.validate)(explicitUri), true);
+    assert.ok(registeredOutput.includes('uart0: 0x10000000 - 0x10000fff'));
+    assert.ok(registeredOutput.some((line) => /WARNING SOC_IRQ_UNCONNECTED/.test(line)));
+    registeredDocumentText = starterText;
+
+    registeredCalls.length = 0;
+    registeredGeneratedOptions.length = 0;
+    confirmAction = undefined;
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.forceGenerate)(explicitUri), false);
+    assert.strictEqual(registeredGeneratedOptions.length, 0);
+    const forceConfirmation = registeredCalls.find(([kind]) => kind === 'confirm');
+    assert.strictEqual(forceConfirmation[2].modal, true);
+    assert.match(forceConfirmation[2].detail, /replace modified managed files/i);
+    assert.match(forceConfirmation[2].detail, /will not replace main\.c/i);
+
+    confirmAction = 'Force Generate';
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.forceGenerate)(explicitUri), true);
+    assert.deepStrictEqual(registeredGeneratedOptions.pop(), {
+        configFile: explicitUri.fsPath,
+        assetRoot: 'C:\\extension\\resources',
+        force: true,
+    });
+
+    registeredCalls.length = 0;
+    confirmAction = 'Adopt Output';
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.adoptOutput)(explicitUri), true);
+    const adoptConfirmation = registeredCalls.find(([kind]) => kind === 'confirm');
+    assert.match(adoptConfirmation[1], /explicit\.merc32\.json/);
+    assert.match(adoptConfirmation[2].detail, /Configuration:/);
+    assert.match(adoptConfirmation[2].detail, /Output directory:.*generated[\\/]control_board/);
+    assert.deepStrictEqual(registeredGeneratedOptions.pop(), {
+        configFile: explicitUri.fsPath,
+        assetRoot: 'C:\\extension\\resources',
+        adoptOutput: true,
+    });
+
+    for (const [type, expectedCommand, outcome, commandStatus, expectedPhases] of [
+        ['autoAssign', 'merc32.soc.autoAssign', true, undefined, ['working', 'success']],
+        ['validate', 'merc32.soc.validate', undefined, undefined, ['validating', 'success']],
+        ['generate', 'merc32.soc.generate', true,
+            { phase: 'generating', message: 'Staging and activation...' },
+            ['generating', 'generating', 'generated']],
     ]) {
         const calls = [];
         const statuses = [];
@@ -642,11 +1138,15 @@ const fakeDocument = {
             fakeDocument.uri,
             async (...args) => {
                 calls.push(args);
+                if (commandStatus) await args[2](commandStatus);
                 return outcome;
             },
             async (status) => { statuses.push(status); },
         );
-        assert.deepStrictEqual(calls, [[expectedCommand, fakeDocument.uri]]);
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0][0], expectedCommand);
+        assert.strictEqual(calls[0][1], fakeDocument.uri);
+        assert.strictEqual(typeof calls[0][2], 'function');
         assert.deepStrictEqual(statuses.map((status) => status.phase), expectedPhases,
             `${type} posted dishonest status transitions`);
     }

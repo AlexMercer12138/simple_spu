@@ -240,7 +240,7 @@ export async function executeSocEditorCommand(
     const action = SOC_EDITOR_COMMAND_STATUS[type];
     await postStatus(action.start);
     try {
-        const outcome = await executeCommand(action.command, documentUri);
+        const outcome = await executeCommand(action.command, documentUri, postStatus);
         await postStatus(outcome === false ? action.failure : action.success);
     } catch {
         await postStatus(action.failure);

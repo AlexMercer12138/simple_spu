@@ -18,6 +18,7 @@ export const COMMANDS = {
 } as const;
 
 export const SOC_CONFIG_SUFFIX = '.merc32.json';
+export const SOC_DEFAULT_CONFIG_FILE = `soc${SOC_CONFIG_SUFFIX}`;
 export const SOC_EDITOR_VIEW_TYPE = 'merc32.socConfigEditor';
 
 export const SOC_VIEW_IDS = {
