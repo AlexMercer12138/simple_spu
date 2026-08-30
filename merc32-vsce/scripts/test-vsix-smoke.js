@@ -256,19 +256,15 @@ async function testVsix(options) {
 }
 
 function auditVsix(vsixFile, extensionRoot) {
-    const zip = new AdmZip(vsixFile);
+    const zip = new AdmZip(vsixFile, { noSort: true });
     const entries = new Map();
-    const foldedEntries = new Map();
+    const pathTrie = { children: new Map() };
     const fileMap = [];
     for (const entry of zip.getEntries()) {
         const name = normalizeArchivePath(entry.entryName, entry.isDirectory);
         assert.ok(!entries.has(name), `VSIX contains duplicate entry ${name}`);
-        const collisionKey = (entry.isDirectory ? name.slice(0, -1) : name)
-            .toLocaleLowerCase('en-US');
-        assert.ok(!foldedEntries.has(collisionKey),
-            `case-insensitive VSIX entry alias ${foldedEntries.get(collisionKey)} and ${name}`);
+        registerArchivePath(pathTrie, name, entry.isDirectory);
         entries.set(name, entry);
-        foldedEntries.set(collisionKey, name);
         if (entry.isDirectory) continue;
         const bytes = entry.getData();
         fileMap.push(Object.freeze({
@@ -286,6 +282,57 @@ function auditVsix(vsixFile, extensionRoot) {
         vsixFile,
         zip,
     });
+}
+
+function registerArchivePath(root, name, isDirectory) {
+    const segments = (isDirectory ? name.slice(0, -1) : name).split('/');
+    let node = root;
+    for (const [index, segment] of segments.entries()) {
+        const foldedSegment = segment.toLocaleLowerCase('en-US');
+        const logicalPath = segments.slice(0, index + 1).join('/');
+        let child = node.children.get(foldedSegment);
+        if (child === undefined) {
+            child = {
+                children: new Map(),
+                explicitType: undefined,
+                logicalPath,
+                requiredDirectory: false,
+                spelling: segment,
+            };
+            node.children.set(foldedSegment, child);
+        } else {
+            assert.strictEqual(child.spelling, segment,
+                archivePathConflict(child, name, 'segment spelling differs'));
+        }
+
+        const isLeaf = index === segments.length - 1;
+        if (!isLeaf) {
+            assert.notStrictEqual(child.explicitType, 'file',
+                archivePathConflict(child, name, 'descendant is below a file'));
+            child.requiredDirectory = true;
+        }
+        node = child;
+    }
+
+    if (isDirectory) {
+        assert.notStrictEqual(node.explicitType, 'file',
+            archivePathConflict(node, name, 'directory conflicts with a file'));
+        assert.notStrictEqual(node.explicitType, 'directory',
+            archivePathConflict(node, name, 'duplicate explicit directory'));
+        node.explicitType = 'directory';
+        return;
+    }
+
+    assert.strictEqual(node.explicitType, undefined,
+        archivePathConflict(node, name, 'file conflicts with an explicit entry'));
+    assert.ok(!node.requiredDirectory && node.children.size === 0,
+        archivePathConflict(node, name, 'file conflicts with existing descendants'));
+    node.explicitType = 'file';
+}
+
+function archivePathConflict(node, incomingName, reason) {
+    const existingName = `${node.logicalPath}${node.explicitType === 'file' ? '' : '/'}`;
+    return `case-insensitive VSIX entry alias ${existingName} and ${incomingName} (${reason})`;
 }
 
 function assertVsixContents(audit, extensionRoot) {
@@ -484,6 +531,61 @@ function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
                 addRawArchiveEntry(zip, 'extension/Package.json', source.getData());
             },
         },
+        {
+            label: 'case-varied file ancestor before resource descendant',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/Resources');
+                addRawArchiveEntry(zip, 'extension/resources/item.txt');
+            },
+        },
+        {
+            label: 'resource descendant before case-varied file ancestor',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/resources/item.txt');
+                addRawArchiveEntry(zip, 'extension/Resources');
+            },
+        },
+        {
+            label: 'case-varied explicit directory aliases an implicit directory',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/Resources/', Buffer.alloc(0));
+            },
+        },
+        {
+            label: 'descendant below an existing file',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'a');
+                addRawArchiveEntry(zip, 'a/b');
+            },
+        },
+        {
+            label: 'file replaces an ancestor required by a descendant',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'b/c');
+                addRawArchiveEntry(zip, 'b');
+            },
+        },
+        {
+            label: 'nested segment case variants',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/archive-trie/nested/left.txt');
+                addRawArchiveEntry(zip, 'extension/archive-trie/Nested/right.txt');
+            },
+        },
+        {
+            label: 'case-varied explicit directory variants',
+            expected: /case-insensitive VSIX entry alias/u,
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/archive-trie-directory/', Buffer.alloc(0));
+                addRawArchiveEntry(zip, 'extension/Archive-Trie-Directory/', Buffer.alloc(0));
+            },
+        },
     ];
     const failures = [];
     for (const [index, contract] of contracts.entries()) {
@@ -504,18 +606,38 @@ function runArchiveMutationContracts(baseVsix, extensionRoot, tempRoot) {
     assert.deepStrictEqual(failures, [],
         `VSIX resource mutation contract failure(s):\n${failures.join('\n')}`);
 
-    const directoryVsix = path.join(tempRoot, 'archive-directory-entry.vsix');
-    const directoryZip = loadWritableZip(baseVsix);
-    addRawArchiveEntry(
-        directoryZip,
-        'extension/resources/empty-directory/',
-        Buffer.alloc(0),
-    );
-    directoryZip.writeZip(directoryVsix);
-    assert.doesNotThrow(
-        () => assertVsixContents(auditVsix(directoryVsix, extensionRoot), extensionRoot),
-        'canonical ZIP directory entry was rejected',
-    );
+    const acceptedContracts = [
+        {
+            label: 'canonical directory matching an implicit resource directory',
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/resources/', Buffer.alloc(0));
+            },
+        },
+        {
+            label: 'explicit canonical directory before its child',
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/archive-trie/', Buffer.alloc(0));
+                addRawArchiveEntry(zip, 'extension/archive-trie/child.txt');
+            },
+        },
+        {
+            label: 'explicit canonical directory after its child',
+            mutate(zip) {
+                addRawArchiveEntry(zip, 'extension/archive-trie-implicit/child.txt');
+                addRawArchiveEntry(zip, 'extension/archive-trie-implicit/', Buffer.alloc(0));
+            },
+        },
+    ];
+    for (const [index, contract] of acceptedContracts.entries()) {
+        const acceptedVsix = path.join(tempRoot, `archive-accepted-${index}.vsix`);
+        const zip = loadWritableZip(baseVsix);
+        contract.mutate(zip);
+        zip.writeZip(acceptedVsix);
+        assert.doesNotThrow(
+            () => assertVsixContents(auditVsix(acceptedVsix, extensionRoot), extensionRoot),
+            `${contract.label} was rejected`,
+        );
+    }
 }
 
 let rawArchiveEntryId = 0;
@@ -528,7 +650,7 @@ function addRawArchiveEntry(zip, entryName, contents = Buffer.from('mutation\n',
 }
 
 function loadWritableZip(vsixFile) {
-    const zip = new AdmZip(vsixFile);
+    const zip = new AdmZip(vsixFile, { noSort: true });
     for (const entry of zip.getEntries()) {
         if (!entry.isDirectory) entry.setData(entry.getData());
         entry.header.flags_desc = false;
