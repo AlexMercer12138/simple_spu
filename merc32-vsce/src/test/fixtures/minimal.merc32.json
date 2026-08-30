@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "host_fixture",
+    "outputDir": "generated/host_fixture"
+  },
+  "cpu": {
+    "debug": false
+  },
+  "memory": {
+    "ilb": {
+      "type": "external_local_bus",
+      "size": "32KiB"
+    },
+    "dlb": {
+      "type": "external_local_bus",
+      "size": "32KiB"
+    }
+  },
+  "peripherals": [],
+  "externalInterfaces": [],
+  "interrupt": {
+    "mode": "none"
+  }
+}
