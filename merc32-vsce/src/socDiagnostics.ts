@@ -5,6 +5,7 @@ import {
     loadCatalog,
     ModuleCatalog,
     parseSocConfig,
+    planSoc,
     SocDiagnostic,
     SocJsonRange,
     SocSourceMap,
@@ -52,14 +53,22 @@ export class SocDiagnostics implements vscode.Disposable {
         }
     }
 
-    refresh(document: vscode.TextDocument): readonly SocDiagnostic[] {
+    refresh(
+        document: vscode.TextDocument,
+        additionalDiagnostics: readonly SocDiagnostic[] = [],
+    ): readonly SocDiagnostic[] {
         if (!isSocDocument(document)) {
             return [];
         }
 
         const text = document.getText();
         const parsed = parseSocConfig(text, document.fileName, this.catalog);
-        const diagnostics = parsed.diagnostics;
+        const planned = parsed.config ? planSoc(parsed.config, this.catalog) : undefined;
+        const diagnostics = deduplicateDiagnostics([
+            ...parsed.diagnostics,
+            ...(planned?.diagnostics ?? []),
+            ...additionalDiagnostics,
+        ]);
         const published = diagnostics.map((diagnostic) => {
             const range = diagnosticRange(text, parsed.sourceMap, diagnostic);
             const severity = diagnostic.severity === 'error'
@@ -117,6 +126,17 @@ export class SocDiagnostics implements vscode.Disposable {
             this.refresh(document);
         }, 150));
     }
+}
+
+function deduplicateDiagnostics(diagnostics: readonly SocDiagnostic[]): SocDiagnostic[] {
+    const seen = new Set<string>();
+    return diagnostics.filter((diagnostic) => {
+        const key = `${diagnostic.severity}\0${diagnostic.code}\0${JSON.stringify(diagnostic.path)}`
+            + `\0${diagnostic.message}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 function isSocDocument(document: vscode.TextDocument): boolean {

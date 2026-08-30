@@ -28,7 +28,10 @@ type GenerationMode = 'normal' | 'force' | 'adopt';
 type GenerationStatusReporter = (status: SocGenerationState) => void | PromiseLike<void>;
 
 export interface SocDiagnosticsService {
-    refresh(document: vscode.TextDocument): readonly SocDiagnostic[];
+    refresh(
+        document: vscode.TextDocument,
+        additionalDiagnostics?: readonly SocDiagnostic[],
+    ): readonly SocDiagnostic[];
 }
 
 export interface GeneratedSocArtifactRecord {
@@ -125,6 +128,17 @@ export function buildGenerateSocOptions(
     return { configFile, assetRoot };
 }
 
+/** Maps an extension-host path back into the configuration's workspace provider. */
+export function workspaceUriFromFsPath(
+    configUri: vscode.Uri,
+    absoluteFsPath: string,
+    vscodeApi: VscodeApi = loadVscode(),
+): vscode.Uri {
+    const fileUri = vscodeApi.Uri.file(absoluteFsPath);
+    if (configUri.scheme === 'file') return fileUri;
+    return configUri.with({ path: fileUri.path, query: '', fragment: '' });
+}
+
 /** Previews and applies every missing address as one WorkspaceEdit. */
 export async function runAutoAssign(
     argument: unknown,
@@ -208,26 +222,29 @@ export async function runSocGeneration(
         }, async (progress) => {
             progress.report({ message: 'Planning configuration...' });
             await reportStatus?.({ phase: 'generating', message: 'Planning configuration...' });
-            progress.report({ message: 'Staging files and activating output...' });
+            progress.report({ message: 'Generating output...' });
             await reportStatus?.({
                 phase: 'generating',
-                message: 'Staging files and completing activation...',
+                message: 'Generating output through planning, staging, and activation...',
             });
-            return generate(options);
+            const generated = generate(options);
+            progress.report({ message: 'Output activated.' });
+            await reportStatus?.({ phase: 'generating', message: 'Generated output activated.' });
+            return generated;
         });
 
         writeGenerationSummary(services.output, uri, result);
-        const outputUri = vscodeApi.Uri.file(result.outputDir);
+        const outputUri = workspaceUriFromFsPath(uri, result.outputDir, vscodeApi);
         await services.artifacts?.recordGeneratedSoc({
             configUri: uri,
             outputUri,
-            manifestUri: vscodeApi.Uri.file(result.manifestFile),
+            manifestUri: workspaceUriFromFsPath(uri, result.manifestFile, vscodeApi),
         });
         await vscodeApi.commands.executeCommand('revealFileInOS', outputUri);
         return true;
     } catch (error) {
         if (!(error instanceof SocGenerationError)) throw error;
-        services.diagnostics.refresh(document);
+        services.diagnostics.refresh(document, error.diagnostics);
         writeGenerationFailure(services.output, uri, error);
         services.output.show(true);
         await vscodeApi.window.showErrorMessage(`MERC32 SoC generation failed: ${error.message}`);

@@ -82,7 +82,7 @@ const {
 } = require('../out/socWebviewProtocol');
 const { loadCatalog, parseSocConfig } = require('../out/soc');
 const { buildJsonReplacement } = require('../out/socJsonEdits');
-const { diagnosticRange } = require('../out/socDiagnostics');
+const { SocDiagnostics, diagnosticRange } = require('../out/socDiagnostics');
 const {
     applySocDocumentUpdates,
     buildSocDocumentUpdates,
@@ -99,6 +99,7 @@ const {
     resolveSocConfigUri,
     runAutoAssign,
     runSocGeneration,
+    workspaceUriFromFsPath,
 } = require('../out/socCommands');
 
 assert.strictEqual(SOC_CONFIG_SUFFIX, '.merc32.json');
@@ -622,6 +623,107 @@ const fakeDocument = {
     save: () => { throw new Error('applySocDocumentUpdates must not auto-save'); },
 };
 
+const publishedDiagnosticEntries = new Map([
+    ['file:///untouched.merc32.json', [{ code: 'UNTOUCHED' }]],
+]);
+class FakeDiagnostic {
+    constructor(range, message, severity) {
+        this.range = range;
+        this.message = message;
+        this.severity = severity;
+    }
+}
+const diagnosticDisposables = [];
+const diagnosticVscode = {
+    Diagnostic: FakeDiagnostic,
+    DiagnosticSeverity: { Error: 0, Warning: 1 },
+    Range: FakeRange,
+    languages: {
+        createDiagnosticCollection() {
+            return {
+                set(uriValue, diagnostics) {
+                    publishedDiagnosticEntries.set(uriValue.toString(), diagnostics);
+                },
+                delete(uriValue) { publishedDiagnosticEntries.delete(uriValue.toString()); },
+                clear() { publishedDiagnosticEntries.clear(); },
+                dispose() {},
+            };
+        },
+    },
+    workspace: {
+        textDocuments: [],
+        onDidOpenTextDocument() {
+            const disposable = { dispose() {} };
+            diagnosticDisposables.push(disposable);
+            return disposable;
+        },
+        onDidChangeTextDocument() {
+            const disposable = { dispose() {} };
+            diagnosticDisposables.push(disposable);
+            return disposable;
+        },
+        onDidCloseTextDocument() {
+            const disposable = { dispose() {} };
+            diagnosticDisposables.push(disposable);
+            return disposable;
+        },
+    },
+};
+const diagnosticDocumentUri = { toString: () => 'file:///standard.merc32.json' };
+const diagnosticDocument = {
+    ...fakeDocument,
+    uri: diagnosticDocumentUri,
+    fileName: 'C:\\workspace\\standard.merc32.json',
+};
+const diagnosticsService = new SocDiagnostics(
+    path.join(__dirname, '..', 'resources'),
+    diagnosticVscode,
+);
+const refreshedDiagnostics = diagnosticsService.refresh(diagnosticDocument);
+assert.ok(refreshedDiagnostics.some((item) =>
+    item.code === 'SOC_ADDRESS_REQUIRED'
+    && JSON.stringify(item.path) === JSON.stringify(['peripherals', 0, 'baseAddress'])),
+    'planner-only missing-address diagnostic was not refreshed');
+const publishedMissingAddress = publishedDiagnosticEntries.get(diagnosticDocumentUri.toString())
+    .find((item) => item.code === 'SOC_ADDRESS_REQUIRED');
+assert.ok(publishedMissingAddress);
+assert.match(
+    standardJsonLf.slice(
+        publishedMissingAddress.range.start.offset,
+        publishedMissingAddress.range.end.offset,
+    ),
+    /"name": "uart0"/,
+    'missing-property diagnostic did not map to its closest source object',
+);
+
+const generationDiagnostic = {
+    severity: 'error',
+    code: 'SOC_GENERATION_TEST',
+    path: ['cpu', 'debug'],
+    message: 'Injected generation diagnostic.',
+};
+const duplicateMissingAddress = refreshedDiagnostics.find((item) =>
+    item.code === 'SOC_ADDRESS_REQUIRED');
+diagnosticsService.refresh(diagnosticDocument, [generationDiagnostic, duplicateMissingAddress]);
+const generationPublished = publishedDiagnosticEntries.get(diagnosticDocumentUri.toString());
+assert.strictEqual(generationPublished.filter((item) => item.code === 'SOC_ADDRESS_REQUIRED').length, 1,
+    'merged diagnostics published a duplicate planner error');
+assert.strictEqual(generationPublished.filter((item) => item.code === 'SOC_GENERATION_TEST').length, 1,
+    'generation diagnostic was not published');
+const publishedGenerationDiagnostic = generationPublished.find((item) =>
+    item.code === 'SOC_GENERATION_TEST');
+assert.strictEqual(
+    standardJsonLf.slice(
+        publishedGenerationDiagnostic.range.start.offset,
+        publishedGenerationDiagnostic.range.end.offset,
+    ),
+    'false',
+    'generation diagnostic did not use the parser-backed source range',
+);
+assert.strictEqual(publishedDiagnosticEntries.get('file:///untouched.merc32.json')[0].code, 'UNTOUCHED',
+    'refresh replaced diagnostics belonging to another document');
+diagnosticsService.dispose();
+
 (async () => {
     const applied = await applySocDocumentUpdates(fakeDocument, [
         { path: ['cpu', 'debug'], value: true },
@@ -682,7 +784,8 @@ const fakeDocument = {
     const resolverVscode = {
         Uri: {
             isUri(value) {
-                return Boolean(value && value.scheme === 'file' && typeof value.path === 'string');
+                return Boolean(value && typeof value.scheme === 'string'
+                    && typeof value.path === 'string' && typeof value.fsPath === 'string');
             },
         },
         window: {
@@ -834,7 +937,19 @@ const fakeDocument = {
                     toString() { return `file://${this.path}`; },
                 };
             },
-            file(value) { return uri(value.replace(/^.*[\\/]/, '')); },
+            file(value) {
+                let uriPath = value.replace(/\\/g, '/');
+                if (/^[A-Za-z]:\//.test(uriPath)) uriPath = `/${uriPath}`;
+                if (!uriPath.startsWith('/')) uriPath = `/${uriPath}`;
+                return {
+                    scheme: 'file',
+                    authority: '',
+                    path: uriPath,
+                    fsPath: value,
+                    with(change) { return { ...this, ...change }; },
+                    toString() { return `file://${this.path}`; },
+                };
+            },
         },
         ProgressLocation: { Notification: 15 },
         window: {
@@ -860,13 +975,54 @@ const fakeDocument = {
         vscodeApi: generationVscode,
         generate: (options) => {
             generationCalls.push(['generate', options]);
-            return {
+            const result = {
                 outputDir: 'C:\\workspace\\generated\\edit_soc',
                 manifestFile: 'C:\\workspace\\generated\\edit_soc\\manifest.json',
                 files: [], warnings: [], skippedUserFiles: [],
             };
+            generationCalls.push(['generateReturn']);
+            return result;
         },
     };
+    assert.strictEqual(typeof workspaceUriFromFsPath, 'function',
+        'workspace-provider URI conversion helper is missing');
+    const localGeneratedUri = workspaceUriFromFsPath(
+        explicitUri,
+        'C:\\workspace\\generated\\edit_soc',
+        generationVscode,
+    );
+    assert.deepStrictEqual({
+        scheme: localGeneratedUri.scheme,
+        authority: localGeneratedUri.authority,
+        path: localGeneratedUri.path,
+    }, {
+        scheme: 'file',
+        authority: '',
+        path: '/C:/workspace/generated/edit_soc',
+    });
+
+    const remoteConfigUri = {
+        scheme: 'vscode-remote',
+        authority: 'ssh-remote+unit-host',
+        path: '/workspace/remote.merc32.json',
+        fsPath: '/workspace/remote.merc32.json',
+        with(change) { return { ...this, ...change }; },
+        toString() { return `${this.scheme}://${this.authority}${this.path}`; },
+    };
+    const remoteGeneratedUri = workspaceUriFromFsPath(
+        remoteConfigUri,
+        '/workspace/generated/remote_soc',
+        generationVscode,
+    );
+    assert.deepStrictEqual({
+        scheme: remoteGeneratedUri.scheme,
+        authority: remoteGeneratedUri.authority,
+        path: remoteGeneratedUri.path,
+    }, {
+        scheme: 'vscode-remote',
+        authority: 'ssh-remote+unit-host',
+        path: '/workspace/generated/remote_soc',
+    });
     assert.strictEqual(await runSocGeneration(explicitUri, 'normal', generationServices), false,
         'save cancellation did not stop generation');
     assert.deepStrictEqual(generationCalls, [['save']]);
@@ -897,7 +1053,10 @@ const fakeDocument = {
         explicitUri,
         'force',
         successfulServices,
-        async (status) => { statusMessages.push(status.message); },
+        async (status) => {
+            statusMessages.push(status.message);
+            generationCalls.push(['status', status.message]);
+        },
     ), true);
     const generateCall = generationCalls.find(([kind]) => kind === 'generate');
     assert.deepStrictEqual(generateCall[1], {
@@ -908,24 +1067,95 @@ const fakeDocument = {
     assert.ok(!Object.prototype.hasOwnProperty.call(generateCall[1], 'adoptOutput'),
         'force generation also enabled adoption');
     assert.ok(statusMessages.some((message) => /planning/i.test(message)));
-    assert.ok(statusMessages.some((message) => /staging/i.test(message) && /activation/i.test(message)));
+    const generatorEventIndex = generationCalls.findIndex(([kind]) => kind === 'generate');
+    const generatorReturnIndex = generationCalls.findIndex(([kind]) => kind === 'generateReturn');
+    const planningStatusIndex = generationCalls.findIndex(([kind, message]) =>
+        kind === 'status' && /planning/i.test(message));
+    const activatedStatusIndex = generationCalls.findIndex(([kind, message]) =>
+        kind === 'status' && /activated|activat.*complet|complet.*activation/i.test(message));
+    assert.ok(planningStatusIndex >= 0 && planningStatusIndex < generatorEventIndex,
+        'planning status was not published before generator invocation');
+    assert.ok(activatedStatusIndex > generatorReturnIndex,
+        'activation completion was published before the synchronous generator returned');
     assert.strictEqual(generatedRecord.configUri, explicitUri);
+    assert.deepStrictEqual({
+        scheme: generatedRecord.outputUri.scheme,
+        authority: generatedRecord.outputUri.authority,
+        path: generatedRecord.outputUri.path,
+    }, {
+        scheme: 'file', authority: '', path: '/C:/workspace/generated/edit_soc',
+    });
     assert.ok(generationCalls.some(([kind, command]) =>
         kind === 'command' && command === 'revealFileInOS'));
 
     generationCalls.length = 0;
+    let remoteGeneratedRecord;
+    const remoteServices = {
+        ...successfulServices,
+        artifacts: {
+            async recordGeneratedSoc(record) { remoteGeneratedRecord = record; },
+        },
+        generate: () => ({
+            outputDir: '/workspace/generated/remote_soc',
+            manifestFile: '/workspace/generated/remote_soc/manifest.json',
+            files: [], warnings: [], skippedUserFiles: [],
+        }),
+    };
+    assert.strictEqual(await runSocGeneration(remoteConfigUri, 'normal', remoteServices), true);
+    assert.strictEqual(remoteGeneratedRecord.configUri, remoteConfigUri);
+    assert.deepStrictEqual({
+        scheme: remoteGeneratedRecord.outputUri.scheme,
+        authority: remoteGeneratedRecord.outputUri.authority,
+        path: remoteGeneratedRecord.outputUri.path,
+    }, {
+        scheme: 'vscode-remote',
+        authority: 'ssh-remote+unit-host',
+        path: '/workspace/generated/remote_soc',
+    });
+    assert.deepStrictEqual({
+        scheme: remoteGeneratedRecord.manifestUri.scheme,
+        authority: remoteGeneratedRecord.manifestUri.authority,
+        path: remoteGeneratedRecord.manifestUri.path,
+    }, {
+        scheme: 'vscode-remote',
+        authority: 'ssh-remote+unit-host',
+        path: '/workspace/generated/remote_soc/manifest.json',
+    });
+    const remoteReveal = generationCalls.find(([kind, command]) =>
+        kind === 'command' && command === 'revealFileInOS');
+    assert.strictEqual(remoteReveal[2], remoteGeneratedRecord.outputUri);
+
+    generationCalls.length = 0;
+    const failedGenerationStatuses = [];
+    let generationRefreshExtras;
+    successfulServices.diagnostics = {
+        refresh(_document, additionalDiagnostics) {
+            generationRefreshExtras = additionalDiagnostics;
+            return [];
+        },
+    };
     successfulServices.generate = () => {
         throw new (require('../out/soc').SocGenerationError)(
             'Generated files conflict with the existing output.',
-            [],
+            [generationDiagnostic],
             [{ path: 'rtl/edit_soc.v', reason: 'modified-managed' }],
         );
     };
-    assert.strictEqual(await runSocGeneration(explicitUri, 'normal', successfulServices), false,
+    assert.strictEqual(await runSocGeneration(
+        explicitUri,
+        'normal',
+        successfulServices,
+        async (status) => { failedGenerationStatuses.push(status.message); },
+    ), false,
         'handled generator conflict did not return false');
     assert.ok(generationCalls.some(([kind, value]) =>
         kind === 'output' && /rtl\/edit_soc\.v.*modified-managed/.test(value)));
     assert.strictEqual(generationCalls.filter(([kind]) => kind === 'error').length, 1);
+    assert.deepStrictEqual(generationRefreshExtras, [generationDiagnostic],
+        'generation diagnostics were not forwarded to the publisher');
+    assert.ok(!failedGenerationStatuses.some((message) =>
+        /activated|activat.*complet|complet.*activation|staging.*complet/i.test(message)),
+    'failed generation received a completion status');
 
     const commandHandlers = new Map();
     const registeredCalls = [];
