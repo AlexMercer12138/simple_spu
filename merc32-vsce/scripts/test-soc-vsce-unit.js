@@ -161,7 +161,9 @@ assert.deepStrictEqual(SOC_ACTION_MODELS.map((item) => [item.label, item.command
     ['Force Generate', 'merc32.soc.forceGenerate'],
 ]);
 
+const manifestHash = '0'.repeat(64);
 const artifactManifest = {
+    generatorVersion: '2.0.0',
     manifestVersion: 1,
     manifestFile: {
         hashPolicy: 'excluded-self',
@@ -169,12 +171,50 @@ const artifactManifest = {
         path: 'manifest.json',
     },
     projectName: 'demo',
+    resourceRevision: 'test-resource-revision',
     sourceConfig: 'C:/workspace/configs/demo.merc32.json',
     files: [
-        { kind: 'generated/rtl', logicalSource: 'generator:renderPlbRouter', path: 'rtl/generated/demo_plb_router.v' },
-        { kind: 'generated/software-header', logicalSource: 'generator:renderSocHeader', path: 'software/include/demo.h' },
-        { kind: 'generated/address-map', logicalSource: 'generator:renderAddressMap', path: 'address-map.json' },
-        { kind: 'generated/rtl', logicalSource: 'generator:renderSocTop', path: 'rtl/demo.v' },
+        {
+            kind: 'generated/rtl',
+            logicalSource: 'generator:renderPlbRouter',
+            path: 'rtl/generated/demo_plb_router.v',
+            sha256: manifestHash,
+        },
+        {
+            kind: 'asset/rtl',
+            logicalSource: 'rtl/cpu/core.v',
+            path: 'rtl/cpu/core.v',
+            sha256: manifestHash,
+        },
+        {
+            kind: 'generated/config',
+            logicalSource: 'generator:renderResolvedConfig',
+            path: 'config/demo.resolved.json',
+            sha256: manifestHash,
+        },
+        {
+            kind: 'scaffold/user-owned',
+            logicalSource: 'templates/main.c.tpl',
+            path: 'software/src/main.c',
+        },
+        {
+            kind: 'generated/software-header',
+            logicalSource: 'generator:renderSocHeader',
+            path: 'software/include/demo.h',
+            sha256: manifestHash,
+        },
+        {
+            kind: 'generated/address-map',
+            logicalSource: 'generator:renderAddressMap',
+            path: 'address-map.json',
+            sha256: manifestHash,
+        },
+        {
+            kind: 'generated/rtl',
+            logicalSource: 'generator:renderSocTop',
+            path: 'rtl/demo.v',
+            sha256: manifestHash,
+        },
     ],
 };
 assert.deepStrictEqual(artifactPathsFromManifest(artifactManifest), [
@@ -203,6 +243,61 @@ for (const [name, manifest] of [
         ...artifactManifest,
         files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderAddressMap'
             ? { ...item, kind: 'generated/rtl' }
+            : item),
+    }],
+    ['unsafe sibling traversal', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'asset/rtl', logicalSource: '../outside.v', path: '../outside.v', sha256: manifestHash,
+        }],
+    }],
+    ['absolute sibling path', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'asset/rtl', logicalSource: 'C:/outside.v', path: 'C:/outside.v', sha256: manifestHash,
+        }],
+    }],
+    ['null sibling', { ...artifactManifest, files: [...artifactManifest.files, null] }],
+    ['array sibling', { ...artifactManifest, files: [...artifactManifest.files, []] }],
+    ['scalar sibling', { ...artifactManifest, files: [...artifactManifest.files, 'rtl/outside.v'] }],
+    ['duplicate sibling path', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, { ...artifactManifest.files[0] }],
+    }],
+    ['case-insensitive sibling collision', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'asset/rtl', logicalSource: 'RTL/CPU/CORE.V', path: 'RTL/CPU/CORE.V', sha256: manifestHash,
+        }],
+    }],
+    ['malformed sibling path', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'asset/rtl', logicalSource: 'rtl//outside.v', path: 'rtl//outside.v', sha256: manifestHash,
+        }],
+    }],
+    ['forged sibling role', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'generated/documentation', logicalSource: 'generator:forged', path: 'README.md', sha256: manifestHash,
+        }],
+    }],
+    ['forged sibling kind', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'asset/rtl', logicalSource: 'templates/README.md.tpl', path: 'README.md', sha256: manifestHash,
+        }],
+    }],
+    ['invalid managed hash', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.path === 'rtl/cpu/core.v'
+            ? { ...item, sha256: 'not-a-sha256' }
+            : item),
+    }],
+    ['malformed user-owned record', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.kind === 'scaffold/user-owned'
+            ? { ...item, sha256: manifestHash }
             : item),
     }],
 ]) {
@@ -964,6 +1059,7 @@ try {
         'missing-shape',
         'wrong-shape',
         'path-traversal',
+        'unsafe-sibling',
         'source-mismatch',
     ];
     const invalidManifestUris = invalidManifestKinds.map((name) => ({
@@ -1008,6 +1104,11 @@ try {
                 path: 'address-map.json',
                 sha256: '3'.repeat(64),
             },
+            {
+                kind: 'scaffold/user-owned',
+                logicalSource: 'templates/main.c.tpl',
+                path: 'software/src/main.c',
+            },
         ],
         generatorVersion: '2.0.0',
         manifestFile: {
@@ -1049,6 +1150,17 @@ try {
                 files: validLiveManifest.files.map((item) => item.logicalSource === 'generator:renderSocTop'
                     ? { ...item, path: '../live.v' }
                     : item),
+                sourceConfig,
+            })));
+        } else if (name === 'unsafe-sibling') {
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                files: [...validLiveManifest.files, {
+                    kind: 'asset/rtl',
+                    logicalSource: '../outside.v',
+                    path: '../outside.v',
+                    sha256: '4'.repeat(64),
+                }],
                 sourceConfig,
             })));
         } else {

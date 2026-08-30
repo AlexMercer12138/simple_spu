@@ -7,6 +7,7 @@ import {
     SOC_EDITOR_VIEW_TYPE,
     SOC_HOST_COMMANDS,
 } from './constants';
+import { assertNoCaseInsensitivePathCollisions, normalizeGeneratedPath } from './soc/fileManager';
 import type { GeneratedSocArtifactRecord } from './socCommands';
 import type { ToolchainArtifact } from './types';
 
@@ -252,9 +253,10 @@ export class SocActionProvider implements vscode.TreeDataProvider<ActionTreeNode
 }
 
 interface ManifestFileRecord {
-    kind?: unknown;
-    logicalSource?: unknown;
-    path?: unknown;
+    kind: string;
+    logicalSource: string;
+    path: string;
+    sha256?: string;
 }
 
 interface ArtifactManifestBinding {
@@ -637,10 +639,21 @@ function artifactManifestBinding(value: unknown): ArtifactManifestBinding | unde
         || typeof value.sourceConfig !== 'string'
         || value.sourceConfig.length === 0
         || value.sourceConfig.includes('\0')
+        || typeof value.generatorVersion !== 'string'
+        || typeof value.resourceRevision !== 'string'
         || !Array.isArray(value.files)) {
         return undefined;
     }
-    const files = value.files.filter((item): item is ManifestFileRecord => isObject(item));
+    let files: ManifestFileRecord[];
+    try {
+        files = value.files.map((item) => validateManifestFileRecord(item, value.projectName as string));
+        assertNoCaseInsensitivePathCollisions(files.map((item) => item.path));
+    } catch {
+        return undefined;
+    }
+    if (files.filter((item) => item.kind === 'scaffold/user-owned').length !== 1) {
+        return undefined;
+    }
     const expected = [
         {
             kind: 'generated/rtl',
@@ -673,6 +686,66 @@ function artifactManifestBinding(value: unknown): ArtifactManifestBinding | unde
     };
 }
 
+function validateManifestFileRecord(value: unknown, projectName: string): ManifestFileRecord {
+    if (!isObject(value) || typeof value.path !== 'string'
+        || typeof value.kind !== 'string' || typeof value.logicalSource !== 'string') {
+        throw new Error('Invalid manifest file record.');
+    }
+    const recordPath = normalizeGeneratedPath(value.path);
+    if (value.kind === 'scaffold/user-owned') {
+        if (recordPath !== 'software/src/main.c' || value.sha256 !== undefined
+            || value.logicalSource !== 'templates/main.c.tpl') {
+            throw new Error('Invalid user-owned manifest record.');
+        }
+        return {
+            kind: value.kind,
+            logicalSource: value.logicalSource,
+            path: recordPath,
+        };
+    }
+    if (recordPath === 'software/src/main.c' || recordPath === 'manifest.json'
+        || typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)
+        || !isAllowedManifestRecord(value.kind, value.logicalSource, recordPath, projectName)) {
+        throw new Error('Invalid managed manifest record.');
+    }
+    return {
+        kind: value.kind,
+        logicalSource: value.logicalSource,
+        path: recordPath,
+        sha256: value.sha256,
+    };
+}
+
+function isAllowedManifestRecord(
+    kind: string,
+    logicalSource: string,
+    recordPath: string,
+    projectName: string,
+): boolean {
+    if (kind === 'asset/rtl') {
+        return recordPath.startsWith('rtl/') && logicalSource === recordPath;
+    }
+    const exact = new Map<string, readonly [string, string]>([
+        [`rtl/${projectName}.v`, ['generated/rtl', 'generator:renderSocTop']],
+        [`rtl/generated/${projectName}_plb_router.v`, ['generated/rtl', 'generator:renderPlbRouter']],
+        [`rtl/generated/${projectName}_apb_interconnect.v`, ['generated/rtl', 'generator:renderApbInterconnect']],
+        ['rtl/files.f', ['generated/rtl-file-list', 'generator:rtlFiles']],
+        [`software/include/${projectName}.h`, ['generated/software-header', 'generator:renderSocHeader']],
+        [`config/${projectName}.resolved.json`, ['generated/config', 'generator:renderResolvedConfig']],
+        ['address-map.json', ['generated/address-map', 'generator:renderAddressMap']],
+        ['README.md', ['generated/documentation', 'templates/README.md.tpl']],
+        ['LICENSE', ['asset/license', 'licenses/LICENSE']],
+    ]);
+    const expected = exact.get(recordPath);
+    if (expected !== undefined) {
+        return kind === expected[0] && logicalSource === expected[1];
+    }
+    const memory = /^memory\/(ilb|dlb)_([^/]+)$/.exec(recordPath);
+    return memory !== null && memory[2] !== '.' && memory[2] !== '..'
+        && kind === 'source/memory-init'
+        && logicalSource === `config:memory.${memory[1]}.initFile`;
+}
+
 function sameConfigIdentity(sourceConfig: string, configUri: vscode.Uri): boolean {
     const left = sourceConfig.replace(/\\/g, '/');
     const right = configUri.fsPath.replace(/\\/g, '/');
@@ -682,7 +755,7 @@ function sameConfigIdentity(sourceConfig: string, configUri: vscode.Uri): boolea
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function compareText(left: string, right: string): number {
