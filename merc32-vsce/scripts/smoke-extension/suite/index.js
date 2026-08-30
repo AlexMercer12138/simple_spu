@@ -1,9 +1,9 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 const vscode = require('vscode');
+const { runIcarusElaboration } = require('./icarus');
 
 const EXTENSION_ID = 'Vikai-mercer.merc32-vsce';
 const GUARD_EXTENSION_ID = 'merc32-smoke.merc32-network-guard';
@@ -156,18 +156,7 @@ async function run() {
         }
     }
 
-    const elaboration = spawnSync('iverilog', [
-        '-Wall', '-Wno-timescale', '-g2005',
-        '-s', 'all_peripherals_soc',
-        '-o', path.join(outputDir, 'all_peripherals.vvp'),
-        '-f', 'files.f',
-    ], { cwd: rtlRoot, encoding: 'utf8' });
-    assert.ok(!elaboration.error,
-        `iverilog failed to launch: ${elaboration.error?.message}`);
-    assert.strictEqual(elaboration.status, 0,
-        `iverilog elaboration failed:\n${elaboration.stdout || ''}${elaboration.stderr || ''}`);
-    requireExactFile(path.join(outputDir, 'all_peripherals.vvp'),
-        'Icarus elaboration output');
+    requireExactFile(runIcarusElaboration({ outputDir, rtlRoot }), 'Icarus elaboration output');
     guardApi.heartbeat(networkGuardToken, 'after-target');
     assertNoNetworkAttempts(networkGuardLog, networkGuardToken, [
         'active',

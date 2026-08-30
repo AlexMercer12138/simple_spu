@@ -27,6 +27,14 @@ type VscodeApi = typeof import('vscode');
 type GenerationMode = 'normal' | 'force' | 'adopt';
 type GenerationStatusReporter = (status: SocGenerationState) => void | PromiseLike<void>;
 
+interface ConfirmedGenerationSnapshot {
+    readonly configUri: string;
+    readonly documentVersion: number;
+    readonly source: string;
+    readonly projectName: string;
+    readonly outputDir: string;
+}
+
 export interface SocDiagnosticsService {
     refresh(
         document: vscode.TextDocument,
@@ -148,7 +156,9 @@ export async function runAutoAssign(
     const uri = await resolveSocConfigUri(argument, vscodeApi);
     if (!uri) return false;
     const document = await vscodeApi.workspace.openTextDocument(uri);
-    const parsed = parseSocConfig(document.getText(), document.fileName, services.catalog);
+    const documentVersion = document.version;
+    const source = document.getText();
+    const parsed = parseSocConfig(source, document.fileName, services.catalog);
     if (!parsed.config || hasErrors(parsed.diagnostics)) {
         services.diagnostics.refresh(document);
         await vscodeApi.window.showErrorMessage('The MERC32 SoC configuration is invalid.');
@@ -175,6 +185,7 @@ export async function runAutoAssign(
         'Assign',
     );
     if (action !== 'Assign') return false;
+    if (document.version !== documentVersion || document.getText() !== source) return false;
 
     const applyUpdates = services.applyUpdates ?? applySocDocumentUpdates;
     const applied = await applyUpdates(document, result.assignments.map((assignment) => ({
@@ -194,11 +205,16 @@ export async function runSocGeneration(
     mode: GenerationMode,
     services: RuntimeSocCommandServices,
     reportStatus?: GenerationStatusReporter,
+    confirmedSnapshot?: ConfirmedGenerationSnapshot,
 ): Promise<SocEditorCommandOutcome> {
     const vscodeApi = services.vscodeApi ?? loadVscode();
     const uri = await resolveSocConfigUri(argument, vscodeApi);
     if (!uri) return false;
     const document = await vscodeApi.workspace.openTextDocument(uri);
+    if (confirmedSnapshot
+        && !isConfirmedGenerationSnapshotCurrent(document, confirmedSnapshot, services.catalog)) {
+        return false;
+    }
     if (document.isDirty) {
         try {
             if (!await document.save()) return false;
@@ -214,29 +230,25 @@ export async function runSocGeneration(
     const options = buildGenerateSocOptions(uri.fsPath, assetRoot, mode);
     const generate = services.generate ?? generateSoc;
 
+    let result: GenerateSocResult | undefined;
     try {
-        const result = await vscodeApi.window.withProgress({
+        result = await vscodeApi.window.withProgress({
             location: vscodeApi.ProgressLocation.Notification,
             title: 'Generating MERC32 SoC',
             cancellable: false,
         }, async (progress) => {
             progress.report({ message: 'Running generator...' });
             await reportStatus?.({ phase: 'generating', message: 'Running generator...' });
+            if (confirmedSnapshot
+                && !isConfirmedGenerationSnapshotCurrent(document, confirmedSnapshot, services.catalog)) {
+                return undefined;
+            }
             const generated = generate(options);
             progress.report({ message: 'Output activated.' });
             await reportStatus?.({ phase: 'generating', message: 'Generated output activated.' });
             return generated;
         });
 
-        writeGenerationSummary(services.output, uri, result);
-        const outputUri = workspaceUriFromFsPath(uri, result.outputDir, vscodeApi);
-        await services.artifacts?.recordGeneratedSoc({
-            configUri: uri,
-            outputUri,
-            manifestUri: workspaceUriFromFsPath(uri, result.manifestFile, vscodeApi),
-        });
-        await vscodeApi.commands.executeCommand('revealFileInOS', outputUri);
-        return true;
     } catch (error) {
         if (!(error instanceof SocGenerationError)) throw error;
         services.diagnostics.refresh(document, error.diagnostics);
@@ -245,6 +257,27 @@ export async function runSocGeneration(
         await vscodeApi.window.showErrorMessage(`MERC32 SoC generation failed: ${error.message}`);
         return false;
     }
+    if (!result) return false;
+
+    writeGenerationSummary(services.output, uri, result);
+    const outputUri = workspaceUriFromFsPath(uri, result.outputDir, vscodeApi);
+    try {
+        await services.artifacts?.recordGeneratedSoc({
+            configUri: uri,
+            outputUri,
+            manifestUri: workspaceUriFromFsPath(uri, result.manifestFile, vscodeApi),
+        });
+    } catch (error) {
+        await reportGenerationWarning(vscodeApi, services.output,
+            'the generated artifact record could not be saved', error);
+    }
+    try {
+        await vscodeApi.commands.executeCommand('revealFileInOS', outputUri);
+    } catch (error) {
+        await reportGenerationWarning(vscodeApi, services.output,
+            'the generated output directory could not be revealed', error);
+    }
+    return true;
 }
 
 /** Registers the safe configuration and generation actions. */
@@ -388,16 +421,19 @@ async function confirmForceGeneration(
     const vscodeApi = services.vscodeApi ?? loadVscode();
     const uri = await resolveSocConfigUri(argument, vscodeApi);
     if (!uri) return false;
+    const snapshot = await prepareGenerationConfirmation(uri, services);
+    if (!snapshot) return false;
     const selected = await vscodeApi.window.showWarningMessage(
         'Force generate this MERC32 SoC?',
         {
             modal: true,
-            detail: 'Force generation may replace modified managed files, but it will not replace main.c.',
+            detail: `Configuration: ${uri.fsPath}\nOutput directory: ${snapshot.outputDir}\n\n`
+                + 'Force generation may replace modified managed files, but it will not replace main.c.',
         },
         'Force Generate',
     );
     return selected === 'Force Generate'
-        ? runSocGeneration(uri, 'force', services, reportStatus)
+        ? runSocGeneration(uri, 'force', services, reportStatus, snapshot)
         : false;
 }
 
@@ -409,25 +445,83 @@ async function confirmAdoptOutput(
     const vscodeApi = services.vscodeApi ?? loadVscode();
     const uri = await resolveSocConfigUri(argument, vscodeApi);
     if (!uri) return false;
-    const document = await vscodeApi.workspace.openTextDocument(uri);
-    const parsed = parseSocConfig(document.getText(), document.fileName, services.catalog);
-    if (!parsed.config || hasErrors(parsed.diagnostics)) {
-        services.diagnostics.refresh(document);
-        await vscodeApi.window.showErrorMessage('The MERC32 SoC configuration is invalid.');
-        return false;
-    }
-    const outputDir = path.resolve(path.dirname(uri.fsPath), parsed.config.project.outputDir);
+    const snapshot = await prepareGenerationConfirmation(uri, services);
+    if (!snapshot) return false;
     const selected = await vscodeApi.window.showWarningMessage(
         `Adopt output for ${path.basename(uri.fsPath)}?`,
         {
             modal: true,
-            detail: `Configuration: ${uri.fsPath}\nOutput directory: ${outputDir}`,
+            detail: `Configuration: ${uri.fsPath}\nOutput directory: ${snapshot.outputDir}`,
         },
         'Adopt Output',
     );
     return selected === 'Adopt Output'
-        ? runSocGeneration(uri, 'adopt', services, reportStatus)
+        ? runSocGeneration(uri, 'adopt', services, reportStatus, snapshot)
         : false;
+}
+
+async function prepareGenerationConfirmation(
+    uri: vscode.Uri,
+    services: RuntimeSocCommandServices,
+): Promise<ConfirmedGenerationSnapshot | undefined> {
+    const vscodeApi = services.vscodeApi ?? loadVscode();
+    const document = await vscodeApi.workspace.openTextDocument(uri);
+    if (document.isDirty) {
+        try {
+            if (!await document.save()) return undefined;
+        } catch {
+            await vscodeApi.window.showErrorMessage(
+                'MERC32 SoC generation stopped because the configuration could not be saved.',
+            );
+            return undefined;
+        }
+    }
+    const source = document.getText();
+    const parsed = parseSocConfig(source, document.fileName, services.catalog);
+    if (!parsed.config || hasErrors(parsed.diagnostics)) {
+        services.diagnostics.refresh(document);
+        await vscodeApi.window.showErrorMessage('The MERC32 SoC configuration is invalid.');
+        return undefined;
+    }
+    return {
+        configUri: uri.toString(),
+        documentVersion: document.version,
+        source,
+        projectName: parsed.config.project.name,
+        outputDir: path.resolve(path.dirname(uri.fsPath), parsed.config.project.outputDir),
+    };
+}
+
+function isConfirmedGenerationSnapshotCurrent(
+    document: vscode.TextDocument,
+    snapshot: ConfirmedGenerationSnapshot,
+    catalog: ModuleCatalog,
+): boolean {
+    if (document.uri.toString() !== snapshot.configUri
+        || document.version !== snapshot.documentVersion
+        || document.getText() !== snapshot.source) return false;
+    const parsed = parseSocConfig(document.getText(), document.fileName, catalog);
+    return Boolean(parsed.config
+        && !hasErrors(parsed.diagnostics)
+        && parsed.config.project.name === snapshot.projectName
+        && path.resolve(path.dirname(document.fileName), parsed.config.project.outputDir) === snapshot.outputDir);
+}
+
+async function reportGenerationWarning(
+    vscodeApi: VscodeApi,
+    output: Pick<vscode.OutputChannel, 'appendLine' | 'show'>,
+    detail: string,
+    error: unknown,
+): Promise<void> {
+    const reason = error instanceof Error ? error.message : String(error);
+    const message = `MERC32 SoC generated successfully with a warning: ${detail}: ${reason}`;
+    output.appendLine(`WARNING SOC_GENERATION_FOLLOW_UP: ${detail}: ${reason}`);
+    output.show(true);
+    try {
+        await vscodeApi.window.showWarningMessage(message);
+    } catch {
+        // The output channel still retains the warning if notifications are unavailable.
+    }
 }
 
 function legalStarterProjectName(

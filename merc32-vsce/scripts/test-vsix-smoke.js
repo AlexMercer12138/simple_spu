@@ -7,7 +7,7 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { fileURLToPath } = require('url');
+const { assertPersistedArtifactState } = require('./vsix-smoke-state');
 
 const AdmZip = require('adm-zip');
 const { createVSIX } = require('@vscode/vsce');
@@ -251,7 +251,8 @@ async function testVsix(options) {
         tempRoot: options.tempRoot,
         vsixFile: packagedVsix,
     });
-    assertPersistedArtifactState(smoke.userDataDir, smoke.configFile, smoke.outputDir);
+    assertPersistedArtifactState(
+        smoke.userDataDir, smoke.workspaceDir, smoke.configFile, smoke.outputDir);
     return { entryCount: second.fileMap.length, hostOutput: smoke.hostOutput };
 }
 
@@ -797,6 +798,7 @@ async function runInstalledSmoke(options) {
     const harnessSource = path.join(options.extensionRoot, 'scripts', 'smoke-extension');
     assert.deepStrictEqual(listRelativeFiles(harnessSource), [
         'package.json',
+        'suite/icarus.js',
         'suite/index.js',
     ], 'installed smoke harness is missing or contains unexpected checkout files');
 
@@ -918,6 +920,7 @@ async function runInstalledSmoke(options) {
         hostOutput: `${host.stdout || ''}${host.stderr || ''}`,
         outputDir,
         userDataDir,
+        workspaceDir,
     };
 }
 
@@ -997,68 +1000,6 @@ function findInstalledExtension(extensionsDir, extensionId) {
         `expected one installed ${extensionId} extension, found ${matches.length}`);
     assertContainedPath(extensionsDir, matches[0], 'installed extension');
     return fs.realpathSync.native(matches[0]);
-}
-
-function assertPersistedArtifactState(userDataDir, configFile, outputDir) {
-    const databaseFiles = listFilesNamed(userDataDir, 'state.vscdb');
-    assert.ok(databaseFiles.length > 0, 'installed VSCode host wrote no workspace state database');
-    let matchingRecord;
-    for (const databaseFile of databaseFiles) {
-        const records = readArtifactStateRecords(databaseFile);
-        matchingRecord = records.find((record) => {
-            try {
-                return samePath(fileUriPath(record.configUri), configFile)
-                    && samePath(fileUriPath(record.outputUri), outputDir);
-            } catch {
-                return false;
-            }
-        });
-        if (matchingRecord) break;
-    }
-    assert.ok(matchingRecord,
-        'registered installed Generate command did not persist its real artifact record');
-}
-
-function readArtifactStateRecords(databaseFile) {
-    const { DatabaseSync } = require('node:sqlite');
-    const database = new DatabaseSync(databaseFile, { readOnly: true });
-    try {
-        const rows = database.prepare('SELECT key, value FROM ItemTable').all();
-        const records = [];
-        for (const row of rows) {
-            const text = Buffer.isBuffer(row.value)
-                ? row.value.toString('utf8')
-                : String(row.value);
-            if (!text.includes('merc32.soc.generatedArtifacts')) continue;
-            let value;
-            try {
-                value = JSON.parse(text);
-            } catch {
-                continue;
-            }
-            collectArtifactRecords(value, records);
-        }
-        return records;
-    } finally {
-        database.close();
-    }
-}
-
-function collectArtifactRecords(value, records) {
-    if (Array.isArray(value)) {
-        value.forEach((item) => collectArtifactRecords(item, records));
-        return;
-    }
-    if (!value || typeof value !== 'object') return;
-    const artifacts = value['merc32.soc.generatedArtifacts'];
-    if (Array.isArray(artifacts)) {
-        for (const item of artifacts) {
-            if (item && typeof item.configUri === 'string' && typeof item.outputUri === 'string') {
-                records.push(item);
-            }
-        }
-    }
-    Object.values(value).forEach((item) => collectArtifactRecords(item, records));
 }
 
 function offlineEnvironment(additions = {}) {
@@ -1210,20 +1151,6 @@ function listRelativeFiles(root) {
     return result.sort();
 }
 
-function listFilesNamed(root, expectedName) {
-    const result = [];
-    const visit = (directory) => {
-        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-            const target = path.join(directory, entry.name);
-            if (entry.isSymbolicLink()) continue;
-            if (entry.isDirectory()) visit(target);
-            else if (entry.isFile() && entry.name === expectedName) result.push(target);
-        }
-    };
-    visit(root);
-    return result.sort();
-}
-
 function describeHostFailure(userDataDir, extensionsDir, resultFile) {
     const details = [
         `smokeResultExists=${fs.existsSync(resultFile)}`,
@@ -1336,12 +1263,6 @@ function assertContainedPath(root, candidate, label) {
     assert.ok(relative !== '' && !path.isAbsolute(relative)
         && relative !== '..' && !relative.startsWith(`..${path.sep}`),
     `${label} escapes owned root: ${candidate}`);
-}
-
-function fileUriPath(value) {
-    const parsed = new URL(value);
-    assert.strictEqual(parsed.protocol, 'file:', `artifact URI is not a file URI: ${value}`);
-    return fileURLToPath(parsed);
 }
 
 function samePath(left, right) {

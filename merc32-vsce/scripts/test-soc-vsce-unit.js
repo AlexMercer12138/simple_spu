@@ -1518,6 +1518,7 @@ try {
         ...fakeDocument,
         uri: explicitUri,
         fileName: explicitUri.fsPath,
+        version: 7,
         isDirty: false,
         save: () => { throw new Error('Auto-assign must not save the document'); },
     };
@@ -1574,6 +1575,24 @@ try {
         },
     }), false, 'cancelled assignment did not return the failure/cancellation outcome');
     assert.strictEqual(assignmentUpdates, undefined, 'cancelled assignment edited the document');
+
+    assignmentVscode.window.showWarningMessage = async () => {
+        assignmentDocument.version += 1;
+        return 'Assign';
+    };
+    assignmentUpdates = undefined;
+    assert.strictEqual(await runAutoAssign(explicitUri, {
+        catalog,
+        diagnostics: { refresh: () => [] },
+        output: { appendLine() {}, show() {} },
+        vscodeApi: assignmentVscode,
+        applyUpdates: async (_document, updates) => {
+            assignmentUpdates = updates;
+            return true;
+        },
+    }), false, 'assignment used a preview from an older document version');
+    assert.strictEqual(assignmentUpdates, undefined,
+        'assignment changed the edited document using stale JSON paths');
 
     const assetRoot = 'C:\\extension\\resources';
     assert.deepStrictEqual(buildGenerateSocOptions(explicitUri.fsPath, assetRoot, 'normal'), {
@@ -1638,6 +1657,7 @@ try {
                 return task({ report(value) { generationCalls.push(['progress', value.message]); } });
             },
             async showErrorMessage(message) { generationCalls.push(['error', message]); },
+            async showWarningMessage(message) { generationCalls.push(['warning', message]); },
         },
         workspace: {
             async findFiles() { throw new Error('explicit generation target must not scan'); },
@@ -1775,6 +1795,47 @@ try {
     assert.ok(generationCalls.some(([kind, command]) =>
         kind === 'command' && command === 'revealFileInOS'));
 
+    for (const ancillaryFailure of ['artifact recording', 'output reveal']) {
+        generationCalls.length = 0;
+        const ancillaryStatuses = [];
+        let ancillaryRecord;
+        const ancillaryServices = {
+            ...generationServices,
+            artifacts: {
+                async recordGeneratedSoc(record) {
+                    ancillaryRecord = record;
+                    if (ancillaryFailure === 'artifact recording') throw new Error('artifact store unavailable');
+                },
+            },
+        };
+        generationVscode.commands.executeCommand = async (...args) => {
+            generationCalls.push(['command', ...args]);
+            if (ancillaryFailure === 'output reveal') throw new Error('shell integration unavailable');
+        };
+        await executeSocEditorCommand(
+            'generate',
+            explicitUri,
+            async (_command, commandUri, reportStatus) =>
+                runSocGeneration(commandUri, 'normal', ancillaryServices, reportStatus),
+            async (status) => { ancillaryStatuses.push(status); },
+        );
+        assert.strictEqual(ancillaryStatuses.at(-1).phase, 'generated',
+            `${ancillaryFailure} failure falsely reported successful generation as failed`);
+        assert.ok(generationCalls.some(([kind, message]) =>
+            kind === 'warning' && /generated/i.test(message) && /warning/i.test(message)),
+        `${ancillaryFailure} failure was not reported as a generation warning`);
+        assert.strictEqual(ancillaryRecord.configUri, explicitUri,
+            `${ancillaryFailure} discarded the generated artifact record`);
+        if (ancillaryFailure === 'artifact recording') {
+            assert.ok(generationCalls.some(([kind, command]) =>
+                kind === 'command' && command === 'revealFileInOS'),
+            'artifact recording failure prevented the generated output reveal attempt');
+        }
+    }
+    generationVscode.commands.executeCommand = async (...args) => {
+        generationCalls.push(['command', ...args]);
+    };
+
     generationCalls.length = 0;
     let remoteGeneratedRecord;
     const remoteServices = {
@@ -1850,6 +1911,10 @@ try {
     let saveDialogUri = createdUri;
     let confirmAction;
     let registeredDocumentText = starterText;
+    let registeredDocumentVersion = 11;
+    let registeredDocumentDirty = false;
+    let registeredSaveCalls = 0;
+    let mutateDuringConfirmation;
     const registeredVscode = {
         ...generationVscode,
         Uri: {
@@ -1881,6 +1946,7 @@ try {
             },
             async showWarningMessage(message, options, ...actions) {
                 registeredCalls.push(['confirm', message, options, actions]);
+                mutateDuringConfirmation?.();
                 return confirmAction;
             },
             async showErrorMessage(message) {
@@ -1913,7 +1979,13 @@ try {
                     uri: value,
                     fileName: value.fsPath,
                     getText: () => registeredDocumentText,
-                    isDirty: false,
+                    get version() { return registeredDocumentVersion; },
+                    get isDirty() { return registeredDocumentDirty; },
+                    async save() {
+                        registeredSaveCalls += 1;
+                        registeredDocumentDirty = false;
+                        return true;
+                    },
                 };
             },
         },
@@ -2021,6 +2093,22 @@ try {
     assert.match(forceConfirmation[2].detail, /will not replace main\.c/i);
 
     confirmAction = 'Force Generate';
+    mutateDuringConfirmation = () => {
+        registeredDocumentText = starterText.replace(
+            'generated/control_board', 'generated/changed_during_force');
+        registeredDocumentVersion += 1;
+        registeredDocumentDirty = true;
+    };
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.forceGenerate)(explicitUri), false,
+        'force generation used confirmation from an older configuration snapshot');
+    assert.strictEqual(registeredGeneratedOptions.length, 0,
+        'force generation ran after the confirmed output binding changed');
+    assert.strictEqual(registeredSaveCalls, 0,
+        'stale force confirmation saved a document version that was never confirmed');
+    mutateDuringConfirmation = undefined;
+    registeredDocumentText = starterText;
+    registeredDocumentDirty = false;
+    registeredDocumentVersion += 1;
     assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.forceGenerate)(explicitUri), true);
     assert.deepStrictEqual(registeredGeneratedOptions.pop(), {
         configFile: explicitUri.fsPath,
@@ -2030,6 +2118,22 @@ try {
 
     registeredCalls.length = 0;
     confirmAction = 'Adopt Output';
+    mutateDuringConfirmation = () => {
+        registeredDocumentText = starterText.replace(
+            'generated/control_board', 'generated/changed_during_adopt');
+        registeredDocumentVersion += 1;
+        registeredDocumentDirty = true;
+    };
+    assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.adoptOutput)(explicitUri), false,
+        'output adoption used confirmation from an older configuration snapshot');
+    assert.strictEqual(registeredGeneratedOptions.length, 0,
+        'output adoption ran after the confirmed output directory changed');
+    assert.strictEqual(registeredSaveCalls, 0,
+        'stale adoption confirmation saved a document version that was never confirmed');
+    mutateDuringConfirmation = undefined;
+    registeredDocumentText = starterText;
+    registeredDocumentDirty = false;
+    registeredDocumentVersion += 1;
     assert.strictEqual(await commandHandlers.get(SOC_COMMANDS.adoptOutput)(explicitUri), true);
     const adoptConfirmation = registeredCalls.find(([kind]) => kind === 'confirm');
     assert.match(adoptConfirmation[1], /explicit\.merc32\.json/);
