@@ -634,6 +634,8 @@ class FakeDiagnostic {
     }
 }
 const diagnosticDisposables = [];
+let diagnosticChangeListener;
+let diagnosticCloseListener;
 const diagnosticVscode = {
     Diagnostic: FakeDiagnostic,
     DiagnosticSeverity: { Error: 0, Warning: 1 },
@@ -657,12 +659,14 @@ const diagnosticVscode = {
             diagnosticDisposables.push(disposable);
             return disposable;
         },
-        onDidChangeTextDocument() {
+        onDidChangeTextDocument(listener) {
+            diagnosticChangeListener = listener;
             const disposable = { dispose() {} };
             diagnosticDisposables.push(disposable);
             return disposable;
         },
-        onDidCloseTextDocument() {
+        onDidCloseTextDocument(listener) {
+            diagnosticCloseListener = listener;
             const disposable = { dispose() {} };
             diagnosticDisposables.push(disposable);
             return disposable;
@@ -723,6 +727,49 @@ assert.strictEqual(
 assert.strictEqual(publishedDiagnosticEntries.get('file:///untouched.merc32.json')[0].code, 'UNTOUCHED',
     'refresh replaced diagnostics belonging to another document');
 diagnosticsService.dispose();
+
+const originalSetTimeout = global.setTimeout;
+const originalClearTimeout = global.clearTimeout;
+let controlledTimer;
+global.setTimeout = (callback) => {
+    controlledTimer = { callback, canceled: false };
+    return controlledTimer;
+};
+global.clearTimeout = (timer) => { timer.canceled = true; };
+try {
+    const controlledDiagnostics = new SocDiagnostics(
+        path.join(__dirname, '..', 'resources'),
+        diagnosticVscode,
+    );
+    diagnosticChangeListener({ document: diagnosticDocument });
+    assert.ok(controlledTimer, 'document edit did not schedule diagnostic refresh');
+    controlledDiagnostics.refresh(diagnosticDocument, [generationDiagnostic]);
+    assert.strictEqual(controlledTimer.canceled, true,
+        'manual diagnostic publication did not cancel its pending debounce');
+    controlledTimer.callback();
+    const diagnosticsAfterStaleCallback = publishedDiagnosticEntries
+        .get(diagnosticDocumentUri.toString());
+    assert.strictEqual(diagnosticsAfterStaleCallback
+        .filter((item) => item.code === 'SOC_GENERATION_TEST').length, 1,
+        'stale debounce callback clobbered manually published generation diagnostics');
+
+    diagnosticChangeListener({ document: diagnosticDocument });
+    const closeTimer = controlledTimer;
+    diagnosticCloseListener(diagnosticDocument);
+    assert.strictEqual(closeTimer.canceled, true,
+        'closing the document did not cancel its pending diagnostic refresh');
+    assert.strictEqual(publishedDiagnosticEntries.has(diagnosticDocumentUri.toString()), false,
+        'closing the document retained its published diagnostics');
+
+    diagnosticChangeListener({ document: diagnosticDocument });
+    const disposeTimer = controlledTimer;
+    controlledDiagnostics.dispose();
+    assert.strictEqual(disposeTimer.canceled, true,
+        'disposing diagnostics did not cancel its pending refresh');
+} finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+}
 
 (async () => {
     const applied = await applySocDocumentUpdates(fakeDocument, [
@@ -1066,15 +1113,22 @@ diagnosticsService.dispose();
     });
     assert.ok(!Object.prototype.hasOwnProperty.call(generateCall[1], 'adoptOutput'),
         'force generation also enabled adoption');
-    assert.ok(statusMessages.some((message) => /planning/i.test(message)));
+    assert.ok(statusMessages.some((message) => /running generator/i.test(message)));
     const generatorEventIndex = generationCalls.findIndex(([kind]) => kind === 'generate');
     const generatorReturnIndex = generationCalls.findIndex(([kind]) => kind === 'generateReturn');
-    const planningStatusIndex = generationCalls.findIndex(([kind, message]) =>
-        kind === 'status' && /planning/i.test(message));
+    const neutralStatusIndex = generationCalls.findIndex(([kind, message]) =>
+        kind === 'status' && /generating soc|running generator/i.test(message));
     const activatedStatusIndex = generationCalls.findIndex(([kind, message]) =>
         kind === 'status' && /activated|activat.*complet|complet.*activation/i.test(message));
-    assert.ok(planningStatusIndex >= 0 && planningStatusIndex < generatorEventIndex,
-        'planning status was not published before generator invocation');
+    assert.ok(neutralStatusIndex >= 0 && neutralStatusIndex < generatorEventIndex,
+        'neutral generation status was not published before generator invocation');
+    const statusBeforeGeneratorReturn = generationCalls
+        .slice(0, generatorReturnIndex)
+        .filter(([kind]) => kind === 'status')
+        .map(([, message]) => message);
+    assert.ok(statusBeforeGeneratorReturn.every((message) =>
+        !/planning|staging|activation|activated|completed/i.test(message)),
+        `pre-return status claimed internal generator phases: ${statusBeforeGeneratorReturn.join(' | ')}`);
     assert.ok(activatedStatusIndex > generatorReturnIndex,
         'activation completion was published before the synchronous generator returned');
     assert.strictEqual(generatedRecord.configUri, explicitUri);
@@ -1154,8 +1208,8 @@ diagnosticsService.dispose();
     assert.deepStrictEqual(generationRefreshExtras, [generationDiagnostic],
         'generation diagnostics were not forwarded to the publisher');
     assert.ok(!failedGenerationStatuses.some((message) =>
-        /activated|activat.*complet|complet.*activation|staging.*complet/i.test(message)),
-    'failed generation received a completion status');
+        /planning|staging|activation|activated|completed/i.test(message)),
+        'failed generation received an unobservable internal-phase status');
 
     const commandHandlers = new Map();
     const registeredCalls = [];

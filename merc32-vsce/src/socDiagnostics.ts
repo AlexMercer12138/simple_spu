@@ -60,6 +60,7 @@ export class SocDiagnostics implements vscode.Disposable {
         if (!isSocDocument(document)) {
             return [];
         }
+        this.cancelScheduled(document.uri.toString());
 
         const text = document.getText();
         const parsed = parseSocConfig(text, document.fileName, this.catalog);
@@ -91,12 +92,7 @@ export class SocDiagnostics implements vscode.Disposable {
     }
 
     clear(document: vscode.TextDocument): void {
-        const key = document.uri.toString();
-        const timer = this.timers.get(key);
-        if (timer) {
-            clearTimeout(timer);
-            this.timers.delete(key);
-        }
+        this.cancelScheduled(document.uri.toString());
         this.collection.delete(document.uri);
     }
 
@@ -121,10 +117,19 @@ export class SocDiagnostics implements vscode.Disposable {
         if (previous) {
             clearTimeout(previous);
         }
-        this.timers.set(key, setTimeout(() => {
+        const timer = setTimeout(() => {
+            if (this.timers.get(key) !== timer) return;
             this.timers.delete(key);
             this.refresh(document);
-        }, 150));
+        }, 150);
+        this.timers.set(key, timer);
+    }
+
+    private cancelScheduled(key: string): void {
+        const timer = this.timers.get(key);
+        if (!timer) return;
+        clearTimeout(timer);
+        this.timers.delete(key);
     }
 }
 

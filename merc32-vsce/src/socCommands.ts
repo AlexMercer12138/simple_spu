@@ -220,13 +220,8 @@ export async function runSocGeneration(
             title: 'Generating MERC32 SoC',
             cancellable: false,
         }, async (progress) => {
-            progress.report({ message: 'Planning configuration...' });
-            await reportStatus?.({ phase: 'generating', message: 'Planning configuration...' });
-            progress.report({ message: 'Generating output...' });
-            await reportStatus?.({
-                phase: 'generating',
-                message: 'Generating output through planning, staging, and activation...',
-            });
+            progress.report({ message: 'Running generator...' });
+            await reportStatus?.({ phase: 'generating', message: 'Running generator...' });
             const generated = generate(options);
             progress.report({ message: 'Output activated.' });
             await reportStatus?.({ phase: 'generating', message: 'Generated output activated.' });
