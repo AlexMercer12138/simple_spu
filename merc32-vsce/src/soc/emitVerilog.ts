@@ -3,6 +3,7 @@ import {
     PlannedParameterValue,
     PlannedPeripheral,
     PlannedPort,
+    PlannedRouterTarget,
     SocPlan,
 } from './model';
 
@@ -46,29 +47,29 @@ export function renderPlbRouter(plan: SocPlan): string {
         'output wire [31:0] m_rdata',
         'output wire m_ack',
     ];
-    for (const endpoint of plan.endpoints) {
+    for (const target of plan.routerTargets) {
         ports.push(
-            `output wire ${endpoint.name}_rden`,
-            `output wire ${endpoint.name}_wren`,
-            `output wire [31:0] ${endpoint.name}_addr`,
-            `output wire [3:0] ${endpoint.name}_strb`,
-            `output wire [31:0] ${endpoint.name}_wdata`,
-            `input wire [31:0] ${endpoint.name}_rdata`,
-            `input wire ${endpoint.name}_ack`,
+            `output wire ${target.name}_rden`,
+            `output wire ${target.name}_wren`,
+            `output wire [31:0] ${target.name}_addr`,
+            `output wire [3:0] ${target.name}_strb`,
+            `output wire [31:0] ${target.name}_wdata`,
+            `input wire [31:0] ${target.name}_rdata`,
+            `input wire ${target.name}_ack`,
         );
     }
 
     emitModuleHeader(writer, moduleName, [], ports);
-    const activeWidth = Math.max(1, Math.ceil(Math.log2(plan.endpoints.length + 1)));
+    const activeWidth = Math.max(1, Math.ceil(Math.log2(plan.routerTargets.length + 1)));
     writer.line(`localparam integer ACTIVE_WIDTH = ${activeWidth};`);
     writer.line("localparam [ACTIVE_WIDTH-1:0] ENDPOINT_NONE = {ACTIVE_WIDTH{1'b0}};");
-    plan.endpoints.forEach((endpoint, index) => {
-        writer.line(`localparam [ACTIVE_WIDTH-1:0] ${endpointConstant(endpoint.name)} = ${activeWidth}'d${index + 1};`);
+    plan.routerTargets.forEach((target, index) => {
+        writer.line(`localparam [ACTIVE_WIDTH-1:0] ${endpointConstant(target.name)} = ${activeWidth}'d${index + 1};`);
     });
     writer.line();
     writer.line('reg [ACTIVE_WIDTH-1:0] active_endpoint;');
     writer.line('reg [ACTIVE_WIDTH-1:0] decoded_endpoint;');
-    if (plan.endpoints.length > 0) {
+    if (plan.routerTargets.length > 0) {
         writer.line('reg [31:0] response_rdata;');
         writer.line('reg response_ack;');
     }
@@ -78,10 +79,10 @@ export function renderPlbRouter(plan: SocPlan): string {
     writer.block('always @* begin', () => {
         writer.line('decoded_endpoint = ENDPOINT_NONE;');
         writer.block("if ((active_endpoint == ENDPOINT_NONE) && (m_rden || m_wren)) begin", () => {
-            plan.endpoints.forEach((endpoint, index) => {
+            plan.routerTargets.forEach((target, index) => {
                 const keyword = index === 0 ? 'if' : 'else if';
-                writer.line(`${keyword} ((m_addr >= ${hex32(endpoint.baseAddress)}) && (m_addr <= ${hex32(endpoint.endAddress)}))`);
-                writer.indent(() => writer.line(`decoded_endpoint = ${endpointConstant(endpoint.name)};`));
+                writer.line(`${keyword} (${routerTargetCondition(target)})`);
+                writer.indent(() => writer.line(`decoded_endpoint = ${endpointConstant(target.name)};`));
             });
         });
     });
@@ -105,17 +106,17 @@ export function renderPlbRouter(plan: SocPlan): string {
     });
     writer.line();
 
-    for (const endpoint of plan.endpoints) {
-        const constant = endpointConstant(endpoint.name);
-        writer.line(`assign ${endpoint.name}_rden = start_request && (decoded_endpoint == ${constant}) && m_rden;`);
-        writer.line(`assign ${endpoint.name}_wren = start_request && (decoded_endpoint == ${constant}) && m_wren;`);
-        writer.line(`assign ${endpoint.name}_addr = m_addr;`);
-        writer.line(`assign ${endpoint.name}_strb = m_strb;`);
-        writer.line(`assign ${endpoint.name}_wdata = m_wdata;`);
+    for (const target of plan.routerTargets) {
+        const constant = endpointConstant(target.name);
+        writer.line(`assign ${target.name}_rden = start_request && (decoded_endpoint == ${constant}) && m_rden;`);
+        writer.line(`assign ${target.name}_wren = start_request && (decoded_endpoint == ${constant}) && m_wren;`);
+        writer.line(`assign ${target.name}_addr = m_addr;`);
+        writer.line(`assign ${target.name}_strb = m_strb;`);
+        writer.line(`assign ${target.name}_wdata = m_wdata;`);
         writer.line();
     }
 
-    if (plan.endpoints.length === 0) {
+    if (plan.routerTargets.length === 0) {
         writer.line("assign m_rdata = 32'b0;");
         writer.line("assign m_ack = 1'b0;");
     } else {
@@ -126,10 +127,10 @@ export function renderPlbRouter(plan: SocPlan): string {
             writer.line("response_ack = 1'b0;");
             writer.line('case (active_endpoint)');
             writer.indent(() => {
-                for (const endpoint of plan.endpoints) {
-                    writer.block(`${endpointConstant(endpoint.name)}: begin`, () => {
-                        writer.line(`response_rdata = ${endpoint.name}_rdata;`);
-                        writer.line(`response_ack = ${endpoint.name}_ack;`);
+                for (const target of plan.routerTargets) {
+                    writer.block(`${endpointConstant(target.name)}: begin`, () => {
+                        writer.line(`response_rdata = ${target.name}_rdata;`);
+                        writer.line(`response_ack = ${target.name}_ack;`);
                     });
                 }
                 writer.line('default: begin end');
@@ -232,14 +233,14 @@ function emitTopWires(writer: VerilogWriter, plan: SocPlan): void {
     for (const [name, width] of cpuWires) {
         writer.line(wireDeclaration(name, width));
     }
-    for (const endpoint of plan.endpoints) {
-        writer.line(wireDeclaration(`${endpoint.name}_router_rden`, 1));
-        writer.line(wireDeclaration(`${endpoint.name}_router_wren`, 1));
-        writer.line(wireDeclaration(`${endpoint.name}_router_addr`, 32));
-        writer.line(wireDeclaration(`${endpoint.name}_router_strb`, 4));
-        writer.line(wireDeclaration(`${endpoint.name}_router_wdata`, 32));
-        writer.line(wireDeclaration(`${endpoint.name}_router_rdata`, 32));
-        writer.line(wireDeclaration(`${endpoint.name}_router_ack`, 1));
+    for (const target of plan.routerTargets) {
+        writer.line(wireDeclaration(`${target.name}_router_rden`, 1));
+        writer.line(wireDeclaration(`${target.name}_router_wren`, 1));
+        writer.line(wireDeclaration(`${target.name}_router_addr`, 32));
+        writer.line(wireDeclaration(`${target.name}_router_strb`, 4));
+        writer.line(wireDeclaration(`${target.name}_router_wdata`, 32));
+        writer.line(wireDeclaration(`${target.name}_router_rdata`, 32));
+        writer.line(wireDeclaration(`${target.name}_router_ack`, 1));
     }
     for (const peripheral of plan.peripherals) {
         writer.line(wireDeclaration(`${peripheral.name}_psel`, 1));
@@ -371,11 +372,11 @@ function emitRouterInstance(writer: VerilogWriter, plan: SocPlan): void {
         ['m_wdata', 'cpu_plb_wdata'], ['m_rdata', 'cpu_plb_rdata'],
         ['m_ack', 'cpu_plb_ack'],
     ];
-    for (const endpoint of plan.endpoints) {
+    for (const target of plan.routerTargets) {
         for (const suffix of ['rden', 'wren', 'addr', 'strb', 'wdata', 'rdata', 'ack']) {
             connections.push([
-                `${endpoint.name}_${suffix}`,
-                `${endpoint.name}_router_${suffix}`,
+                `${target.name}_${suffix}`,
+                `${target.name}_router_${suffix}`,
             ]);
         }
     }
@@ -396,20 +397,18 @@ function emitBuiltinApbSubsystem(writer: VerilogWriter, plan: SocPlan): void {
     ] as Array<[string, number]>) {
         writer.line(wireDeclaration(name, width));
     }
-    writer.line(`assign builtin_apb_lb_rden = ${joinOr(plan.peripherals.map((item) => `${item.name}_router_rden`))};`);
-    writer.line(`assign builtin_apb_lb_wren = ${joinOr(plan.peripherals.map((item) => `${item.name}_router_wren`))};`);
-    for (const peripheral of plan.peripherals) {
-        writer.line(`assign ${peripheral.name}_router_rdata = builtin_apb_lb_rdata;`);
-        writer.line(`assign ${peripheral.name}_router_ack = builtin_apb_lb_valid;`);
-    }
+    writer.line('assign builtin_apb_lb_rden = builtin_apb_router_rden;');
+    writer.line('assign builtin_apb_lb_wren = builtin_apb_router_wren;');
+    writer.line('assign builtin_apb_router_rdata = builtin_apb_lb_rdata;');
+    writer.line('assign builtin_apb_router_ack = builtin_apb_lb_valid;');
     writer.line();
     emitInstance(writer, 'lb2apb', 'builtin_apb_bridge_inst', [
         ['DATA_WIDTH', '32'], ['LB_ADDR_WIDTH', '32'], ['APB_ADDR_WIDTH', '32'],
     ], [
         ['clk', 'clk'], ['rst_n', 'rst_n'],
-        ['lb_rden', 'builtin_apb_lb_rden'], ['lb_wren', 'builtin_apb_lb_wren'],
-        ['lb_strb', 'cpu_plb_strb'], ['lb_wdata', 'cpu_plb_wdata'],
-        ['lb_addr', 'cpu_plb_addr'], ['lb_rdata', 'builtin_apb_lb_rdata'],
+        ['lb_rden', 'builtin_apb_router_rden'], ['lb_wren', 'builtin_apb_router_wren'],
+        ['lb_strb', 'builtin_apb_router_strb'], ['lb_wdata', 'builtin_apb_router_wdata'],
+        ['lb_addr', 'builtin_apb_router_addr'], ['lb_rdata', 'builtin_apb_lb_rdata'],
         ['lb_valid', 'builtin_apb_lb_valid'],
         ['m_apb_psel', 'builtin_apb_psel'], ['m_apb_penable', 'builtin_apb_penable'],
         ['m_apb_paddr', 'builtin_apb_paddr'], ['m_apb_pwrite', 'builtin_apb_pwrite'],
@@ -628,16 +627,18 @@ function catalogPortSuffix(instanceName: string, plannedName: string): string {
     return plannedName.slice(prefix.length);
 }
 
-function joinOr(signals: readonly string[]): string {
-    return signals.length === 0 ? "1'b0" : signals.join(' | ');
-}
-
 function constantName(name: string): string {
     return name.toUpperCase();
 }
 
 function endpointConstant(name: string): string {
     return `ENDPOINT_TARGET_${constantName(name)}`;
+}
+
+function routerTargetCondition(target: PlannedRouterTarget): string {
+    return target.ranges.map((range) =>
+        `((m_addr >= ${hex32(range.baseAddress)}) && (m_addr <= ${hex32(range.endAddress)}))`)
+        .join(' || ');
 }
 
 function hex32(value: bigint): string {

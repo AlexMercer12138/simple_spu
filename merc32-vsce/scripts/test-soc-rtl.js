@@ -661,9 +661,18 @@ function simulateStatefulRouter() {
     fs.mkdirSync(directory, { recursive: true });
     const plan = {
         topModule: 'router_behavior',
-        endpoints: [
-            { name: 'target_a', baseAddress: 0x10000000n, endAddress: 0x10000fffn },
-            { name: 'target_b', baseAddress: 0x20000000n, endAddress: 0x20000fffn },
+        routerTargets: [
+            {
+                name: 'builtin_apb',
+                ranges: [
+                    { baseAddress: 0x10000000n, endAddress: 0x10000fffn },
+                    { baseAddress: 0x10002000n, endAddress: 0x10002fffn },
+                ],
+            },
+            {
+                name: 'external_gap',
+                ranges: [{ baseAddress: 0x10001000n, endAddress: 0x10001fffn }],
+            },
         ],
     };
     fs.writeFileSync(path.join(directory, 'router.v'), renderPlbRouter(plan));
@@ -678,33 +687,33 @@ reg [3:0] m_strb;
 reg [31:0] m_wdata;
 wire [31:0] m_rdata;
 wire m_ack;
-wire target_a_rden;
-wire target_a_wren;
-wire [31:0] target_a_addr;
-wire [3:0] target_a_strb;
-wire [31:0] target_a_wdata;
-reg [31:0] target_a_rdata;
-reg target_a_ack;
-wire target_b_rden;
-wire target_b_wren;
-wire [31:0] target_b_addr;
-wire [3:0] target_b_strb;
-wire [31:0] target_b_wdata;
-reg [31:0] target_b_rdata;
-reg target_b_ack;
+wire builtin_apb_rden;
+wire builtin_apb_wren;
+wire [31:0] builtin_apb_addr;
+wire [3:0] builtin_apb_strb;
+wire [31:0] builtin_apb_wdata;
+reg [31:0] builtin_apb_rdata;
+reg builtin_apb_ack;
+wire external_gap_rden;
+wire external_gap_wren;
+wire [31:0] external_gap_addr;
+wire [3:0] external_gap_strb;
+wire [31:0] external_gap_wdata;
+reg [31:0] external_gap_rdata;
+reg external_gap_ack;
 
 router_behavior_plb_router dut (
     .clk(clk), .rst_n(rst_n),
     .m_rden(m_rden), .m_wren(m_wren), .m_addr(m_addr),
     .m_strb(m_strb), .m_wdata(m_wdata), .m_rdata(m_rdata), .m_ack(m_ack),
-    .target_a_rden(target_a_rden), .target_a_wren(target_a_wren),
-    .target_a_addr(target_a_addr), .target_a_strb(target_a_strb),
-    .target_a_wdata(target_a_wdata), .target_a_rdata(target_a_rdata),
-    .target_a_ack(target_a_ack),
-    .target_b_rden(target_b_rden), .target_b_wren(target_b_wren),
-    .target_b_addr(target_b_addr), .target_b_strb(target_b_strb),
-    .target_b_wdata(target_b_wdata), .target_b_rdata(target_b_rdata),
-    .target_b_ack(target_b_ack)
+    .builtin_apb_rden(builtin_apb_rden), .builtin_apb_wren(builtin_apb_wren),
+    .builtin_apb_addr(builtin_apb_addr), .builtin_apb_strb(builtin_apb_strb),
+    .builtin_apb_wdata(builtin_apb_wdata), .builtin_apb_rdata(builtin_apb_rdata),
+    .builtin_apb_ack(builtin_apb_ack),
+    .external_gap_rden(external_gap_rden), .external_gap_wren(external_gap_wren),
+    .external_gap_addr(external_gap_addr), .external_gap_strb(external_gap_strb),
+    .external_gap_wdata(external_gap_wdata), .external_gap_rdata(external_gap_rdata),
+    .external_gap_ack(external_gap_ack)
 );
 
 always #5 clk = ~clk;
@@ -717,10 +726,10 @@ initial begin
     m_addr = 32'b0;
     m_strb = 4'hf;
     m_wdata = 32'h1234_5678;
-    target_a_rdata = 32'haaaa_5555;
-    target_a_ack = 1'b0;
-    target_b_rdata = 32'hbbbb_6666;
-    target_b_ack = 1'b0;
+    builtin_apb_rdata = 32'haaaa_5555;
+    builtin_apb_ack = 1'b0;
+    external_gap_rdata = 32'hbbbb_6666;
+    external_gap_ack = 1'b0;
 
     repeat (2) @(posedge clk);
     rst_n = 1'b1;
@@ -728,45 +737,65 @@ initial begin
     m_addr = 32'h1000_0040;
     m_rden = 1'b1;
     #1;
-    if (!target_a_rden || target_b_rden || m_ack) $fatal(1, "target A request decode failed");
+    if (!builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "builtin APB request decode failed");
     @(posedge clk);
     #1;
     m_rden = 1'b0;
-    m_addr = 32'h2000_0040;
+    m_addr = 32'h1000_1008;
     #1;
-    if (target_a_rden || target_b_rden || m_ack) $fatal(1, "request was forwarded more than once");
+    if (builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "request was forwarded more than once");
+
+    external_gap_ack = 1'b1;
+    #1;
+    if (m_ack) $fatal(1, "inactive target completed the active request");
+    external_gap_ack = 1'b0;
 
     repeat (2) @(posedge clk);
     @(negedge clk);
-    target_a_ack = 1'b1;
+    builtin_apb_ack = 1'b1;
     #1;
-    if (!m_ack || m_rdata !== 32'haaaa_5555) $fatal(1, "active target A response was not held");
-    if (target_b_ack && m_rdata === 32'hbbbb_6666) $fatal(1, "target B stole the active response");
+    if (!m_ack || m_rdata !== 32'haaaa_5555) $fatal(1, "active built-in APB response was not held");
     @(posedge clk);
     #1;
-    target_a_ack = 1'b0;
+    builtin_apb_ack = 1'b0;
 
     @(negedge clk);
-    m_addr = 32'h2000_0004;
+    m_addr = 32'h1000_2004;
     m_wren = 1'b1;
     #1;
-    if (!target_b_wren || target_a_wren) $fatal(1, "target B write decode failed");
+    if (!builtin_apb_wren || external_gap_wren) $fatal(1, "second built-in APB range write decode failed");
     @(posedge clk);
     #1;
     m_wren = 1'b0;
     @(negedge clk);
-    target_b_ack = 1'b1;
+    builtin_apb_ack = 1'b1;
     #1;
-    if (!m_ack || m_rdata !== 32'hbbbb_6666) $fatal(1, "target B response failed");
+    if (!m_ack || m_rdata !== 32'haaaa_5555) $fatal(1, "second built-in APB range response failed");
     @(posedge clk);
     #1;
-    target_b_ack = 1'b0;
+    builtin_apb_ack = 1'b0;
 
     @(negedge clk);
-    m_addr = 32'h3000_0000;
+    m_addr = 32'h1000_1008;
     m_rden = 1'b1;
     #1;
-    if (target_a_rden || target_b_rden || m_ack) $fatal(1, "unmapped request was acknowledged");
+    if (!external_gap_rden || builtin_apb_rden) $fatal(1, "external gap request decode failed");
+    @(posedge clk);
+    #1;
+    m_rden = 1'b0;
+    @(negedge clk);
+    external_gap_ack = 1'b1;
+    #1;
+    if (!m_ack || m_rdata !== 32'hbbbb_6666) $fatal(1, "external gap response failed");
+    @(posedge clk);
+    #1;
+    external_gap_ack = 1'b0;
+
+    @(negedge clk);
+    m_addr = 32'h1000_3000;
+    m_rden = 1'b1;
+    #1;
+    if (builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "unmapped request was acknowledged");
     m_rden = 1'b0;
     $display("router_stateful_behavior: PASS");
     $finish;

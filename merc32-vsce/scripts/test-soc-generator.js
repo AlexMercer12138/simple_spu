@@ -1671,7 +1671,17 @@ try {
     assert.match(top, /output wire \[11:0\] apb_ext0_m_apb_paddr/);
     assert.match(top, /\.lb_addr\s*\(apb_ext0_router_addr\[11:0\]\)/);
     assert.match(top, /\.lb_addr\s*\(axi0_router_addr\[31:0\]\)/);
+    assert.strictEqual((router.match(/output wire builtin_apb_rden/g) || []).length, 1);
     assert.strictEqual((top.match(/builtin_apb_bridge_inst/g) || []).length, 1);
+    for (const name of ['uart0', 'uart1', 'gpio0', 'intc0']) {
+        assert.doesNotMatch(`${top}\n${router}`, new RegExp(`\\b${name}_router_`));
+    }
+    assert.match(top, /\.lb_rden\s*\(builtin_apb_router_rden\)/);
+    assert.match(top, /\.lb_addr\s*\(builtin_apb_router_addr\)/);
+    assert.match(top, /assign builtin_apb_router_ack = builtin_apb_lb_valid;/);
+    assert.match(router, /ENDPOINT_TARGET_BUILTIN_APB/);
+    assert.match(router, /32'h1000_0000.*32'h1000_0fff/s);
+    assert.match(router, /32'h1000_1000.*32'h1000_1fff/s);
     assert.match(top, /apb_intc[^;]*intc0_inst/s);
     assert.strictEqual((top.match(/\bapb_intc\b/g) || []).length, 1);
     assert.match(top, /\.IRQ_COUNT\s*\(4\)/);
@@ -1694,6 +1704,23 @@ try {
     assert.strictEqual(soc.renderSocTop(controllerPlan), top);
     assert.strictEqual(soc.renderPlbRouter(controllerPlan), router);
     assert.strictEqual(soc.renderApbInterconnect(controllerPlan), apb);
+
+    const sparseRouter = clone(minimal);
+    sparseRouter.peripherals = [
+        { type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000' },
+        { type: 'apb_gpio', name: 'gpio0', baseAddress: '0x10002000' },
+    ];
+    sparseRouter.externalInterfaces = [{
+        type: 'local_bus', name: 'external_gap', baseAddress: '0x10001000',
+        windowSize: '4KiB', addressWidth: 12,
+    }];
+    sparseRouter.interrupt = { mode: 'direct', source: 'uart0.interrupt' };
+    const sparseRouterRtl = soc.renderPlbRouter(
+        planFixture(sparseRouter, 'sparse-router.merc32.json'));
+    assert.match(sparseRouterRtl,
+        /if \(\(\(m_addr >= 32'h1000_0000\) && \(m_addr <= 32'h1000_0fff\)\) \|\| \(\(m_addr >= 32'h1000_2000\) && \(m_addr <= 32'h1000_2fff\)\)\)/);
+    assert.match(sparseRouterRtl,
+        /else if \(\(\(m_addr >= 32'h1000_1000\) && \(m_addr <= 32'h1000_1fff\)\)\)/);
 
     const singleSourceController = clone(minimal);
     singleSourceController.peripherals = [{
@@ -1765,7 +1792,10 @@ try {
     assert.strictEqual(activeDlbCollision.plan, undefined);
     assert.match(JSON.stringify(activeDlbCollision.diagnostics), /SOC_MACRO_COLLISION/);
     const noneTop = soc.renderSocTop(minimalPlan);
+    const noneRouter = soc.renderPlbRouter(minimalPlan);
     assert.match(noneTop, /\.interrupt\s*\(1'b0\)/);
+    assert.doesNotMatch(`${noneTop}\n${noneRouter}`, /builtin_apb_router_/);
+    assert.doesNotMatch(noneTop, /builtin_apb_bridge_inst/);
     assert.strictEqual(soc.renderApbInterconnect(
         minimalPlan), undefined);
 
