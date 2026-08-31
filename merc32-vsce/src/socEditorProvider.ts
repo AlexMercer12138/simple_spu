@@ -3,6 +3,14 @@ import * as path from 'path';
 import type * as vscode from 'vscode';
 
 import { SOC_COMMANDS, SOC_EDITOR_VIEW_TYPE } from './constants';
+import {
+    IDLE_GENERATION,
+    SocEditorSession,
+} from './socEditorSession';
+import type {
+    SocEditorCommandOutcome,
+    SocMutationMessage,
+} from './socEditorSession';
 import { JsonValueUpdate, buildJsonReplacement } from './socJsonEdits';
 import {
     formatHex32,
@@ -14,9 +22,7 @@ import {
     SocSourceConfig,
 } from './soc';
 import {
-    HostToWebviewMessage,
     isConfigRelativePathField,
-    isCurrentDocumentMessage,
     isSafeConfigRelativePath,
     isSafeNonPathString,
     JsonObject,
@@ -35,16 +41,9 @@ type VscodeApi = typeof import('vscode');
 type WebviewForHtml = Pick<vscode.Webview, 'asWebviewUri' | 'cspSource'>;
 type UriForHtml = Pick<vscode.Uri, 'path' | 'with'>;
 
-const IDLE_GENERATION: SocGenerationState = {
-    actionId: 0,
-    phase: 'idle',
-    message: 'No generation run in this editor session.',
-};
-
 type SocEditorCommandType = SocEditorActionType;
 
-/** Task 4 commands return false only when the requested action did not complete. */
-export type SocEditorCommandOutcome = boolean | void;
+export type { SocEditorCommandOutcome } from './socEditorSession';
 
 const SOC_EDITOR_COMMAND_STATUS: Readonly<Record<SocEditorCommandType, {
     command: string;
@@ -386,151 +385,65 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             crypto.randomBytes(18).toString('base64'),
         );
 
-        let ready = false;
-        let disposed = false;
-        let selectedPath: SocJsonPath | undefined = ['cpu'];
-        let lastPostedVersion = 0;
-        let messageQueue = Promise.resolve();
-        let actionStatus: SocGenerationState = { ...IDLE_GENERATION };
         const subscriptions: vscode.Disposable[] = [];
-
-        const postState = async (status?: string): Promise<void> => {
-            if (!ready || disposed) return;
-            if (status) {
-                actionStatus = { actionId: 0, phase: 'error', message: status };
-            }
-            const state = buildSocEditorViewModel(
-                document.getText(),
-                document.fileName,
-                document.version,
-                this.catalog,
-                selectedPath,
-                actionStatus,
-                document.isDirty,
-            );
-            selectedPath = state.selectedPath;
-            lastPostedVersion = document.version;
-            await panel.webview.postMessage({ type: 'state', value: state } satisfies HostToWebviewMessage);
-        };
-        const postStatus = async (status: SocGenerationState): Promise<void> => {
-            actionStatus = { ...status };
-            if (!ready || disposed) return;
-            await panel.webview.postMessage({
-                type: 'generationStatus',
-                actionId: status.actionId,
-                ...(status.action === undefined ? {} : { action: status.action }),
-                phase: status.phase,
-                message: status.message,
-            } satisfies HostToWebviewMessage);
-        };
+        const session = new SocEditorSession({
+            currentDocumentVersion: () => document.version,
+            normalizeSelection: (candidate, previous) => {
+                const parsed = parseSocConfig(document.getText(), document.fileName, this.catalog);
+                return parsed.config && isSelectableSocPath(parsed.config, candidate)
+                    ? [...candidate]
+                    : previous;
+            },
+            buildState: (selection, generation) => buildSocEditorViewModel(
+                document.getText(), document.fileName, document.version,
+                this.catalog, selection, generation, document.isDirty,
+            ),
+            postMessage: (message) => panel.webview.postMessage(message),
+            mutate: (message) => this.applyMutationMessage(document, message),
+            executeAction: (type, report) => executeSocEditorCommand(
+                type, document.uri,
+                (command, ...args) => this.vscodeApi.commands.executeCommand(command, ...args),
+                report,
+            ),
+            reopenAsText: async () => {
+                await this.vscodeApi.commands.executeCommand('vscode.openWith', document.uri, 'default');
+            },
+        });
 
         subscriptions.push(
             this.vscodeApi.workspace.onDidChangeTextDocument((event) => {
-                if (sameUri(event.document.uri, document.uri)
-                    && event.document.version !== lastPostedVersion) {
-                    void postState();
-                }
+                if (sameUri(event.document.uri, document.uri)) void session.documentChanged();
             }),
             panel.webview.onDidReceiveMessage((value: unknown) => {
-                messageQueue = messageQueue.then(() => this.handleMessage(
-                    value,
-                    document,
-                    () => selectedPath,
-                    (pathValue) => {
-                        selectedPath = pathValue;
-                    },
-                    () => {
-                        ready = true;
-                    },
-                    postState,
-                    postStatus,
-                )).catch(async () => {
-                    try {
-                        await postState('The editor could not process that request.');
-                    } catch {
-                        // The panel may have closed while the queued request was running.
-                    }
-                });
+                const message = parseWebviewMessage(value);
+                if (message) void session.receive(message);
             }),
             panel.onDidDispose(() => {
-                disposed = true;
+                session.dispose();
                 for (const subscription of subscriptions) subscription.dispose();
             }),
         );
     }
 
-    private async handleMessage(
-        value: unknown,
+    private async applyMutationMessage(
         document: vscode.TextDocument,
-        selectedPath: () => SocJsonPath | undefined,
-        setSelectedPath: (pathValue: SocJsonPath | undefined) => void,
-        markReady: () => void,
-        postState: (status?: string) => Promise<void>,
-        postStatus: (status: SocGenerationState) => Promise<void>,
-    ): Promise<void> {
-        const message = parseWebviewMessage(value);
-        if (!message) return;
-
-        if (message.type === 'ready') {
-            markReady();
-            await postState();
-            return;
-        }
-        if (!isCurrentDocumentMessage(message, document.version)) {
-            await postState('The configuration changed. Review the refreshed values and retry.');
-            return;
-        }
-        if (message.type === 'select') {
-            const parsed = parseSocConfig(document.getText(), document.fileName, this.catalog);
-            if (parsed.config && isSelectableSocPath(parsed.config, message.path)) {
-                setSelectedPath([...message.path]);
-            } else {
-                setSelectedPath(selectedPath());
-            }
-            await postState();
-            return;
-        }
-        if (message.type === 'reopenAsText') {
-            await this.vscodeApi.commands.executeCommand('vscode.openWith', document.uri, 'default');
-            return;
-        }
-        if (message.type === 'autoAssign' || message.type === 'validate' || message.type === 'generate') {
-            await executeSocEditorCommand(
-                message.type,
-                document.uri,
-                (command, ...args) => this.vscodeApi.commands.executeCommand<SocEditorCommandOutcome>(
-                    command,
-                    ...args,
-                ),
-                postStatus,
-            );
-            return;
-        }
-        if (message.type !== 'setValue' && message.type !== 'unsetValue' && message.type !== 'addInstance'
-            && message.type !== 'removeInstance') {
-            return;
-        }
-
+        message: SocMutationMessage,
+    ): Promise<boolean> {
         const parsed = parseSocConfig(document.getText(), document.fileName, this.catalog);
         if (!parsed.config) {
-            await postState('Invalid JSON is read-only. Reopen as text to repair it.');
-            return;
+            throw new Error('Invalid JSON is read-only. Reopen as text to repair it.');
         }
         const updates = buildSocDocumentUpdates(parsed.config, this.catalog, message);
         if (!updates) {
-            await postState('That property is not editable for the selected configuration node.');
-            return;
+            throw new Error('That property is not editable for the selected configuration node.');
         }
         if (!updatesPreserveSchema(document.getText(), document.fileName, this.catalog, updates)) {
-            await postState('The edit does not match the MERC32 SoC schema.');
-            return;
+            throw new Error('The edit does not match the MERC32 SoC schema.');
         }
         try {
-            if (!await applySocDocumentUpdates(document, updates, this.vscodeApi)) {
-                await postState('VS Code could not apply the configuration edit.');
-            }
+            return await applySocDocumentUpdates(document, updates, this.vscodeApi);
         } catch {
-            await postState('VS Code could not apply the configuration edit.');
+            throw new Error('VS Code could not apply the configuration edit.');
         }
     }
 }

@@ -337,6 +337,7 @@
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
+    "test:soc:editor-session": "npm run compile && node scripts/test-soc-editor-session.js",
     "test:soc:vsce:unit": "npm run compile && node scripts/test-soc-vsce-unit.js",
     "test:soc:generator": "npm run compile && node scripts/test-soc-generator.js",
     "test:soc:rtl": "npm run compile && node scripts/test-soc-rtl.js",
