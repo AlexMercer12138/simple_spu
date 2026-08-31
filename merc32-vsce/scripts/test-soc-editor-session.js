@@ -133,6 +133,46 @@ async function testReportedActionFailureIsNotOverwrittenByVoidOutcome() {
     assert.strictEqual(latestState(posted).value.generation.action, 'generate');
 }
 
+async function testReportedActionFailureSurvivesFalseAndThrow() {
+    for (const outcome of ['false', 'throw']) {
+        const posted = [];
+        const session = new SocEditorSession(createSessionServices({
+            postMessage: async (message) => { posted.push(message); return true; },
+            executeAction: async (type, report) => {
+                await report({ phase: 'generating', message: 'Generating...' });
+                await report({ phase: 'error', message: `Command-specific ${outcome} failure.` });
+                if (outcome === 'throw') throw new Error('wrapper failure');
+                return false;
+            },
+        }));
+
+        await session.receive({ type: 'ready' });
+        await session.receive({ type: 'generate' });
+        await waitFor(() => posted.filter((message) => message.type === 'state').length === 2);
+        assert.strictEqual(
+            latestState(posted).value.generation.message,
+            `Command-specific ${outcome} failure.`,
+            `${outcome} outcome overwrote a command-reported terminal error`,
+        );
+    }
+}
+
+async function testReceiveContainsSelectionNormalizerFailure() {
+    const posted = [];
+    const session = new SocEditorSession(createSessionServices({
+        normalizeSelection: () => { throw new Error('normalizer failed'); },
+        postMessage: async (message) => { posted.push(message); return true; },
+    }));
+
+    await session.receive({ type: 'ready' });
+    await assert.doesNotReject(session.receive({ type: 'select', path: ['project'] }));
+    assert.strictEqual(latestState(posted).value.generation.phase, 'error');
+    assert.strictEqual(
+        latestState(posted).value.generation.message,
+        'The editor could not process that request.',
+    );
+}
+
 async function testDocumentVersionChangeRefreshesOnce() {
     const posted = [];
     const services = createSessionServices({
@@ -169,7 +209,13 @@ async function testQueuedMutationRechecksVersionAndRefreshes() {
     const first = session.receive({
         type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'first',
     });
+    let firstSettled = false;
+    void first.then(() => { firstSettled = true; });
     await waitFor(() => mutatedVersions.length === 1);
+    await session.receive({ type: 'select', path: ['interrupt'] });
+    assert.deepStrictEqual(latestState(posted).value.selectedPath, ['interrupt']);
+    assert.strictEqual(firstSettled, false, 'selection waited for the unresolved mutation');
+
     const stale = session.receive({
         type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'stale',
     });
@@ -224,6 +270,8 @@ async function testStatePostsStayOrderedAndPendingRefreshesCoalesce() {
     await waitFor(() => posted.length === 1);
     const firstSelection = session.receive({ type: 'select', path: ['project'] });
     const secondSelection = session.receive({ type: 'select', path: ['interrupt'] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(posted.length, 1, 'a newer state post overtook the unresolved first post');
     firstPost.resolve(true);
     await Promise.all([ready, firstSelection, secondSelection]);
 
@@ -285,6 +333,8 @@ async function main() {
     await testSelectionBypassesActionAndDuplicateIsIgnored();
     await testRejectedActionBecomesErrorAndReleasesLane();
     await testReportedActionFailureIsNotOverwrittenByVoidOutcome();
+    await testReportedActionFailureSurvivesFalseAndThrow();
+    await testReceiveContainsSelectionNormalizerFailure();
     await testDocumentVersionChangeRefreshesOnce();
     await testQueuedMutationRechecksVersionAndRefreshes();
     await testMutationRejectionRefreshesAndQueueRecovers();

@@ -64,6 +64,16 @@ export class SocEditorSession {
     async receive(message: WebviewToHostMessage): Promise<void> {
         if (this.disposed) return;
 
+        try {
+            await this.receiveMessage(message);
+        } catch {
+            if (this.disposed) return;
+            this.setError('The editor could not process that request.');
+            await this.scheduleState();
+        }
+    }
+
+    private async receiveMessage(message: WebviewToHostMessage): Promise<void> {
         if (message.type === 'ready') {
             this.ready = true;
             await this.scheduleState();
@@ -152,18 +162,24 @@ export class SocEditorSession {
     }
 
     private async runAction(type: SocEditorActionType, actionId: number): Promise<void> {
+        let reportedTerminal: SocActionProgress['phase'] | undefined;
         try {
             const outcome = await this.services.executeAction(
                 type,
-                (status) => this.reportAction(actionId, type, status),
+                (status) => {
+                    reportedTerminal = isTerminalPhase(status.phase) ? status.phase : undefined;
+                    return this.reportAction(actionId, type, status);
+                },
             );
-            if (outcome === false) {
+            if (outcome === false && reportedTerminal !== 'error') {
                 await this.reportAction(actionId, type, ACTION_FAILURE[type]);
-            } else if (!this.hasTerminalActionStatus(actionId, type)) {
+            } else if (reportedTerminal === undefined) {
                 await this.reportAction(actionId, type, ACTION_SUCCESS[type]);
             }
         } catch {
-            await this.reportAction(actionId, type, ACTION_FAILURE[type]);
+            if (reportedTerminal !== 'error') {
+                await this.reportAction(actionId, type, ACTION_FAILURE[type]);
+            }
         } finally {
             if (this.actionId === actionId) this.activeAction = undefined;
             await this.scheduleState();
@@ -180,13 +196,6 @@ export class SocEditorSession {
         return this.enqueueState(async () => {
             await this.services.postMessage({ type: 'generationStatus', ...generation });
         });
-    }
-
-    private hasTerminalActionStatus(actionId: number, action: SocEditorActionType): boolean {
-        return this.generation.actionId === actionId && this.generation.action === action
-            && (this.generation.phase === 'success'
-                || this.generation.phase === 'generated'
-                || this.generation.phase === 'error');
     }
 
     private async reopenAsText(): Promise<void> {
@@ -206,4 +215,8 @@ export class SocEditorSession {
 function isMutationMessage(message: WebviewToHostMessage): message is SocMutationMessage {
     return message.type === 'setValue' || message.type === 'unsetValue'
         || message.type === 'addInstance' || message.type === 'removeInstance';
+}
+
+function isTerminalPhase(phase: SocActionProgress['phase']): boolean {
+    return phase === 'success' || phase === 'generated' || phase === 'error';
 }
