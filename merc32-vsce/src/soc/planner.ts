@@ -12,6 +12,7 @@ import {
     PlannedParameterValue,
     PlannedPeripheral,
     PlannedPort,
+    PlannedRouterTarget,
     SocDiagnostic,
     SocPlan,
     SocPlanResult,
@@ -58,6 +59,7 @@ export function planSoc(
     const externalInterfaces = planExternalInterfaces(config, catalog);
     const endpoints = [...peripherals, ...externalInterfaces]
         .sort((left, right) => compareBigints(left.baseAddress, right.baseAddress));
+    const routerTargets = planRouterTargets(peripherals, externalInterfaces);
     const memory = {
         ilb: planMemory('ilb', config.memory.ilb, sourceDirectory),
         dlb: planMemory('dlb', config.memory.dlb, sourceDirectory),
@@ -80,11 +82,33 @@ export function planSoc(
         peripherals,
         externalInterfaces,
         endpoints,
+        routerTargets,
         topPorts,
         interrupt,
         rtlFiles,
     };
     return deepFreeze({ plan, diagnostics });
+}
+
+function planRouterTargets(
+    peripherals: readonly PlannedPeripheral[],
+    externalInterfaces: readonly PlannedExternalInterface[],
+): PlannedRouterTarget[] {
+    const targets: PlannedRouterTarget[] = externalInterfaces.map((endpoint) => ({
+        name: endpoint.name,
+        ranges: [{ baseAddress: endpoint.baseAddress, endAddress: endpoint.endAddress }],
+    }));
+    if (peripherals.length > 0) {
+        targets.push({
+            name: 'builtin_apb',
+            ranges: peripherals.map((peripheral) => ({
+                baseAddress: peripheral.baseAddress,
+                endAddress: peripheral.endAddress,
+            })),
+        });
+    }
+    return targets.sort((left, right) =>
+        compareBigints(left.ranges[0].baseAddress, right.ranges[0].baseAddress));
 }
 
 function planningSourceDirectory(

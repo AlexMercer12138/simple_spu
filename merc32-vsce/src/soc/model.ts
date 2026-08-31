@@ -156,6 +156,16 @@ export interface PlannedExternalInterface extends PlannedRange {
     ports: readonly PlannedPort[];
 }
 
+export interface PlannedRouterRange {
+    baseAddress: bigint;
+    endAddress: bigint;
+}
+
+export interface PlannedRouterTarget {
+    name: string;
+    ranges: readonly PlannedRouterRange[];
+}
+
 export type PlannedParameterValue = number | string | boolean | bigint;
 
 export interface SocPlanResult {
@@ -191,6 +201,7 @@ export interface SocPlan {
     peripherals: readonly PlannedPeripheral[];
     externalInterfaces: readonly PlannedExternalInterface[];
     endpoints: readonly (PlannedPeripheral | PlannedExternalInterface)[];
+    routerTargets: readonly PlannedRouterTarget[];
     topPorts: readonly PlannedPort[];
     interrupt: PlannedInterrupt;
     rtlFiles: readonly string[];

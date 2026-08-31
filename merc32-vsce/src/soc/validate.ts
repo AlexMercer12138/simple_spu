@@ -401,6 +401,15 @@ function validateGeneratedVerilogSymbols(
             'builtin_apb_pwrite', 'builtin_apb_pwdata', 'builtin_apb_pstrb',
             'builtin_apb_prdata', 'builtin_apb_pready',
             'builtin_apb_bridge_inst', 'apb_interconnect_inst',
+            'builtin_apb_router_rden', 'builtin_apb_router_wren',
+            'builtin_apb_router_addr', 'builtin_apb_router_strb',
+            'builtin_apb_router_wdata', 'builtin_apb_router_rdata',
+            'builtin_apb_router_ack',
+        ]);
+        reserve('router', [
+            'builtin_apb_rden', 'builtin_apb_wren', 'builtin_apb_addr',
+            'builtin_apb_strb', 'builtin_apb_wdata', 'builtin_apb_rdata',
+            'builtin_apb_ack', 'ENDPOINT_TARGET_BUILTIN_APB',
         ]);
     }
     reserve('router', [
@@ -439,7 +448,6 @@ function validateGeneratedVerilogSymbols(
             continue;
         }
         const name = peripheral.name;
-        recordEndpointSymbols(name, sourcePath);
         record('top', [
             `${name}_psel`, `${name}_pready`, `${name}_pslverr`,
             `${name}_prdata`, `${name}_interrupt`, `${name}_inst`,

@@ -579,6 +579,23 @@ assertDiagnostic(diagnosticsFor(routerMasterCollision), 'SOC_VERILOG_SYMBOL_COLL
     ['externalInterfaces', 0, 'name']);
 assert.strictEqual(planInMemory(routerMasterCollision).plan, undefined);
 
+const builtinApbRouterCollision = clone(minimal);
+builtinApbRouterCollision.peripherals = [{
+    type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000',
+}];
+builtinApbRouterCollision.externalInterfaces = [{
+    type: 'local_bus', name: 'builtin_apb', baseAddress: '0x20000000',
+    windowSize: '4KiB', addressWidth: 32,
+}];
+assertDiagnostic(diagnosticsFor(builtinApbRouterCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
+    ['externalInterfaces', 0, 'name']);
+assert.strictEqual(planInMemory(builtinApbRouterCollision).plan, undefined);
+
+const inactiveBuiltinApbRouter = clone(builtinApbRouterCollision);
+inactiveBuiltinApbRouter.peripherals = [];
+assert.deepStrictEqual(withoutWarnings(diagnosticsFor(inactiveBuiltinApbRouter)), []);
+assert.ok(planInMemory(inactiveBuiltinApbRouter).plan);
+
 const cpuInstanceCollision = clone(minimal);
 cpuInstanceCollision.peripherals = [{
     type: 'apb_uart', name: 'cpu', baseAddress: '0x10000000',
@@ -961,6 +978,19 @@ assert.deepStrictEqual(plan.memory.dlb, {
 });
 assert.deepStrictEqual(plan.endpoints.map((item) => item.name),
     ['uart0', 'uart1', 'gpio0', 'intc0', 'apb_ext0', 'axi0']);
+assert.deepStrictEqual(plan.routerTargets.map((target) => target.name),
+    ['builtin_apb', 'apb_ext0', 'axi0']);
+assert.deepStrictEqual(plan.routerTargets[0], {
+    name: 'builtin_apb',
+    ranges: plan.peripherals.map((peripheral) => ({
+        baseAddress: peripheral.baseAddress,
+        endAddress: peripheral.endAddress,
+    })),
+});
+assert.deepStrictEqual(
+    plan.routerTargets.find((target) => target.name === 'apb_ext0').ranges,
+    [{ baseAddress: 0x10004000n, endAddress: 0x10004fffn }],
+);
 assert.strictEqual(plan.endpoints[0].baseAddress, 0x10000000n);
 assert.strictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext0').addressWidth, 12);
 assert.deepStrictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext0').parameters,
@@ -996,12 +1026,31 @@ assertDeeplyFrozen(plan);
 
 const plannedMinimal = planInMemory(minimal).plan;
 assert.ok(plannedMinimal);
+assert.deepStrictEqual(plannedMinimal.routerTargets, []);
 assert.deepStrictEqual(plannedMinimal.cpu, { debug: false, jtagIdCode: 0x4d320001n });
 assert.strictEqual(plannedMinimal.topPorts.find((item) => item.name === 'ilb_addr').width, 13);
 assert.strictEqual(plannedMinimal.topPorts.find((item) => item.name === 'dlb_addr').width, 14);
 assert.strictEqual(plannedMinimal.topPorts.some((item) => item.name === 'tck'), false);
 assert.strictEqual(plannedMinimal.rtlFiles.includes('rtl/misc/spram.v'), false);
 assert.strictEqual(plannedMinimal.rtlFiles.includes('rtl/debug/jtag_debug.v'), false);
+
+const sparseRouterTargets = clone(minimal);
+sparseRouterTargets.peripherals = [
+    { type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000' },
+    { type: 'apb_uart', name: 'uart1', baseAddress: '0x10002000' },
+];
+sparseRouterTargets.externalInterfaces = [{
+    type: 'local_bus', name: 'between_apb_ranges', baseAddress: '0x10001000',
+    windowSize: '4KiB', addressWidth: 32,
+}];
+const sparseRouterPlan = planInMemory(sparseRouterTargets).plan;
+assert.ok(sparseRouterPlan);
+assert.deepStrictEqual(sparseRouterPlan.routerTargets.map((target) => target.name),
+    ['builtin_apb', 'between_apb_ranges']);
+assert.deepStrictEqual(sparseRouterPlan.routerTargets[0].ranges, [
+    { baseAddress: 0x10000000n, endAddress: 0x10000fffn },
+    { baseAddress: 0x10002000n, endAddress: 0x10002fffn },
+]);
 
 const physicalPorts = clone(minimal);
 physicalPorts.peripherals = [
