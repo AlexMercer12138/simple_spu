@@ -466,6 +466,48 @@ function runInitialActionAvailabilityTests() {
     harness.dom.window.close();
 }
 
+function runDocumentStateLabelTests() {
+    const harness = createHarness();
+    const { document } = harness;
+    const status = document.getElementById('document-status');
+
+    harness.deliver({
+        type: 'state',
+        value: modelFixture({ documentVersion: 17, documentState: 'saved' }),
+    });
+    assert.strictEqual(status.textContent, 'Saved');
+    assert.doesNotMatch(status.textContent, /Document version|JSON error - version|17/);
+
+    harness.deliver({
+        type: 'state',
+        value: modelFixture({ documentVersion: 18, documentState: 'dirty' }),
+    });
+    assert.strictEqual(status.textContent, 'Unsaved changes');
+    assert.doesNotMatch(status.textContent, /Document version|JSON error - version|18/);
+
+    harness.deliver({
+        type: 'state',
+        value: modelFixture({
+            documentVersion: 42,
+            documentState: 'readOnly',
+            readOnly: true,
+            config: null,
+            diagnostics: [{
+                severity: 'error',
+                code: 'SOC_JSON_INVALID',
+                message: 'The configuration cannot be parsed.',
+                path: [],
+                line: 1,
+                column: 1,
+            }],
+        }),
+    });
+    assert.strictEqual(status.textContent, 'Read-only JSON');
+    assert.doesNotMatch(status.textContent, /Document version|JSON error - version|42/);
+
+    harness.dom.window.close();
+}
+
 function navButton(document, label) {
     return [...document.querySelectorAll('.nav-button')]
         .find((button) => button.querySelector('.nav-label')?.textContent === label);
@@ -861,6 +903,7 @@ function runInteractionRestorationTests() {
 runResponsiveCssContractTests();
 runVisualHarnessContractTests();
 runInitialActionAvailabilityTests();
+runDocumentStateLabelTests();
 runNavigationAndConcurrencyTests();
 runStaleFullStateGenerationTests();
 runCompactInterruptTests();

@@ -61,6 +61,11 @@
     let pendingMutation = false;
     let latestActionId = -1;
     let latestGeneration;
+    const documentStateLabels = {
+        saved: 'Saved',
+        dirty: 'Unsaved changes',
+        readOnly: 'Read-only JSON',
+    };
 
     document.querySelectorAll('[data-command]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -118,10 +123,10 @@
         shell.setAttribute('aria-busy', 'false');
         shell.classList.toggle('is-read-only', !hasConfig);
         renderActionControls();
+        documentStatus.textContent = documentStateLabels[model.documentState] || 'Read-only JSON';
 
         if (!hasConfig) {
             projectTitle.textContent = 'MERC32 SoC';
-            documentStatus.textContent = `JSON error - version ${model.documentVersion}`;
             invalidBanner.hidden = false;
             const first = model.diagnostics[0];
             invalidBanner.textContent = first
@@ -129,7 +134,6 @@
                 : 'The configuration cannot be parsed.';
         } else {
             projectTitle.textContent = model.config.project.name;
-            documentStatus.textContent = `Document version ${model.documentVersion}`;
             invalidBanner.hidden = true;
             invalidBanner.textContent = '';
         }
