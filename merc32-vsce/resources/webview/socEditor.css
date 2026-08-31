@@ -13,6 +13,8 @@
 body {
     margin: 0;
     min-width: 280px;
+    height: 100vh;
+    overflow: hidden;
     background: var(--vscode-editor-background);
 }
 
@@ -59,7 +61,7 @@ p {
 
 .editor-shell {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) clamp(112px, 20vh, 180px);
     width: 100%;
     height: 100vh;
     overflow: hidden;
@@ -154,7 +156,8 @@ p {
 
 .workbench {
     display: grid;
-    grid-template-columns: minmax(210px, 0.8fr) minmax(320px, 1.4fr) minmax(260px, 1fr);
+    grid-template-columns: minmax(190px, 0.72fr) minmax(340px, 1.45fr) minmax(250px, 1fr);
+    min-width: 0;
     min-height: 0;
     overflow: hidden;
 }
@@ -212,7 +215,7 @@ p {
 
 .nav-button {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     width: 100%;
     padding: 3px 6px;
@@ -225,12 +228,6 @@ p {
 .nav-button.selected {
     color: var(--vscode-list-activeSelectionForeground);
     background: var(--vscode-list-activeSelectionBackground);
-}
-
-.nav-badge {
-    color: var(--vscode-descriptionForeground);
-    font-family: var(--vscode-editor-font-family);
-    font-size: 10px;
 }
 
 .nav-label {
@@ -350,6 +347,48 @@ p {
     flex: 1 1 auto;
 }
 
+.route-editor {
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.route-header,
+.route-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) 64px minmax(88px, 0.55fr) 28px;
+    align-items: center;
+    gap: 4px;
+    min-width: 312px;
+}
+
+.route-header {
+    padding: 6px 0 3px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.route-row {
+    padding: 2px 0;
+}
+
+.route-source,
+.route-id,
+.route-trigger {
+    width: 100%;
+    padding: 3px 5px;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .secondary-command {
     justify-self: start;
     margin-top: 8px;
@@ -452,8 +491,8 @@ p {
 .bottom-band {
     display: grid;
     grid-template-columns: minmax(0, 1.7fr) minmax(240px, 0.7fr);
-    height: 108px;
-    min-height: 108px;
+    height: clamp(112px, 20vh, 180px);
+    min-height: 0;
     border-top: 1px solid var(--vscode-panel-border);
     background: var(--vscode-panel-background);
 }
@@ -549,12 +588,19 @@ p {
     background: var(--vscode-testing-iconFailed);
 }
 
-@media (max-width: 800px) {
-    .editor-shell {
-        height: auto;
-        min-height: 100vh;
-        overflow: visible;
+@media (max-width: 1020px) {
+    .workbench {
+        grid-template-columns: minmax(190px, 0.72fr) minmax(340px, 1.45fr);
+        grid-template-rows: minmax(0, 1.35fr) minmax(120px, 0.65fr);
     }
+
+    .summary-pane {
+        grid-column: 1 / -1;
+        border-top: 1px solid var(--vscode-panel-border);
+    }
+}
+
+@media (max-width: 640px) {
 
     .toolbar {
         align-items: flex-start;
@@ -568,12 +614,14 @@ p {
 
     .workbench {
         grid-template-columns: minmax(0, 1fr);
-        overflow: visible;
+        grid-template-rows: max-content max-content max-content;
+        overflow: auto;
     }
 
     .navigation-pane,
     .property-pane,
     .summary-pane {
+        grid-column: 1;
         max-height: none;
         overflow: visible;
         border-right: 0;
@@ -586,8 +634,7 @@ p {
 
     .bottom-band {
         grid-template-columns: minmax(0, 1fr);
-        height: auto;
-        min-height: 0;
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .address-overview {

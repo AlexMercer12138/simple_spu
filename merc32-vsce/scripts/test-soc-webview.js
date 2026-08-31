@@ -1,13 +1,62 @@
 const assert = require('assert');
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
+const vm = require('vm');
 const { JSDOM } = require('jsdom');
 
 const { renderEditorHtml } = require('../out/socEditorProvider');
 
 const scriptPath = path.join(__dirname, '..', 'resources', 'webview', 'socEditor.js');
 const scriptSource = fs.readFileSync(scriptPath, 'utf8');
+const cssPath = path.join(__dirname, '..', 'resources', 'webview', 'socEditor.css');
+const cssSource = fs.readFileSync(cssPath, 'utf8');
 const { selectionForDiagnosticPath } = require(scriptPath);
+const VISUAL_HARNESS_NONCE = 'VISUAL_HARNESS_NONCE';
+
+function rule(css, selector) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 's').exec(css);
+    assert.ok(match, `Missing CSS rule: ${selector}`);
+    return match[1];
+}
+
+function runResponsiveCssContractTests() {
+    assert.match(rule(cssSource, '.editor-shell'), /height:\s*100vh/);
+    assert.match(rule(cssSource, '.editor-shell'), /overflow:\s*hidden/);
+    assert.match(rule(cssSource, '.editor-shell'), /minmax\(0,\s*1fr\)/);
+    assert.doesNotMatch(cssSource, /\.editor-shell\s*\{[^}]*height:\s*auto/s);
+    assert.match(rule(cssSource, '.bottom-band'), /height:\s*clamp\(/);
+    assert.strictEqual(cssSource.includes('.nav-badge'), false);
+    assert.ok(cssSource.includes('.route-row'));
+}
+
+function runVisualHarnessContractTests() {
+    assert.strictEqual(typeof createVisualModel, 'function');
+    const model = createVisualModel();
+    assert.strictEqual(model.config.interrupt.mode, 'controller');
+    assert.strictEqual(model.config.interrupt.sources.length, 32);
+    assert.ok(model.diagnostics.length > 0);
+    assert.ok(model.config.externalInterfaces.length > 0);
+    assert.ok(model.addressRows.length > 0);
+    assert.ok(model.interruptRows.length > 0);
+    assert.ok(model.portRows.length > 0);
+    assert.ok(model.dependencyRows.length > 0);
+
+    const html = visualEditorHtml();
+    assert.ok(html.includes('href="/socEditor.css"'));
+    assert.ok(html.includes('src="/socEditor.js"'));
+    assert.ok(html.includes('nonce="VISUAL_HARNESS_NONCE" src="/harness.js"'));
+    assert.ok(html.indexOf('src="/harness.js"') < html.indexOf('src="/socEditor.js"'));
+    assert.ok(!/https?:\/\//i.test(html));
+
+    const harness = visualHarnessScript(model);
+    assert.doesNotThrow(() => new vm.Script(harness));
+    assert.ok(harness.includes('acquireVsCodeApi'));
+    assert.ok(harness.includes("message.type === 'select'"));
+    assert.ok(harness.includes("message.type === 'generate'"));
+    assert.ok(harness.includes("message.type === 'setValue'"));
+}
 
 function editorHtml() {
     return renderEditorHtml({
@@ -88,6 +137,260 @@ function modelWithRoutes(count, interruptOverrides = {}) {
             },
         },
     };
+}
+
+function createVisualModel() {
+    const routes = Array.from({ length: 32 }, (_, index) => ({
+        source: index === 0 ? 'uart0.irq'
+            : index === 1 ? 'timer0.irq'
+                : `external.irq${index - 2}`,
+        id: index,
+        trigger: index % 4 === 0 ? 'rising' : index % 4 === 1 ? 'high'
+            : index % 4 === 2 ? 'falling' : 'low',
+    }));
+    const model = modelFixture();
+    return {
+        ...model,
+        documentVersion: 42,
+        config: {
+            project: { name: 'flight_controller', outputDir: 'generated/flight_controller' },
+            cpu: { debug: true, jtagIdCode: '0x4d320001' },
+            memory: {
+                ilb: { type: 'internal_ram', size: 32768, initFile: 'software/boot.mem' },
+                dlb: { type: 'internal_ram', size: 65536 },
+            },
+            peripherals: [
+                { type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000' },
+                { type: 'apb_uart', name: 'uart0', baseAddress: '0x10001000' },
+                { type: 'apb_gpio', name: 'gpio0', baseAddress: '0x10002000' },
+                { type: 'apb_timer', name: 'timer0', baseAddress: '0x10003000' },
+                { type: 'apb_spi', name: 'spi0', baseAddress: '0x10004000' },
+            ],
+            externalInterfaces: [{
+                type: 'plb_window',
+                name: 'sensor_bus',
+                baseAddress: '0x20000000',
+                windowSize: 65536,
+                addressWidth: 16,
+            }],
+            interrupt: { mode: 'controller', controller: 'intc0', sources: routes },
+        },
+        catalog: {
+            modules: [
+                { type: 'apb_intc', label: 'APB interrupt controller', multiple: false, parameters: [] },
+                { type: 'apb_uart', label: 'APB UART', multiple: true, parameters: [] },
+                { type: 'apb_gpio', label: 'APB GPIO', multiple: true, parameters: [] },
+                { type: 'apb_timer', label: 'APB timer', multiple: true, parameters: [] },
+                { type: 'apb_spi', label: 'APB SPI', multiple: true, parameters: [] },
+            ],
+            externalInterfaces: [
+                { type: 'plb_window', label: 'External PLB window', multiple: true, parameters: [] },
+            ],
+        },
+        diagnostics: [
+            {
+                severity: 'warning',
+                code: 'SOC_IRQ_TRIGGER',
+                message: 'Confirm the edge trigger for external.irq6.',
+                path: ['interrupt', 'sources', 8, 'trigger'],
+                line: 94,
+                column: 19,
+            },
+            {
+                severity: 'warning',
+                code: 'SOC_PORT_UNUSED',
+                message: 'The optional trace output is not connected.',
+                path: ['cpu'],
+                line: 12,
+                column: 5,
+            },
+        ],
+        selectedPath: ['interrupt'],
+        addressRows: [
+            { name: 'intc0', kind: 'peripheral', baseAddress: '0x10000000', endAddress: '0x10000fff', size: '4 KiB' },
+            { name: 'uart0', kind: 'peripheral', baseAddress: '0x10001000', endAddress: '0x10001fff', size: '4 KiB' },
+            { name: 'gpio0', kind: 'peripheral', baseAddress: '0x10002000', endAddress: '0x10002fff', size: '4 KiB' },
+            { name: 'timer0', kind: 'peripheral', baseAddress: '0x10003000', endAddress: '0x10003fff', size: '4 KiB' },
+            { name: 'spi0', kind: 'peripheral', baseAddress: '0x10004000', endAddress: '0x10004fff', size: '4 KiB' },
+            { name: 'sensor_bus', kind: 'external', baseAddress: '0x20000000', endAddress: '0x2000ffff', size: '64 KiB' },
+        ],
+        interruptRows: routes,
+        portRows: [
+            { name: 'clk_i', direction: 'input', width: 1 },
+            { name: 'rst_ni', direction: 'input', width: 1 },
+            { name: 'uart0_tx_o', direction: 'output', width: 1 },
+            { name: 'gpio0_io', direction: 'inout', width: 16 },
+            { name: 'sensor_plb', direction: 'interface', width: 32 },
+        ],
+        dependencyRows: [
+            { name: 'flight_controller.v', kind: 'generated/rtl', detail: 'SoC top level' },
+            { name: 'core.v', kind: 'asset/rtl', detail: 'MERC32 CPU core' },
+            { name: 'apb4_interconnect.v', kind: 'generated/rtl', detail: 'Peripheral fabric' },
+            { name: 'flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
+        ],
+        interruptOptions: {
+            controllers: ['intc0'],
+            directSources: ['uart0.irq', 'timer0.irq', ...routes.slice(2).map((route) => route.source)],
+            routedSources: ['uart0.irq', 'timer0.irq', ...routes.slice(2).map((route) => route.source)],
+        },
+        generation: {
+            actionId: 7,
+            phase: 'idle',
+            message: 'Ready to generate the visual fixture.',
+        },
+    };
+}
+
+function visualEditorHtml() {
+    const html = renderEditorHtml({
+        cspSource: "'self'",
+        asWebviewUri(uri) {
+            return { toString: () => `/${path.basename(uri.path)}` };
+        },
+    }, {
+        path: '/extension',
+        with(change) {
+            return { ...this, ...change };
+        },
+    }, VISUAL_HARNESS_NONCE);
+    const controllerTag = `<script nonce="${VISUAL_HARNESS_NONCE}" src="/socEditor.js"></script>`;
+    const harnessTag = `<script nonce="${VISUAL_HARNESS_NONCE}" src="/harness.js"></script>`;
+    assert.ok(html.includes(controllerTag), 'production controller tag changed');
+    return html.replace(controllerTag, `${harnessTag}\n    ${controllerTag}`);
+}
+
+function visualHarnessScript(initialModel) {
+    return `(() => {
+    'use strict';
+    const state = ${JSON.stringify(initialModel)};
+    let nextActionId = state.generation.actionId;
+    const messages = [];
+    const copy = (value) => JSON.parse(JSON.stringify(value));
+    const dispatch = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
+    const sendState = () => dispatch({ type: 'state', value: copy(state) });
+    const sendGeneration = (phase, message) => dispatch({
+        type: 'generationStatus', actionId: nextActionId, action: 'generate', phase, message,
+    });
+    const parentAt = (path) => {
+        let current = state.config;
+        for (const segment of path.slice(0, -1)) current = current[segment];
+        return [current, path[path.length - 1]];
+    };
+    const mutate = (message) => {
+        if (message.type === 'setValue') {
+            const [parent, key] = parentAt(message.path);
+            parent[key] = copy(message.value);
+        } else if (message.type === 'unsetValue') {
+            const [parent, key] = parentAt(message.path);
+            delete parent[key];
+        } else if (message.type === 'removeInstance') {
+            state.config[message.collection].splice(message.index, 1);
+        } else if (message.type === 'addInstance') {
+            const name = message.itemType + state.config[message.collection].length;
+            state.config[message.collection].push(message.collection === 'peripherals'
+                ? { type: message.itemType, name }
+                : { type: message.itemType, name, windowSize: 4096, addressWidth: 12 });
+        }
+        state.documentVersion += 1;
+        state.documentState = 'dirty';
+        sendState();
+    };
+    const theme = {
+        '--vscode-font-family': 'Segoe UI, sans-serif',
+        '--vscode-editor-font-family': 'Cascadia Mono, Consolas, monospace',
+        '--vscode-font-size': '13px',
+        '--vscode-foreground': '#d4d4d4',
+        '--vscode-descriptionForeground': '#a6a6a6',
+        '--vscode-editor-background': '#1e1e1e',
+        '--vscode-editorWidget-background': '#202020',
+        '--vscode-editorGroupHeader-tabsBackground': '#252526',
+        '--vscode-sideBar-background': '#181818',
+        '--vscode-sideBar-foreground': '#cccccc',
+        '--vscode-sideBarSectionHeader-border': '#333333',
+        '--vscode-panel-background': '#181818',
+        '--vscode-panel-border': '#3c3c3c',
+        '--vscode-input-background': '#313131',
+        '--vscode-input-foreground': '#f0f0f0',
+        '--vscode-input-border': '#4a4a4a',
+        '--vscode-focusBorder': '#1f9cf0',
+        '--vscode-button-background': '#0e639c',
+        '--vscode-button-foreground': '#ffffff',
+        '--vscode-button-hoverBackground': '#1177bb',
+        '--vscode-button-secondaryBackground': '#3a3d41',
+        '--vscode-button-secondaryForeground': '#ffffff',
+        '--vscode-button-secondaryHoverBackground': '#50545a',
+        '--vscode-toolbar-hoverBackground': '#333333',
+        '--vscode-icon-foreground': '#c5c5c5',
+        '--vscode-badge-background': '#4d4d4d',
+        '--vscode-badge-foreground': '#ffffff',
+        '--vscode-list-activeSelectionBackground': '#094771',
+        '--vscode-list-activeSelectionForeground': '#ffffff',
+        '--vscode-tab-activeBackground': '#1e1e1e',
+        '--vscode-tab-activeForeground': '#ffffff',
+        '--vscode-tab-inactiveForeground': '#a0a0a0',
+        '--vscode-charts-blue': '#3794ff',
+        '--vscode-charts-green': '#89d185',
+        '--vscode-testing-iconPassed': '#73c991',
+        '--vscode-testing-iconFailed': '#f14c4c',
+        '--vscode-errorForeground': '#f48771',
+        '--vscode-editorWarning-foreground': '#cca700',
+        '--vscode-statusBar-background': '#007acc',
+        '--vscode-statusBar-foreground': '#ffffff',
+        '--vscode-textBlockQuote-background': '#252526'
+    };
+    Object.entries(theme).forEach(([name, value]) => document.documentElement.style.setProperty(name, value));
+    window.__socHarness = { state, messages };
+    window.acquireVsCodeApi = () => ({
+        postMessage(message) {
+            messages.push(copy(message));
+            if (message.type === 'ready') {
+                sendState();
+            } else if (message.type === 'select') {
+                state.selectedPath = copy(message.path);
+                sendState();
+            } else if (message.type === 'generate') {
+                nextActionId += 1;
+                sendGeneration('generating', 'Resolving the 32-route interrupt map...');
+                setTimeout(() => sendGeneration('generating', 'Staging RTL and software artifacts...'), 900);
+                setTimeout(() => sendGeneration('generated', 'Visual fixture generation completed.'), 5000);
+            } else if (message.type === 'setValue' || message.type === 'unsetValue'
+                || message.type === 'addInstance' || message.type === 'removeInstance') {
+                mutate(message);
+            }
+        }
+    });
+})();\n`;
+}
+
+function startVisualServer(port) {
+    assert.ok(Number.isInteger(port) && port > 0 && port <= 65535,
+        '--serve requires a port from 1 to 65535');
+    const model = createVisualModel();
+    const assets = new Map([
+        ['/', ['text/html; charset=utf-8', visualEditorHtml()]],
+        ['/socEditor.css', ['text/css; charset=utf-8', cssSource]],
+        ['/socEditor.js', ['text/javascript; charset=utf-8', scriptSource]],
+        ['/harness.js', ['text/javascript; charset=utf-8', visualHarnessScript(model)]],
+    ]);
+    const server = http.createServer((request, response) => {
+        const pathname = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`).pathname;
+        const asset = assets.get(pathname);
+        if (!asset) {
+            response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            response.end('Not found');
+            return;
+        }
+        response.writeHead(200, {
+            'Content-Type': asset[0],
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(asset[1]);
+    });
+    server.listen(port, '127.0.0.1', () => {
+        console.log(`MERC32 SoC visual harness: http://127.0.0.1:${port}`);
+    });
+    return server;
 }
 
 function createHarness(beforeStart) {
@@ -546,6 +849,8 @@ function runInteractionRestorationTests() {
     harness.dom.window.close();
 }
 
+runResponsiveCssContractTests();
+runVisualHarnessContractTests();
 runInitialActionAvailabilityTests();
 runNavigationAndConcurrencyTests();
 runStaleFullStateGenerationTests();
@@ -554,3 +859,8 @@ runNavigationMutationPendingTests();
 runSummaryKeyboardAndDiagnosticTests();
 runInteractionRestorationTests();
 console.log('MERC32 SoC Webview interaction contracts passed.');
+
+const serveIndex = process.argv.indexOf('--serve');
+if (serveIndex !== -1) {
+    startVisualServer(Number(process.argv[serveIndex + 1]));
+}

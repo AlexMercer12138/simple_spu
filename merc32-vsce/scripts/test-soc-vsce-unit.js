@@ -845,16 +845,6 @@ const webviewScriptPath = path.join(__dirname, '..', 'resources', 'webview', 'so
 const webviewJs = require('fs').readFileSync(webviewScriptPath, 'utf8');
 const webviewController = require(webviewScriptPath);
 assert.ok(webviewCss.includes('box-sizing: border-box'));
-assert.ok(webviewCss.includes('minmax(210px, 0.8fr) minmax(320px, 1.4fr) minmax(260px, 1fr)'));
-const workbenchCss = /\.workbench\s*\{([^}]*)\}/s.exec(webviewCss)[1];
-const minimumTrackWidth = [...workbenchCss.matchAll(/minmax\((\d+)px,/g)]
-    .reduce((total, match) => total + Number(match[1]), 0);
-const singleColumnBreakpoint = Number(
-    /@media\s*\(max-width:\s*(\d+)px\)[\s\S]*?\.workbench\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/
-        .exec(webviewCss)[1],
-);
-assert.ok(singleColumnBreakpoint >= minimumTrackWidth,
-    `single-column breakpoint ${singleColumnBreakpoint}px is below ${minimumTrackWidth}px minimum tracks`);
 assert.ok(!/border-radius:\s*(?:9|[1-9]\d+)px/.test(webviewCss));
 assert.ok(!webviewJs.includes('innerHTML'));
 assert.ok(!/\.on(?:click|change|input|submit)\s*=/.test(webviewJs));
