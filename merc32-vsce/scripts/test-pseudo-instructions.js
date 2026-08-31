@@ -4,6 +4,7 @@ const path = require('path')
 const assert = require('assert')
 const { SimpleCPUAssembler } = require('../out/assembler')
 const { assembleFile } = require('../out/assemblyService')
+const { withOwnedTempRoot } = require('./test-owned-temp')
 
 function assemble(source, fileName = 'main.asm') {
     return new SimpleCPUAssembler().assemble(source, { sourceFileName: fileName })
@@ -260,7 +261,7 @@ assert.deepStrictEqual(hex(result.machineCodes), [
     '0x00010100',
 ])
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-pre-'))
+withOwnedTempRoot('merc32-pre-', (tmp) => {
 const main = path.join(tmp, 'source.asm')
 fs.writeFileSync(main, '.prog demo_prog\nmov r1, 1\n', 'utf8')
 const serviceResult = assembleFile(fs.readFileSync(main, 'utf8'), main, 'verilog', 'file')
@@ -337,3 +338,4 @@ mustThrow('old brcu syntax removed', () => assemble('brcu done, "eq"\ndone:\nmov
 mustThrow('if pseudo removed', () => assemble('if r1 < r2 goto done\ndone:\nmov r1, 1\n'), /if|未知|unknown/i)
 
 console.log('pseudo-instruction tests passed')
+})

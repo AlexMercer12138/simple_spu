@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertPersistedArtifactState } = require('./vsix-smoke-state');
+const { resolveVSCodeTestCachePath } = require('./vscode-test-cache');
 
 const AdmZip = require('adm-zip');
 const { createVSIX } = require('@vscode/vsce');
@@ -90,7 +91,7 @@ async function main() {
 }
 
 function assertColdCacheFailsWithoutNetwork(tempRoot) {
-    const coldExtensionRoot = createChildDirectory(tempRoot, 'cold-cache-extension');
+    const coldCachePath = path.join(tempRoot, 'cold-vscode-cache');
     const attempts = [];
     const patches = [
         [http, 'request'],
@@ -115,7 +116,7 @@ function assertColdCacheFailsWithoutNetwork(tempRoot) {
 
     let failure;
     try {
-        resolveCachedVSCodeExecutable(coldExtensionRoot);
+        resolveCachedVSCodeExecutable(coldCachePath);
     } catch (error) {
         failure = error;
     } finally {
@@ -839,7 +840,7 @@ async function runInstalledSmoke(options) {
         fs.constants.COPYFILE_EXCL,
     );
 
-    const executable = resolveCachedVSCodeExecutable(options.extensionRoot);
+    const executable = resolveCachedVSCodeExecutable();
     const guardedEnvironment = offlineEnvironment({
         MERC32_SMOKE_NETWORK_GUARD_LOG: networkGuardLog,
         MERC32_SMOKE_NETWORK_GUARD_TOKEN: networkGuardToken,
@@ -924,11 +925,10 @@ async function runInstalledSmoke(options) {
     };
 }
 
-function resolveCachedVSCodeExecutable(extensionRoot) {
+function resolveCachedVSCodeExecutable(cachePath = resolveVSCodeTestCachePath()) {
     const platform = vscodeCachePlatform();
     const cacheRoot = path.join(
-        extensionRoot,
-        '.vscode-test',
+        cachePath,
         `vscode-${platform}-${VSCODE_VERSION}`,
     );
     const executable = process.platform === 'win32'
@@ -946,7 +946,8 @@ function resolveCachedVSCodeExecutable(extensionRoot) {
     } catch (error) {
         throw new Error(
             `Cached VSCode ${VSCODE_VERSION} is unavailable at ${cacheRoot}. `
-                + 'Run npm run test:extension to bootstrap and verify the Task 6 cache.',
+                + 'Run npm run test:extension to populate the shared cache, or set '
+                + 'MERC32_VSCODE_TEST_CACHE to an existing cache directory.',
             { cause: error },
         );
     }

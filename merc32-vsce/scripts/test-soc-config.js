@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { withOwnedTempRoot } = require('./test-owned-temp');
 
 const {
     parseU32, parseByteSize, formatHex32, rangeEnd, alignUp,
@@ -10,7 +11,7 @@ const {
 } = require('../out/soc');
 
 const catalogResources = path.resolve(__dirname, '..', 'resources', 'catalog');
-const catalogAssetRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-builtins-'));
+withOwnedTempRoot('merc32-builtins-', (catalogAssetRoot) => {
 for (const logicalPath of [
     'rtl/apb_can/apb_can.v', 'rtl/apb_gpio/apb_gpio.v',
     'rtl/apb_i2c/apb_i2c.v', 'rtl/apb_intc/apb_intc.v',
@@ -1075,3 +1076,4 @@ assert.notStrictEqual(
 );
 
 console.log('MERC32 SoC configuration tests passed.');
+});

@@ -4,6 +4,17 @@ import * as path from 'path';
 
 import { download, runTests } from '@vscode/test-electron';
 
+const { ensureVSCodeTestCachePath } = require('../../scripts/vscode-test-cache') as {
+    ensureVSCodeTestCachePath(environment?: NodeJS.ProcessEnv): string;
+};
+const { withVSCodeTestCacheLock } = require('../../scripts/vscode-test-cache-lock') as {
+    withVSCodeTestCacheLock<T>(
+        cachePath: string,
+        version: string,
+        callback: () => Promise<T>,
+    ): Promise<T>;
+};
+
 const VSCODE_VERSION = '1.74.3';
 const TEMP_PREFIXES = Object.freeze({
     userData: 'merc32-vsce-user-data-',
@@ -14,12 +25,16 @@ const TEMP_PREFIXES = Object.freeze({
 async function main(): Promise<void> {
     const extensionDevelopmentPath = path.resolve(__dirname, '..', '..');
     const extensionTestsPath = path.resolve(__dirname, 'suite', 'index');
-    const cachePath = path.join(extensionDevelopmentPath, '.vscode-test');
-    const vscodeExecutablePath = await download({
-        version: VSCODE_VERSION,
+    const cachePath = ensureVSCodeTestCachePath();
+    const vscodeExecutablePath = await withVSCodeTestCacheLock(
         cachePath,
-        extensionDevelopmentPath,
-    });
+        VSCODE_VERSION,
+        () => download({
+            version: VSCODE_VERSION,
+            cachePath,
+            extensionDevelopmentPath,
+        }),
+    );
     const roots: Array<{ path: string; prefix: string }> = [];
 
     try {

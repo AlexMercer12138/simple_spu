@@ -330,6 +330,7 @@
     "prepare:resources": "node scripts/prepare-resources.js",
     "vscode:prepublish": "npm run prepare:resources && npm run compile",
     "compile": "tsc -p ./",
+    "test:infrastructure": "npm run compile && node scripts/test-test-infrastructure.js",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
     "test:c:preprocessor": "npm run compile && node scripts/test-c-preprocessor.js",
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
@@ -348,7 +349,7 @@
     "test:smoke-extension:unit": "node scripts/test-smoke-extension.js",
     "test:vsix:unit": "node scripts/test-vsix-smoke-state.js",
     "test:vsix": "node scripts/test-vsix-smoke.js merc32-vsce.vsix",
-    "test": "npm run test:pseudo && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
+    "test": "npm run compile && node scripts/test-test-infrastructure.js && node scripts/test-pseudo-instructions.js && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js",
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
