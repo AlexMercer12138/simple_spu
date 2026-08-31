@@ -816,6 +816,340 @@ endmodule
     console.log('  router_stateful_behavior: simulated');
 }
 
+function simulateSharedApbTransactionPath(catalog) {
+    const directory = path.join(temporaryRoot, 'shared_apb_transaction_path');
+    fs.mkdirSync(directory, { recursive: true });
+    const config = {
+        schemaVersion: 1,
+        project: { name: 'shared_apb_path', outputDir: 'generated/shared_apb_path' },
+        cpu: { debug: false },
+        memory: {
+            ilb: { type: 'external_local_bus', size: '32KiB' },
+            dlb: { type: 'external_local_bus', size: '64KiB' },
+        },
+        peripherals: [
+            { type: 'apb_uart', name: 'peripheral_a', baseAddress: '0x10000000' },
+            { type: 'apb_uart', name: 'peripheral_b', baseAddress: '0x10002000' },
+        ],
+        externalInterfaces: [{
+            type: 'local_bus', name: 'external_gap', baseAddress: '0x10001000',
+            windowSize: '4KiB', addressWidth: 32,
+        }],
+        interrupt: { mode: 'none' },
+    };
+    const sourceFile = path.join(directory, 'shared_apb_path.merc32.json');
+    const parsed = parseSocConfig(`${JSON.stringify(config, null, 2)}\n`, sourceFile, catalog);
+    assert.ok(parsed.config,
+        `shared APB transaction config failed:\n${JSON.stringify(parsed.diagnostics, null, 2)}`);
+    const planned = planSoc(parsed.config, catalog);
+    assert.ok(planned.plan,
+        `shared APB transaction plan failed:\n${JSON.stringify(planned.diagnostics, null, 2)}`);
+    const integrationPlan = {
+        ...planned.plan,
+        peripherals: planned.plan.peripherals.map((peripheral, index) => ({
+            ...peripheral,
+            module: `apb_response_stub_${index === 0 ? 'a' : 'b'}`,
+            parameters: {},
+            ports: [],
+            interrupts: [],
+        })),
+        topPorts: planned.plan.topPorts.filter((port) =>
+            !planned.plan.peripherals.some((peripheral) =>
+                port.name.startsWith(`${peripheral.name}_`))),
+    };
+    const interconnect = renderApbInterconnect(integrationPlan);
+    assert.ok(interconnect, 'shared APB transaction plan emitted no APB interconnect');
+    fs.writeFileSync(path.join(directory, 'integration_top.v'), renderSocTop(integrationPlan));
+    fs.writeFileSync(path.join(directory, 'plb_router.v'), renderPlbRouter(integrationPlan));
+    fs.writeFileSync(path.join(directory, 'apb_interconnect.v'), interconnect);
+    fs.copyFileSync(path.join(packagedAssetRoot, 'rtl', 'bridge', 'lb2apb.v'),
+        path.join(directory, 'lb2apb.v'));
+    fs.writeFileSync(path.join(directory, 'shared_apb_integration_tb.v'), `
+module MERC32_top #(
+    parameter ILB_ADDR_WIDTH = 13,
+    parameter DLB_ADDR_WIDTH = 14,
+    parameter [31:0] JTAG_IDCODE_VALUE = 32'b0,
+    parameter DEBUG_EN = 0
+) (
+    input wire clk,
+    input wire rst_n,
+    input wire interrupt,
+    input wire tck,
+    input wire tms,
+    input wire tdi,
+    output wire tdo,
+    output wire ilb_rden,
+    output wire ilb_wren,
+    output wire [ILB_ADDR_WIDTH-1:0] ilb_addr,
+    output wire [3:0] ilb_strb,
+    output wire [31:0] ilb_wdata,
+    input wire [31:0] ilb_rdata,
+    input wire ilb_ack,
+    output wire dlb_rden,
+    output wire dlb_wren,
+    output wire [DLB_ADDR_WIDTH-1:0] dlb_addr,
+    output wire [3:0] dlb_strb,
+    output wire [31:0] dlb_wdata,
+    input wire [31:0] dlb_rdata,
+    input wire dlb_ack,
+    output reg plb_rden,
+    output reg plb_wren,
+    output reg [31:0] plb_addr,
+    output reg [3:0] plb_strb,
+    output reg [31:0] plb_wdata,
+    input wire [31:0] plb_rdata,
+    input wire plb_ack
+);
+assign tdo = 1'b0;
+assign ilb_rden = 1'b0;
+assign ilb_wren = 1'b0;
+assign ilb_addr = {ILB_ADDR_WIDTH{1'b0}};
+assign ilb_strb = 4'b0;
+assign ilb_wdata = 32'b0;
+assign dlb_rden = 1'b0;
+assign dlb_wren = 1'b0;
+assign dlb_addr = {DLB_ADDR_WIDTH{1'b0}};
+assign dlb_strb = 4'b0;
+assign dlb_wdata = 32'b0;
+
+initial begin
+    plb_rden = 1'b0;
+    plb_wren = 1'b0;
+    plb_addr = 32'b0;
+    plb_strb = 4'hf;
+    plb_wdata = 32'b0;
+end
+endmodule
+
+module apb_response_stub_a (
+    input wire s_apb_pclk,
+    input wire s_apb_presetn,
+    input wire s_apb_psel,
+    input wire s_apb_penable,
+    input wire s_apb_pwrite,
+    input wire [31:0] s_apb_paddr,
+    input wire [31:0] s_apb_pwdata,
+    input wire [3:0] s_apb_pstrb,
+    output wire s_apb_pready,
+    output wire s_apb_pslverr,
+    output wire [31:0] s_apb_prdata
+);
+assign s_apb_pready = s_apb_psel && s_apb_penable;
+assign s_apb_pslverr = 1'b0;
+assign s_apb_prdata = 32'ha1a1_0001;
+endmodule
+
+module apb_response_stub_b (
+    input wire s_apb_pclk,
+    input wire s_apb_presetn,
+    input wire s_apb_psel,
+    input wire s_apb_penable,
+    input wire s_apb_pwrite,
+    input wire [31:0] s_apb_paddr,
+    input wire [31:0] s_apb_pwdata,
+    input wire [3:0] s_apb_pstrb,
+    output wire s_apb_pready,
+    output wire s_apb_pslverr,
+    output wire [31:0] s_apb_prdata
+);
+assign s_apb_pready = s_apb_psel && s_apb_penable;
+assign s_apb_pslverr = 1'b0;
+assign s_apb_prdata = 32'hb2b2_0002;
+endmodule
+
+module shared_apb_integration_tb;
+reg clk = 1'b0;
+reg rst_n = 1'b0;
+wire ilb_rden;
+wire ilb_wren;
+wire [12:0] ilb_addr;
+wire [3:0] ilb_strb;
+wire [31:0] ilb_wdata;
+wire dlb_rden;
+wire dlb_wren;
+wire [13:0] dlb_addr;
+wire [3:0] dlb_strb;
+wire [31:0] dlb_wdata;
+wire external_gap_lb_rden;
+wire external_gap_lb_wren;
+wire [3:0] external_gap_lb_strb;
+wire [31:0] external_gap_lb_wdata;
+wire [31:0] external_gap_lb_addr;
+wire [31:0] external_gap_lb_rdata;
+reg external_gap_lb_valid = 1'b0;
+
+assign external_gap_lb_rdata = 32'he3e3_0003;
+
+shared_apb_path shared_apb_path_inst (
+    .clk(clk),
+    .rst_n(rst_n),
+    .ilb_rden(ilb_rden),
+    .ilb_wren(ilb_wren),
+    .ilb_addr(ilb_addr),
+    .ilb_strb(ilb_strb),
+    .ilb_wdata(ilb_wdata),
+    .ilb_rdata(32'b0),
+    .ilb_ack(1'b0),
+    .dlb_rden(dlb_rden),
+    .dlb_wren(dlb_wren),
+    .dlb_addr(dlb_addr),
+    .dlb_strb(dlb_strb),
+    .dlb_wdata(dlb_wdata),
+    .dlb_rdata(32'b0),
+    .dlb_ack(1'b0),
+    .external_gap_lb_rden(external_gap_lb_rden),
+    .external_gap_lb_wren(external_gap_lb_wren),
+    .external_gap_lb_strb(external_gap_lb_strb),
+    .external_gap_lb_wdata(external_gap_lb_wdata),
+    .external_gap_lb_addr(external_gap_lb_addr),
+    .external_gap_lb_rdata(external_gap_lb_rdata),
+    .external_gap_lb_valid(external_gap_lb_valid)
+);
+
+always #5 clk = ~clk;
+
+always @(posedge clk) begin
+    if (!rst_n)
+        external_gap_lb_valid <= 1'b0;
+    else
+        external_gap_lb_valid <= external_gap_lb_rden || external_gap_lb_wren;
+end
+
+initial #12 rst_n = 1'b1;
+
+// initial begin
+//     $dumpfile("shared_apb_integration_tb.vcd");
+//     $dumpvars(0, shared_apb_integration_tb);
+// end
+
+initial begin
+    #1000;
+    $display("shared_apb_transaction_path: TIMEOUT");
+    $finish;
+end
+
+task read_builtin;
+    input [31:0] address;
+    input [31:0] expected_data;
+    input [1:0] expected_selects;
+    integer wait_cycles;
+    reg saw_select;
+    begin
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_addr <= address;
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b1;
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b0;
+        wait_cycles = 0;
+        saw_select = 1'b0;
+        while ((shared_apb_path_inst.cpu_inst.plb_ack !== 1'b1)
+                && (wait_cycles < 8)) begin
+            @(posedge clk);
+            #1;
+            wait_cycles = wait_cycles + 1;
+            if (shared_apb_path_inst.builtin_apb_penable) begin
+                saw_select = 1'b1;
+                if ({shared_apb_path_inst.peripheral_b_psel,
+                        shared_apb_path_inst.peripheral_a_psel} !== expected_selects)
+                    $fatal(1, "built-in APB select was not exclusive");
+            end
+            if (external_gap_lb_rden || external_gap_lb_wren)
+                $fatal(1, "external gap selected during built-in APB access");
+        end
+        if (!saw_select)
+            $fatal(1, "built-in APB select was never observed");
+        if (shared_apb_path_inst.cpu_inst.plb_ack !== 1'b1)
+            $fatal(1, "built-in APB access did not return an ack");
+        if (shared_apb_path_inst.cpu_inst.plb_rdata !== expected_data)
+            $fatal(1, "built-in APB access returned wrong data");
+        @(posedge clk);
+        #1;
+        if (shared_apb_path_inst.cpu_inst.plb_ack)
+            $fatal(1, "built-in APB ack did not clear");
+    end
+endtask
+
+task read_external_gap;
+    begin
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_addr <= 32'h1000_1008;
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b1;
+        #1;
+        if (!external_gap_lb_rden || shared_apb_path_inst.builtin_apb_router_rden)
+            $fatal(1, "external gap request was not routed exclusively");
+        if (shared_apb_path_inst.peripheral_a_psel
+                || shared_apb_path_inst.peripheral_b_psel)
+            $fatal(1, "built-in APB selected during external gap access");
+        @(posedge clk);
+        #1;
+        if (shared_apb_path_inst.cpu_inst.plb_ack !== 1'b1)
+            $fatal(1, "external gap access did not return an ack");
+        if (shared_apb_path_inst.cpu_inst.plb_rdata !== 32'he3e3_0003)
+            $fatal(1, "external gap access returned wrong data");
+        if (shared_apb_path_inst.builtin_apb_psel)
+            $fatal(1, "built-in APB psel asserted for external gap access");
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b0;
+        @(posedge clk);
+        #1;
+        if (shared_apb_path_inst.cpu_inst.plb_ack)
+            $fatal(1, "external gap ack did not clear");
+    end
+endtask
+
+task read_unmapped;
+    integer wait_cycles;
+    begin
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_addr <= 32'h1000_3000;
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b1;
+        #1;
+        if (shared_apb_path_inst.builtin_apb_router_rden || external_gap_lb_rden)
+            $fatal(1, "unmapped request selected a router target");
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b0;
+        for (wait_cycles = 0; wait_cycles < 4; wait_cycles = wait_cycles + 1) begin
+            @(posedge clk);
+            #1;
+            if (shared_apb_path_inst.cpu_inst.plb_ack)
+                $fatal(1, "unmapped request was acknowledged");
+            if (shared_apb_path_inst.builtin_apb_psel
+                    || shared_apb_path_inst.peripheral_a_psel
+                    || shared_apb_path_inst.peripheral_b_psel)
+                $fatal(1, "unmapped request selected built-in APB");
+        end
+    end
+endtask
+
+initial begin
+    @(posedge rst_n);
+    repeat (2) @(posedge clk);
+    read_builtin(32'h1000_0040, 32'ha1a1_0001, 2'b01);
+    read_builtin(32'h1000_2004, 32'hb2b2_0002, 2'b10);
+    read_external_gap;
+    read_unmapped;
+    $display("shared_apb_transaction_path: PASS");
+    $finish;
+end
+endmodule
+`);
+    const compile = spawnSync('iverilog', [
+        '-Wall', '-Wno-timescale', '-g2005', '-s', 'shared_apb_integration_tb',
+        '-o', 'shared_apb.vvp', 'integration_top.v', 'plb_router.v',
+        'apb_interconnect.v', 'lb2apb.v', 'shared_apb_integration_tb.v',
+    ], { cwd: directory, encoding: 'utf8' });
+    assert.strictEqual(compile.status, 0,
+        `shared APB transaction compile failed:\n${compile.stdout}\n${compile.stderr}`);
+    assert.strictEqual(compile.stderr, '',
+        `shared APB transaction warnings:\n${compile.stderr}`);
+    const simulation = spawnSync('vvp', ['shared_apb.vvp'],
+        { cwd: directory, encoding: 'utf8' });
+    assert.strictEqual(simulation.status, 0,
+        `shared APB transaction simulation failed:\n${simulation.stdout}\n${simulation.stderr}`);
+    assert.match(simulation.stdout, /shared_apb_transaction_path: PASS/);
+    console.log('  shared_apb_transaction_path: simulated');
+}
+
 function simulateExternalIrqReset(catalog) {
     const config = {
         schemaVersion: 1,
@@ -1263,6 +1597,7 @@ async function run() {
         assembleAndElaborate(name, config);
     }
     simulateStatefulRouter();
+    simulateSharedApbTransactionPath(catalog);
     simulateExternalIrqReset(catalog);
     simulateSingleSourceController();
         console.log('MERC32 generated RTL matrix passed.');
