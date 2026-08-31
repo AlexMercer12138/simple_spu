@@ -271,12 +271,13 @@ export async function runSocGeneration(
         await reportGenerationWarning(vscodeApi, services.output,
             'the generated artifact record could not be saved', error);
     }
-    try {
-        await vscodeApi.commands.executeCommand('revealFileInOS', outputUri);
-    } catch (error) {
-        await reportGenerationWarning(vscodeApi, services.output,
-            'the generated output directory could not be revealed', error);
-    }
+    void Promise.resolve(vscodeApi.commands.executeCommand('revealFileInOS', outputUri))
+        .catch((error: unknown) => reportGenerationWarning(
+            vscodeApi,
+            services.output,
+            'the generated output directory could not be revealed',
+            error,
+        ));
     return true;
 }
 

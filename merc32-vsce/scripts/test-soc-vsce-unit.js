@@ -2,6 +2,26 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolveValue, rejectValue) => {
+        resolve = resolveValue;
+        reject = rejectValue;
+    });
+    return { promise, resolve, reject };
+}
+
+async function settlesWithin(promise, milliseconds) {
+    const timeout = Symbol('timeout');
+    const result = await Promise.race([
+        promise,
+        new Promise((resolve) => setTimeout(() => resolve(timeout), milliseconds)),
+    ]);
+    assert.notStrictEqual(result, timeout);
+    return result;
+}
+
 const pkg = require('../package.json');
 
 const selector = pkg.contributes.customEditors[0];
@@ -1818,6 +1838,50 @@ try {
     });
     assert.ok(generationCalls.some(([kind, command]) =>
         kind === 'command' && command === 'revealFileInOS'));
+
+    const reveal = createDeferred();
+    const originalExecuteCommand = generationVscode.commands.executeCommand;
+    const revealVscode = {
+        ...generationVscode,
+        commands: {
+            async executeCommand(command, ...args) {
+                if (command === 'revealFileInOS') return reveal.promise;
+                return originalExecuteCommand(command, ...args);
+            },
+        },
+    };
+    const nonBlockingServices = {
+        ...successfulServices,
+        vscodeApi: revealVscode,
+    };
+    const generation = runSocGeneration(explicitUri, 'normal', nonBlockingServices);
+    assert.strictEqual(await settlesWithin(generation, 250), true,
+        'successful generation waited for revealFileInOS');
+    reveal.resolve(undefined);
+
+    generationCalls.length = 0;
+    const rejectedReveal = createDeferred();
+    const rejectedRevealVscode = {
+        ...generationVscode,
+        commands: {
+            async executeCommand(command, ...args) {
+                if (command === 'revealFileInOS') return rejectedReveal.promise;
+                return originalExecuteCommand(command, ...args);
+            },
+        },
+    };
+    const rejectedRevealServices = {
+        ...successfulServices,
+        vscodeApi: rejectedRevealVscode,
+    };
+    const rejectedGeneration = runSocGeneration(explicitUri, 'normal', rejectedRevealServices);
+    rejectedReveal.reject(new Error('shell integration unavailable'));
+    assert.strictEqual(await rejectedGeneration, true,
+        'rejected reveal changed the successful generation outcome');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(generationCalls.some(([kind, message]) =>
+        kind === 'warning' && /generated/i.test(message) && /shell integration unavailable/i.test(message)),
+    'rejected reveal was not reported as a generation warning');
 
     for (const ancillaryFailure of ['artifact recording', 'output reveal']) {
         generationCalls.length = 0;
