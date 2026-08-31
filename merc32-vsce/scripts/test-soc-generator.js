@@ -7,6 +7,7 @@ const path = require('path');
 const soc = require('../out/soc');
 const { compileCFile } = require('../out/cCompiler');
 const { SimpleCPUAssembler } = require('../out/assembler');
+const extensionPackage = require('../package.json');
 
 assert.strictEqual(typeof soc.renderSocTop, 'function',
     'renderSocTop must be exported from the SoC package');
@@ -242,7 +243,7 @@ function assertGenerationOrchestration() {
         assert.strictEqual(firstManifest.projectName, 'demo_soc');
         assert.strictEqual(firstManifest.sourceConfig,
             fs.realpathSync.native(configFile).replace(/\\/g, '/'));
-        assert.strictEqual(firstManifest.generatorVersion, '2.0.0');
+        assert.strictEqual(firstManifest.generatorVersion, extensionPackage.version);
         assert.strictEqual(firstManifest.resourceRevision, 'test-resource-revision');
         assert.deepStrictEqual(firstManifest.manifestFile, {
             hashPolicy: 'excluded-self',
