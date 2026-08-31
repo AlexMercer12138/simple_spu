@@ -422,7 +422,7 @@ function validateGeneratedVerilogSymbols(
         'response_rdata', 'response_ready',
     ]);
 
-    const recordEndpointSymbols = (
+    const recordExternalRouterTargetSymbols = (
         name: unknown,
         sourcePath: readonly (string | number)[],
     ): void => {
@@ -471,7 +471,7 @@ function validateGeneratedVerilogSymbols(
             continue;
         }
         const name = endpoint.name;
-        recordEndpointSymbols(name, sourcePath);
+        recordExternalRouterTargetSymbols(name, sourcePath);
         const protocol = catalog.protocols.get(endpoint.type);
         if (protocol !== undefined) {
             record('top', protocol.ports.map((port) => `${name}_${port.name}`), sourcePath);

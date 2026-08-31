@@ -574,14 +574,12 @@
     function acceptGeneration(generation) {
         if (!generation || generation.actionId < latestActionId) return;
         latestGeneration = generation;
-        if (awaitingActionId && generation.actionId === latestActionId) {
-            renderGeneration(generation);
-            renderActionControls();
-            return;
+        const isPendingActionProgress = awaitingActionId && generation.actionId === latestActionId;
+        if (!isPendingActionProgress) {
+            latestActionId = generation.actionId;
+            awaitingActionId = false;
+            pendingAction = isBusyPhase(generation.phase) ? generation.action : undefined;
         }
-        latestActionId = generation.actionId;
-        awaitingActionId = false;
-        pendingAction = isBusyPhase(generation.phase) ? generation.action : undefined;
         renderGeneration(generation);
         renderActionControls();
     }
