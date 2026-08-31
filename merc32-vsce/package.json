@@ -323,6 +323,7 @@
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "3.6.2",
     "adm-zip": "0.5.16",
+    "jsdom": "26.1.0",
     "mocha": "^10.8.2",
     "typescript": "^6.0.3"
   },
@@ -338,6 +339,7 @@
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
     "test:soc:editor-session": "npm run compile && node scripts/test-soc-editor-session.js",
+    "test:soc:webview": "npm run compile && node scripts/test-soc-webview.js",
     "test:soc:vsce:unit": "npm run compile && node scripts/test-soc-vsce-unit.js",
     "test:soc:generator": "npm run compile && node scripts/test-soc-generator.js",
     "test:soc:rtl": "npm run compile && node scripts/test-soc-rtl.js",

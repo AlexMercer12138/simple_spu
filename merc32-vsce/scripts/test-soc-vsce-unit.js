@@ -828,6 +828,9 @@ assert.strictEqual((html.match(/<script\b/g) || []).length, 1);
 assert.strictEqual((html.match(/<script\b[^>]*\bnonce="NONCE"/g) || []).length, 1);
 assert.ok(!/\son[a-z]+\s*=/i.test(html), 'HTML contains an inline event handler');
 assert.ok(!/https?:\/\//i.test(html), 'HTML contains a remote URL');
+assert.ok(!html.includes('class="product-mark"'), 'HTML retains the redundant product mark');
+assert.ok(!/>\s*(?:A\+|OK|&gt;|\{ \})\s*</.test(html),
+    'HTML retains a toolbar pseudo-icon');
 assert.ok(html.includes('id="generation-title">Status</h2>'),
     'non-generation failures are still labeled as Generation');
 const resourceUris = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
@@ -838,8 +841,9 @@ assert.deepStrictEqual(resourceUris.sort(), [
 
 const webviewCss = require('fs').readFileSync(
     path.join(__dirname, '..', 'resources', 'webview', 'socEditor.css'), 'utf8');
-const webviewJs = require('fs').readFileSync(
-    path.join(__dirname, '..', 'resources', 'webview', 'socEditor.js'), 'utf8');
+const webviewScriptPath = path.join(__dirname, '..', 'resources', 'webview', 'socEditor.js');
+const webviewJs = require('fs').readFileSync(webviewScriptPath, 'utf8');
+const webviewController = require(webviewScriptPath);
 assert.ok(webviewCss.includes('box-sizing: border-box'));
 assert.ok(webviewCss.includes('minmax(210px, 0.8fr) minmax(320px, 1.4fr) minmax(260px, 1fr)'));
 const workbenchCss = /\.workbench\s*\{([^}]*)\}/s.exec(webviewCss)[1];
@@ -854,6 +858,8 @@ assert.ok(singleColumnBreakpoint >= minimumTrackWidth,
 assert.ok(!/border-radius:\s*(?:9|[1-9]\d+)px/.test(webviewCss));
 assert.ok(!webviewJs.includes('innerHTML'));
 assert.ok(!/\.on(?:click|change|input|submit)\s*=/.test(webviewJs));
+assert.strictEqual(typeof webviewController.createSocEditorApp, 'function');
+assert.strictEqual(typeof webviewController.selectionForDiagnosticPath, 'function');
 assert.ok(webviewJs.includes("postMessage({ type: 'ready' })"));
 
 const workspaceCalls = [];

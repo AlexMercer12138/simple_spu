@@ -96,7 +96,6 @@ export function renderEditorHtml(
     <div id="editor-shell" class="editor-shell" aria-busy="true">
         <header class="toolbar">
             <div class="toolbar-title">
-                <span class="product-mark" aria-hidden="true">M32</span>
                 <div>
                     <h1 id="project-title">MERC32 SoC</h1>
                     <span id="document-status" class="subtle-status">Loading</span>
@@ -104,16 +103,16 @@ export function renderEditorHtml(
             </div>
             <div class="toolbar-actions" role="toolbar" aria-label="SoC actions">
                 <button type="button" data-command="autoAssign" data-requires-config title="Auto-assign addresses">
-                    <span aria-hidden="true">A+</span><span>Auto-assign</span>
+                    Auto-assign
                 </button>
                 <button type="button" data-command="validate" data-requires-config title="Validate configuration">
-                    <span aria-hidden="true">OK</span><span>Validate</span>
+                    Validate
                 </button>
                 <button type="button" class="primary" data-command="generate" data-requires-config title="Generate SoC">
-                    <span aria-hidden="true">&gt;</span><span>Generate</span>
+                    Generate
                 </button>
                 <button type="button" id="reopen-text" data-command="reopenAsText" title="Reopen as text">
-                    <span aria-hidden="true">{ }</span><span>Text</span>
+                    Text
                 </button>
             </div>
         </header>

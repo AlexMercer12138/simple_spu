@@ -1,56 +1,122 @@
-(function () {
+(function (root, factory) {
     'use strict';
 
-    const vscode = acquireVsCodeApi();
+    const api = factory();
+    if (typeof module === 'object' && module.exports) {
+        module.exports = api;
+    } else {
+        api.createSocEditorApp(root, root.acquireVsCodeApi());
+    }
+}(typeof globalThis === 'object' ? globalThis : this, function () {
+    'use strict';
+
+    function selectionForDiagnosticPath(path, model) {
+        if (!model || !model.config || !Array.isArray(path)) return undefined;
+        for (let length = path.length; length > 0; length -= 1) {
+            const candidate = path.slice(0, length);
+            if (isSelectablePath(candidate, model.config)) return candidate;
+        }
+        return undefined;
+    }
+
+    function isSelectablePath(path, config) {
+        if (!path.every((segment) => typeof segment === 'string'
+            ? segment.length > 0 && segment !== '__proto__' && segment !== 'prototype'
+                && segment !== 'constructor' && !segment.includes('/') && !segment.includes('\\')
+            : Number.isSafeInteger(segment) && segment >= 0)) {
+            return false;
+        }
+        if (path.length === 1) {
+            return path[0] === 'project' || path[0] === 'cpu' || path[0] === 'interrupt';
+        }
+        if (path.length !== 2) return false;
+        if (path[0] === 'memory') return path[1] === 'ilb' || path[1] === 'dlb';
+        if (path[0] === 'peripherals' && typeof path[1] === 'number') {
+            return config.peripherals[path[1]] !== undefined;
+        }
+        return path[0] === 'externalInterfaces' && typeof path[1] === 'number'
+            && config.externalInterfaces[path[1]] !== undefined;
+    }
+
+    function createSocEditorApp(root, vscode) {
+    const document = root.document;
     const shell = document.getElementById('editor-shell');
     const projectTitle = document.getElementById('project-title');
     const documentStatus = document.getElementById('document-status');
     const invalidBanner = document.getElementById('invalid-banner');
     const componentNav = document.getElementById('component-nav');
+    const navigationPane = document.querySelector('.navigation-pane');
+    const propertyPane = document.querySelector('.property-pane');
     const propertyTitle = document.getElementById('property-title');
     const propertyForm = document.getElementById('property-form');
+    const summaryPane = document.querySelector('.summary-pane');
     const summaryContent = document.getElementById('summary-content');
     const addressMap = document.getElementById('address-map');
     const generationStatus = document.getElementById('generation-status');
 
     let model;
     let activeSummary = 'validation';
+    let pendingAction;
+    let awaitingActionId = false;
+    let pendingMutation = false;
+    let latestActionId = -1;
 
     document.querySelectorAll('[data-command]').forEach((button) => {
         button.addEventListener('click', () => {
             const type = button.dataset.command;
             if (type === 'autoAssign' || type === 'validate' || type === 'generate'
                 || type === 'reopenAsText') {
+                if (type !== 'reopenAsText') {
+                    pendingAction = type;
+                    awaitingActionId = true;
+                    renderActionControls();
+                }
                 vscode.postMessage({ type });
             }
         });
     });
 
     document.querySelectorAll('[data-summary]').forEach((button) => {
+        button.id = `summary-tab-${button.dataset.summary}`;
+        button.setAttribute('aria-controls', 'summary-content');
         button.addEventListener('click', () => {
-            activeSummary = button.dataset.summary;
-            renderSummary();
+            activateSummary(button.dataset.summary);
+        });
+        button.addEventListener('keydown', (event) => {
+            const tabs = [...document.querySelectorAll('[data-summary]')];
+            const index = tabs.indexOf(button);
+            let nextIndex;
+            if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+            else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = tabs.length - 1;
+            else return;
+            event.preventDefault();
+            const target = tabs[nextIndex];
+            activateSummary(target.dataset.summary);
+            target.focus();
         });
     });
 
-    window.addEventListener('message', (event) => {
+    root.addEventListener('message', (event) => {
         const message = event.data;
         if (!message || typeof message !== 'object') return;
         if (message.type === 'state') {
+            const interactionState = captureInteractionState();
             model = message.value;
-            render();
+            pendingMutation = false;
+            acceptGeneration(model.generation);
+            render(interactionState);
         } else if (message.type === 'generationStatus') {
-            renderGeneration({ phase: message.phase, message: message.message });
+            acceptGeneration(message);
         }
     });
 
-    function render() {
+    function render(interactionState) {
         const hasConfig = Boolean(model && model.config && !model.readOnly);
         shell.setAttribute('aria-busy', 'false');
         shell.classList.toggle('is-read-only', !hasConfig);
-        document.querySelectorAll('[data-requires-config]').forEach((control) => {
-            control.disabled = !hasConfig;
-        });
+        renderActionControls();
 
         if (!hasConfig) {
             projectTitle.textContent = 'MERC32 SoC';
@@ -72,6 +138,7 @@
         renderSummary();
         renderAddressMap();
         renderGeneration(model.generation);
+        restoreInteractionState(interactionState);
     }
 
     function renderNavigation() {
@@ -82,10 +149,10 @@
         }
 
         const system = section('System');
-        system.body.appendChild(navButton('Project', ['project'], 'PRJ'));
-        system.body.appendChild(navButton('CPU', ['cpu'], 'CPU'));
-        system.body.appendChild(navButton('ILB memory', ['memory', 'ilb'], 'ILB'));
-        system.body.appendChild(navButton('DLB memory', ['memory', 'dlb'], 'DLB'));
+        system.body.appendChild(navButton('Project', ['project']));
+        system.body.appendChild(navButton('CPU', ['cpu']));
+        system.body.appendChild(navButton('ILB memory', ['memory', 'ilb']));
+        system.body.appendChild(navButton('DLB memory', ['memory', 'dlb']));
         componentNav.appendChild(system.root);
 
         const peripherals = section('APB peripherals', String(model.config.peripherals.length));
@@ -115,7 +182,7 @@
         componentNav.appendChild(endpoints.root);
 
         const routing = section('Interrupt routing');
-        routing.body.appendChild(navButton('Interrupts', ['interrupt'], model.config.interrupt.mode.toUpperCase()));
+        routing.body.appendChild(navButton('Interrupts', ['interrupt']));
         componentNav.appendChild(routing.root);
     }
 
@@ -241,11 +308,74 @@
             ],
         });
         if (interrupt.mode === 'direct') {
-            addField('Source', ['interrupt', 'source'], interrupt.source, { kind: 'text' });
+            appendInterruptSourceOptions(model.interruptOptions.directSources);
+            addField('Source', ['interrupt', 'source'], interrupt.source, {
+                kind: 'text',
+                className: 'interrupt-direct-source',
+                list: 'interrupt-source-options',
+            });
         } else if (interrupt.mode === 'controller') {
-            addField('Controller', ['interrupt', 'controller'], interrupt.controller, { kind: 'text' });
+            addField('Controller', ['interrupt', 'controller'], interrupt.controller, {
+                kind: 'select',
+                className: 'interrupt-controller',
+                options: model.interruptOptions.controllers.map((value) => ({ value, label: value })),
+            });
+            appendInterruptSourceOptions(model.interruptOptions.routedSources);
+            const editor = element('div', 'route-editor');
+            const header = element('div', 'route-header');
+            header.append(
+                element('span', '', 'Source'),
+                element('span', '', 'IRQ ID'),
+                element('span', '', 'Trigger'),
+                element('span', 'visually-hidden', 'Actions'),
+            );
+            editor.appendChild(header);
             interrupt.sources.forEach((source, index) => {
-                const heading = element('div', 'route-heading');
+                const route = element('div', 'route-row');
+                route.setAttribute('role', 'group');
+                route.setAttribute('aria-label', `Route ${index + 1}`);
+                const sourceControl = document.createElement('input');
+                sourceControl.type = 'text';
+                sourceControl.className = 'route-source';
+                sourceControl.value = source.source;
+                sourceControl.setAttribute('list', 'interrupt-source-options');
+                sourceControl.setAttribute('aria-label', `Route ${index + 1} source`);
+                setFieldPath(sourceControl, ['interrupt', 'sources', index, 'source']);
+                sourceControl.addEventListener('change', () => postSetValue(
+                    ['interrupt', 'sources', index, 'source'], sourceControl.value,
+                ));
+
+                const idControl = document.createElement('input');
+                idControl.type = 'number';
+                idControl.className = 'route-id';
+                idControl.value = String(source.id);
+                idControl.min = '0';
+                idControl.max = '31';
+                idControl.step = '1';
+                idControl.setAttribute('aria-label', `Route ${index + 1} IRQ ID`);
+                setFieldPath(idControl, ['interrupt', 'sources', index, 'id']);
+                idControl.addEventListener('change', () => {
+                    const value = Number(idControl.value);
+                    if (Number.isFinite(value)) {
+                        postSetValue(['interrupt', 'sources', index, 'id'], value);
+                    }
+                });
+
+                const triggerControl = document.createElement('select');
+                triggerControl.className = 'route-trigger';
+                triggerControl.setAttribute('aria-label', `Route ${index + 1} trigger`);
+                setFieldPath(triggerControl, ['interrupt', 'sources', index, 'trigger']);
+                ['high', 'low', 'rising', 'falling'].forEach((value) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = humanize(value);
+                    option.selected = value === source.trigger;
+                    triggerControl.appendChild(option);
+                });
+                triggerControl.addEventListener('change', () => postSetValue(
+                    ['interrupt', 'sources', index, 'trigger'], triggerControl.value,
+                ));
+
                 const remove = element('button', 'icon-button', '-');
                 remove.type = 'button';
                 remove.title = `Remove route ${index + 1}`;
@@ -254,18 +384,11 @@
                     ['interrupt', 'sources'],
                     interrupt.sources.filter((unused, sourceIndex) => sourceIndex !== index),
                 ));
-                heading.append(groupHeading(`Route ${index + 1}`), remove);
-                propertyForm.appendChild(heading);
-                addField('Source', ['interrupt', 'sources', index, 'source'], source.source, { kind: 'text' });
-                addField('IRQ ID', ['interrupt', 'sources', index, 'id'], source.id, {
-                    kind: 'number', minimum: 0, maximum: 31,
-                });
-                addField('Trigger', ['interrupt', 'sources', index, 'trigger'], source.trigger, {
-                    kind: 'select',
-                    options: ['high', 'low', 'rising', 'falling'].map((value) => ({ value, label: humanize(value) })),
-                });
+                [sourceControl, idControl, triggerControl, remove].forEach(markMutationControl);
+                route.append(sourceControl, idControl, triggerControl, remove);
+                editor.appendChild(route);
             });
-            const addRoute = element('button', 'secondary-command');
+            const addRoute = element('button', 'secondary-command add-route');
             addRoute.type = 'button';
             addRoute.textContent = '+ Add route';
             addRoute.title = 'Add interrupt route';
@@ -278,8 +401,22 @@
                     { source: `external.irq${id}`, id, trigger: 'high' },
                 ]);
             });
-            propertyForm.appendChild(addRoute);
+            markMutationControl(addRoute);
+            addRoute.disabled = model.readOnly || interrupt.sources.length >= 32 || pendingMutation;
+            editor.appendChild(addRoute);
+            propertyForm.appendChild(editor);
         }
+    }
+
+    function appendInterruptSourceOptions(sources) {
+        const list = document.createElement('datalist');
+        list.id = 'interrupt-source-options';
+        sources.forEach((value) => {
+            const option = document.createElement('option');
+            option.value = value;
+            list.appendChild(option);
+        });
+        propertyForm.appendChild(list);
     }
 
     function addField(labelText, path, value, options) {
@@ -322,7 +459,10 @@
                 if (options.kind !== 'number' || Number.isFinite(next)) postSetValue(path, next);
             });
         }
-        control.disabled = Boolean(model.readOnly);
+        if (options.className) control.className = options.className;
+        if (options.list) control.setAttribute('list', options.list);
+        setFieldPath(control, path);
+        markMutationControl(control);
         detail.appendChild(control);
         if (options.optional) {
             const reset = element('button', 'field-reset', '-');
@@ -334,6 +474,7 @@
                 event.stopPropagation();
                 postUnsetValue(path);
             });
+            markMutationControl(reset);
             detail.appendChild(reset);
         }
         row.append(label, detail);
@@ -341,11 +482,14 @@
     }
 
     function renderSummary() {
+        let activeTab;
         document.querySelectorAll('[data-summary]').forEach((button) => {
             const active = button.dataset.summary === activeSummary;
             button.setAttribute('aria-selected', String(active));
             button.tabIndex = active ? 0 : -1;
+            if (active) activeTab = button;
         });
+        if (activeTab) summaryContent.setAttribute('aria-labelledby', activeTab.id);
         summaryContent.replaceChildren();
         if (!model) return;
         const renderers = {
@@ -364,6 +508,11 @@
             ]),
         };
         renderers[activeSummary]();
+    }
+
+    function activateSummary(summary) {
+        activeSummary = summary;
+        renderSummary();
     }
 
     function renderValidationSummary() {
@@ -421,6 +570,31 @@
         );
     }
 
+    function acceptGeneration(generation) {
+        if (!generation || generation.actionId < latestActionId) return;
+        if (awaitingActionId && generation.actionId === latestActionId) {
+            renderGeneration(generation);
+            renderActionControls();
+            return;
+        }
+        latestActionId = generation.actionId;
+        awaitingActionId = false;
+        pendingAction = isBusyPhase(generation.phase) ? generation.action : undefined;
+        renderGeneration(generation);
+        renderActionControls();
+    }
+
+    function renderActionControls() {
+        const hasConfig = Boolean(model && model.config && !model.readOnly);
+        document.querySelectorAll('[data-requires-config]').forEach((control) => {
+            control.disabled = !hasConfig || Boolean(pendingAction);
+        });
+    }
+
+    function isBusyPhase(phase) {
+        return phase === 'working' || phase === 'validating' || phase === 'generating';
+    }
+
     function section(title, count) {
         const root = element('section', 'nav-section');
         const heading = element('div', 'nav-heading');
@@ -431,20 +605,23 @@
         return { root, body };
     }
 
-    function navButton(label, path, badge) {
+    function navButton(label, path) {
         const button = element('button', 'nav-button');
         button.type = 'button';
-        button.classList.toggle('selected', samePath(path, model.selectedPath));
-        button.append(element('span', 'nav-badge', badge), element('span', 'nav-label', label));
+        const selected = samePath(path, model.selectedPath);
+        button.classList.toggle('selected', selected);
+        if (selected) button.setAttribute('aria-current', 'true');
+        button.appendChild(element('span', 'nav-label', label));
         button.addEventListener('click', () => vscode.postMessage({
-            type: 'select', documentVersion: model.documentVersion, path,
+            type: 'select', path,
         }));
         return button;
     }
 
     function instanceRow(name, type, path, collection, index) {
         const row = element('div', 'instance-row');
-        const button = navButton(name, path, type.replace(/^apb_/, '').slice(0, 3).toUpperCase());
+        const button = navButton(name, path);
+        button.title = type;
         const remove = element('button', 'icon-button', '-');
         remove.type = 'button';
         remove.title = `Remove ${name}`;
@@ -484,7 +661,20 @@
     }
 
     function diagnosticRow(diagnostic) {
-        const row = element('div', `diagnostic ${diagnostic.severity}`);
+        const row = element('button', `diagnostic ${diagnostic.severity}`);
+        row.type = 'button';
+        row.setAttribute('aria-label', `${diagnostic.severity} ${diagnostic.code}: ${diagnostic.message}; `
+            + `line ${diagnostic.line}, column ${diagnostic.column}`);
+        const activate = () => {
+            const path = selectionForDiagnosticPath(diagnostic.path, model);
+            if (path) vscode.postMessage({ type: 'select', path });
+        };
+        row.addEventListener('click', activate);
+        row.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            activate();
+        });
         row.append(
             element('span', 'diagnostic-code', diagnostic.code),
             element('span', 'diagnostic-message', diagnostic.message),
@@ -502,6 +692,7 @@
     }
 
     function postSetValue(path, value) {
+        beginMutation();
         vscode.postMessage({
             type: 'setValue',
             documentVersion: model.documentVersion,
@@ -511,6 +702,7 @@
     }
 
     function postUnsetValue(path) {
+        beginMutation();
         vscode.postMessage({
             type: 'unsetValue',
             documentVersion: model.documentVersion,
@@ -518,9 +710,85 @@
         });
     }
 
+    function beginMutation() {
+        pendingMutation = true;
+        document.querySelectorAll('[data-mutation-control]').forEach((control) => {
+            control.disabled = true;
+        });
+    }
+
+    function captureInteractionState() {
+        const focused = document.activeElement;
+        let focusedPath;
+        if (focused && focused.dataset && focused.dataset.fieldPath) {
+            try {
+                focusedPath = JSON.parse(focused.dataset.fieldPath);
+            } catch {
+                focusedPath = undefined;
+            }
+        }
+        return {
+            navigationScrollTop: navigationPane.scrollTop,
+            propertyScrollTop: propertyPane.scrollTop,
+            summaryScrollTop: summaryPane.scrollTop,
+            focusedPath,
+            selectionStart: focused && typeof focused.selectionStart === 'number'
+                ? focused.selectionStart : undefined,
+            selectionEnd: focused && typeof focused.selectionEnd === 'number'
+                ? focused.selectionEnd : undefined,
+            selectedPath: model && model.selectedPath,
+        };
+    }
+
+    function restoreInteractionState(state) {
+        navigationPane.scrollTop = state.navigationScrollTop;
+        summaryPane.scrollTop = state.summaryScrollTop;
+        if (!sameOptionalPath(state.selectedPath, model && model.selectedPath)) {
+            propertyPane.scrollTop = 0;
+            return;
+        }
+        if (state.focusedPath) {
+            const focused = [...propertyForm.querySelectorAll('[data-field-path]')]
+                .find((control) => samePath(state.focusedPath, fieldPath(control)));
+            if (focused) {
+                focused.focus({ preventScroll: true });
+                if (typeof focused.setSelectionRange === 'function'
+                    && state.selectionStart !== undefined && state.selectionEnd !== undefined) {
+                    try {
+                        focused.setSelectionRange(state.selectionStart, state.selectionEnd);
+                    } catch {
+                        // Select and numeric controls do not expose text selections.
+                    }
+                }
+            }
+        }
+        propertyPane.scrollTop = state.propertyScrollTop;
+    }
+
+    function fieldPath(control) {
+        try {
+            return JSON.parse(control.dataset.fieldPath);
+        } catch {
+            return undefined;
+        }
+    }
+
+    function setFieldPath(control, path) {
+        control.dataset.fieldPath = JSON.stringify(path);
+    }
+
+    function markMutationControl(control) {
+        control.dataset.mutationControl = '';
+        control.disabled = Boolean(model.readOnly || pendingMutation);
+    }
+
     function samePath(left, right) {
-        return Array.isArray(right) && left.length === right.length
+        return Array.isArray(left) && Array.isArray(right) && left.length === right.length
             && left.every((segment, index) => segment === right[index]);
+    }
+
+    function sameOptionalPath(left, right) {
+        return left === undefined && right === undefined || samePath(left, right);
     }
 
     function valueKind(value) {
@@ -540,4 +808,8 @@
     }
 
     vscode.postMessage({ type: 'ready' });
-}());
+    return {};
+    }
+
+    return { createSocEditorApp, selectionForDiagnosticPath };
+}));
