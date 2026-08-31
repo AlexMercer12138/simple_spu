@@ -1103,21 +1103,32 @@ task read_unmapped;
         @(negedge clk);
         shared_apb_path_inst.cpu_inst.plb_addr <= 32'h1000_3000;
         shared_apb_path_inst.cpu_inst.plb_rden <= 1'b1;
-        #1;
-        if (shared_apb_path_inst.builtin_apb_router_rden || external_gap_lb_rden)
-            $fatal(1, "unmapped request selected a router target");
-        @(negedge clk);
-        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b0;
         for (wait_cycles = 0; wait_cycles < 4; wait_cycles = wait_cycles + 1) begin
             @(posedge clk);
             #1;
             if (shared_apb_path_inst.cpu_inst.plb_ack)
                 $fatal(1, "unmapped request was acknowledged");
-            if (shared_apb_path_inst.builtin_apb_psel
-                    || shared_apb_path_inst.peripheral_a_psel
+            if (shared_apb_path_inst.builtin_apb_router_rden
+                    || shared_apb_path_inst.builtin_apb_router_wren
+                    || shared_apb_path_inst.external_gap_router_rden
+                    || shared_apb_path_inst.external_gap_router_wren
+                    || external_gap_lb_rden || external_gap_lb_wren)
+                $fatal(1, "unmapped request selected a router target");
+            if (shared_apb_path_inst.builtin_apb_lb_rden
+                    || shared_apb_path_inst.builtin_apb_lb_wren
+                    || shared_apb_path_inst.builtin_apb_psel
+                    || shared_apb_path_inst.builtin_apb_penable)
+                $fatal(1, "unmapped request selected the built-in APB bridge");
+            if (shared_apb_path_inst.peripheral_a_psel
                     || shared_apb_path_inst.peripheral_b_psel)
-                $fatal(1, "unmapped request selected built-in APB");
+                $fatal(1, "unmapped request selected a peripheral");
         end
+        @(negedge clk);
+        shared_apb_path_inst.cpu_inst.plb_rden <= 1'b0;
+        @(posedge clk);
+        #1;
+        if (shared_apb_path_inst.cpu_inst.plb_ack)
+            $fatal(1, "unmapped request produced a late ack");
     end
 endtask
 

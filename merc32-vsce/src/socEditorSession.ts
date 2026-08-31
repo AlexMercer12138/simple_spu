@@ -96,6 +96,8 @@ export class SocEditorSession {
             this.activeAction = message.type;
             const actionId = ++this.actionId;
             void this.runAction(message.type, actionId);
+        } else {
+            await this.postGenerationStatus();
         }
     }
 
@@ -104,6 +106,11 @@ export class SocEditorSession {
             || this.services.currentDocumentVersion() === this.lastPostedDocumentVersion) {
             return;
         }
+        await this.scheduleState();
+    }
+
+    async presentationChanged(): Promise<void> {
+        if (this.disposed || !this.ready) return;
         await this.scheduleState();
     }
 
@@ -193,6 +200,11 @@ export class SocEditorSession {
     ): Promise<void> {
         const generation: SocGenerationState = { ...progress, actionId, action };
         this.generation = generation;
+        return this.postGenerationStatus();
+    }
+
+    private postGenerationStatus(): Promise<void> {
+        const generation = this.generation;
         return this.enqueueState(async () => {
             await this.services.postMessage({ type: 'generationStatus', ...generation });
         });
@@ -208,6 +220,7 @@ export class SocEditorSession {
     }
 
     private setError(message: string): void {
+        if (this.activeAction !== undefined) return;
         this.generation = { actionId: this.actionId, phase: 'error', message };
     }
 }

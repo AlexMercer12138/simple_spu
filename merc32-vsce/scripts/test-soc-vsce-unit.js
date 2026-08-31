@@ -117,6 +117,7 @@ const {
     executeSocEditorCommand,
     isEditableSocPath,
     isUnsettableSocPath,
+    Merc32SocEditorProvider,
     renderEditorHtml,
 } = require('../out/socEditorProvider');
 const {
@@ -1070,6 +1071,103 @@ try {
     assert.ok(starterText.endsWith('\n'));
     assert.ok(parseSocConfig(starterText, 'control_board.merc32.json', catalog).config,
         'starter configuration is not accepted by the real parser');
+
+    const editorDocumentUri = {
+        path: '/workspace/control_board.merc32.json',
+        fsPath: 'C:\\workspace\\control_board.merc32.json',
+        toString: () => 'file:///workspace/control_board.merc32.json',
+    };
+    const editorDocument = {
+        uri: editorDocumentUri,
+        fileName: editorDocumentUri.fsPath,
+        version: 7,
+        isDirty: true,
+        getText: () => starterText,
+        positionAt: (offset) => ({ offset }),
+    };
+    const editorMessages = [];
+    const editorSubscriptions = [];
+    let editorChangeListener;
+    let editorSaveListener;
+    let editorMessageListener;
+    let editorDisposeListener;
+    const disposable = (kind) => {
+        const value = {
+            kind,
+            disposed: false,
+            dispose() { this.disposed = true; },
+        };
+        editorSubscriptions.push(value);
+        return value;
+    };
+    const editorVscode = {
+        Uri: {
+            joinPath(base, ...segments) {
+                const joined = path.posix.join(base.path, ...segments);
+                return {
+                    path: joined,
+                    fsPath: joined,
+                    with(change) { return { ...this, ...change }; },
+                    toString() { return this.path; },
+                };
+            },
+        },
+        workspace: {
+            onDidChangeTextDocument(listener) {
+                editorChangeListener = listener;
+                return disposable('change');
+            },
+            onDidSaveTextDocument(listener) {
+                editorSaveListener = listener;
+                return disposable('save');
+            },
+        },
+        commands: { executeCommand: async () => true },
+    };
+    const editorPanel = {
+        webview: {
+            cspSource: 'vscode-webview-resource:',
+            asWebviewUri(value) { return value; },
+            postMessage: async (message) => { editorMessages.push(message); return true; },
+            onDidReceiveMessage(listener) {
+                editorMessageListener = listener;
+                return disposable('message');
+            },
+        },
+        onDidDispose(listener) {
+            editorDisposeListener = listener;
+            return disposable('panel');
+        },
+    };
+    const editorExtensionUri = {
+        path: '/extension',
+        fsPath: '/extension',
+        with(change) { return { ...this, ...change }; },
+    };
+    const editorProvider = new Merc32SocEditorProvider(editorExtensionUri, catalog, editorVscode);
+    await editorProvider.resolveCustomTextEditor(editorDocument, editorPanel);
+    editorMessageListener({ type: 'ready' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(editorMessages.at(-1).value.documentState, 'dirty');
+    assert.strictEqual(typeof editorSaveListener, 'function',
+        'custom editor did not subscribe to document saves');
+
+    const stateCountBeforeOtherSave = editorMessages.length;
+    editorSaveListener({ uri: { toString: () => 'file:///workspace/other.merc32.json' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(editorMessages.length, stateCountBeforeOtherSave,
+        'another document save refreshed this panel');
+
+    editorDocument.isDirty = false;
+    editorSaveListener(editorDocument);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(editorMessages.at(-1).value.documentState, 'saved',
+        'same-version save did not deliver the Saved presentation state');
+    assert.strictEqual(editorMessages.at(-1).value.documentVersion, 7);
+
+    editorDisposeListener();
+    assert.strictEqual(editorSubscriptions.find((item) => item.kind === 'save').disposed, true,
+        'panel disposal retained its document-save listener');
 
     const uri = (name) => ({
         scheme: 'file',

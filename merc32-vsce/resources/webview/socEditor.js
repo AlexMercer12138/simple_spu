@@ -114,7 +114,7 @@
             acceptGeneration(model.generation);
             render(interactionState);
         } else if (message.type === 'generationStatus') {
-            acceptGeneration(message);
+            acceptGeneration(message, true);
         }
     });
 
@@ -575,11 +575,11 @@
         );
     }
 
-    function acceptGeneration(generation) {
+    function acceptGeneration(generation, isStatusMessage = false) {
         if (!generation || generation.actionId < latestActionId) return;
         latestGeneration = generation;
         const isPendingActionProgress = awaitingActionId && generation.actionId === latestActionId;
-        if (!isPendingActionProgress) {
+        if (!isPendingActionProgress || isStatusMessage) {
             latestActionId = generation.actionId;
             awaitingActionId = false;
             pendingAction = isBusyPhase(generation.phase) ? generation.action : undefined;

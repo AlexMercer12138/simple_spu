@@ -27,13 +27,15 @@ async function waitFor(predicate) {
 
 function createSessionServices(overrides = {}) {
     let documentVersion = 1;
+    let documentState = 'saved';
     return {
         currentDocumentVersion: () => documentVersion,
         setDocumentVersion: (value) => { documentVersion = value; },
+        setDocumentState: (value) => { documentState = value; },
         normalizeSelection: (path) => [...path],
         buildState: (selectedPath, generation) => ({
             documentVersion,
-            documentState: 'saved',
+            documentState,
             readOnly: false,
             catalog: { modules: [], externalInterfaces: [] },
             diagnostics: [],
@@ -88,6 +90,59 @@ async function testSelectionBypassesActionAndDuplicateIsIgnored() {
     await waitFor(() => latestState(posted).value.generation.phase === 'generated');
     await session.receive({ type: 'select', path: ['interrupt'] });
     assert.deepStrictEqual(latestState(posted).value.selectedPath, ['interrupt']);
+}
+
+async function testActiveActionSurvivesMutationErrorAndAcknowledgesDuplicate() {
+    const deferred = createDeferred();
+    const posted = [];
+    let actionCalls = 0;
+    const services = createSessionServices({
+        postMessage: async (message) => { posted.push(message); return true; },
+        executeAction: async (type, report) => {
+            actionCalls += 1;
+            await report({ phase: 'generating', message: 'Generating SoC...' });
+            return deferred.promise;
+        },
+    });
+    const session = new SocEditorSession(services);
+
+    await session.receive({ type: 'ready' });
+    await session.receive({ type: 'generate' });
+    await waitFor(() => posted.some((message) => message.type === 'generationStatus'
+        && message.actionId === 1 && message.phase === 'generating'));
+
+    services.setDocumentVersion(2);
+    await session.receive({
+        type: 'setValue', documentVersion: 1, path: ['project', 'name'], value: 'stale',
+    });
+    assert.deepStrictEqual(latestState(posted).value.generation, {
+        actionId: 1,
+        action: 'generate',
+        phase: 'generating',
+        message: 'Generating SoC...',
+    }, 'stale mutation replaced the unresolved Generate status');
+
+    const statusCount = posted.filter((message) => message.type === 'generationStatus').length;
+    await session.receive({ type: 'generate' });
+    const duplicateAcknowledgment = posted.filter((message) =>
+        message.type === 'generationStatus').slice(statusCount);
+    assert.deepStrictEqual(duplicateAcknowledgment, [{
+        type: 'generationStatus',
+        actionId: 1,
+        action: 'generate',
+        phase: 'generating',
+        message: 'Generating SoC...',
+    }], 'duplicate action request did not receive the current active status');
+    assert.strictEqual(actionCalls, 1, 'duplicate Generate started a second action');
+
+    deferred.resolve(true);
+    await waitFor(() => latestState(posted).value.generation.phase === 'generated');
+    assert.deepStrictEqual(latestState(posted).value.generation, {
+        actionId: 1,
+        action: 'generate',
+        phase: 'generated',
+        message: 'SoC generation completed.',
+    });
 }
 
 async function testRejectedActionBecomesErrorAndReleasesLane() {
@@ -189,6 +244,24 @@ async function testDocumentVersionChangeRefreshesOnce() {
     await session.documentChanged();
     assert.strictEqual(posted.filter((message) => message.type === 'state').length, stateCount,
         'unchanged document version posted a redundant state');
+}
+
+async function testForcedPresentationRefreshAllowsSameDocumentVersion() {
+    const posted = [];
+    const services = createSessionServices({
+        postMessage: async (message) => { posted.push(message); return true; },
+    });
+    services.setDocumentState('dirty');
+    const session = new SocEditorSession(services);
+
+    await session.receive({ type: 'ready' });
+    assert.strictEqual(latestState(posted).value.documentState, 'dirty');
+
+    services.setDocumentState('saved');
+    await session.presentationChanged();
+    assert.strictEqual(latestState(posted).value.documentState, 'saved',
+        'forced same-version presentation refresh was suppressed');
+    assert.strictEqual(latestState(posted).value.documentVersion, 1);
 }
 
 async function testQueuedMutationRechecksVersionAndRefreshes() {
@@ -331,11 +404,13 @@ async function testDisposeSuppressesQueuedAndActionCompletionPosts() {
 
 async function main() {
     await testSelectionBypassesActionAndDuplicateIsIgnored();
+    await testActiveActionSurvivesMutationErrorAndAcknowledgesDuplicate();
     await testRejectedActionBecomesErrorAndReleasesLane();
     await testReportedActionFailureIsNotOverwrittenByVoidOutcome();
     await testReportedActionFailureSurvivesFalseAndThrow();
     await testReceiveContainsSelectionNormalizerFailure();
     await testDocumentVersionChangeRefreshesOnce();
+    await testForcedPresentationRefreshAllowsSameDocumentVersion();
     await testQueuedMutationRechecksVersionAndRefreshes();
     await testMutationRejectionRefreshesAndQueueRecovers();
     await testStatePostsStayOrderedAndPendingRefreshesCoalesce();

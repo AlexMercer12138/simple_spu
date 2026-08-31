@@ -639,6 +639,73 @@ function runStaleFullStateGenerationTests() {
     harness.dom.window.close();
 }
 
+function runActiveActionAcknowledgmentTests() {
+    const harness = createHarness();
+    const { document, posted } = harness;
+    harness.deliver({ type: 'state', value: modelFixture() });
+
+    harness.click('[data-command="generate"]');
+    harness.deliver({
+        type: 'generationStatus',
+        actionId: 4,
+        action: 'generate',
+        phase: 'generating',
+        message: 'Generating SoC...',
+    });
+    harness.deliver({
+        type: 'state',
+        value: modelFixture({
+            generation: {
+                actionId: 4,
+                phase: 'error',
+                message: 'The configuration changed. Review the refreshed values and retry.',
+            },
+        }),
+    });
+    assert.strictEqual(commandButton(document, 'generate').disabled, false);
+
+    harness.click('[data-command="generate"]');
+    assert.strictEqual(posted.filter((message) => message.type === 'generate').length, 2);
+    harness.deliver({
+        type: 'generationStatus',
+        actionId: 4,
+        action: 'generate',
+        phase: 'generating',
+        message: 'Generating SoC...',
+    });
+    harness.deliver({
+        type: 'generationStatus',
+        actionId: 4,
+        action: 'generate',
+        phase: 'generated',
+        message: 'SoC generation completed.',
+    });
+
+    assert.strictEqual(commandButton(document, 'generate').disabled, false,
+        'equal-ID active-action acknowledgment left controls stuck after completion');
+    assert.strictEqual(document.getElementById('generation-status').dataset.phase, 'generated');
+    harness.dom.window.close();
+}
+
+function runTerminalActionAcknowledgmentTests() {
+    const harness = createHarness();
+    const { document } = harness;
+    harness.deliver({ type: 'state', value: modelFixture() });
+
+    harness.click('[data-command="generate"]');
+    harness.deliver({
+        type: 'generationStatus',
+        actionId: 3,
+        action: 'generate',
+        phase: 'generated',
+        message: 'SoC generation completed.',
+    });
+
+    assert.strictEqual(commandButton(document, 'generate').disabled, false,
+        'explicit terminal current-state acknowledgment left controls stuck');
+    harness.dom.window.close();
+}
+
 function runCompactInterruptTests() {
     const harness = createHarness();
     const { document, posted } = harness;
@@ -906,6 +973,8 @@ runInitialActionAvailabilityTests();
 runDocumentStateLabelTests();
 runNavigationAndConcurrencyTests();
 runStaleFullStateGenerationTests();
+runActiveActionAcknowledgmentTests();
+runTerminalActionAcknowledgmentTests();
 runCompactInterruptTests();
 runNavigationMutationPendingTests();
 runSummaryKeyboardAndDiagnosticTests();

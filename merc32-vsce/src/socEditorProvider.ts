@@ -413,6 +413,9 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             this.vscodeApi.workspace.onDidChangeTextDocument((event) => {
                 if (sameUri(event.document.uri, document.uri)) void session.documentChanged();
             }),
+            this.vscodeApi.workspace.onDidSaveTextDocument((savedDocument) => {
+                if (sameUri(savedDocument.uri, document.uri)) void session.presentationChanged();
+            }),
             panel.webview.onDidReceiveMessage((value: unknown) => {
                 const message = parseWebviewMessage(value);
                 if (message) void session.receive(message);
