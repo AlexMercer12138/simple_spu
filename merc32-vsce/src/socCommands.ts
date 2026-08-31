@@ -21,11 +21,11 @@ import {
     SocDiagnostic,
     SocGenerationError,
 } from './soc';
-import type { SocGenerationState } from './socWebviewProtocol';
+import type { SocActionProgress } from './socWebviewProtocol';
 
 type VscodeApi = typeof import('vscode');
 type GenerationMode = 'normal' | 'force' | 'adopt';
-type GenerationStatusReporter = (status: SocGenerationState) => void | PromiseLike<void>;
+type GenerationStatusReporter = (status: SocActionProgress) => void | PromiseLike<void>;
 
 interface ConfirmedGenerationSnapshot {
     readonly configUri: string;

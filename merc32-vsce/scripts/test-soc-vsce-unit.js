@@ -353,8 +353,11 @@ assert.deepStrictEqual(parseWebviewMessage({
     type: 'setValue', documentVersion: 7, path: ['peripherals', 0, 'name'], value: 'uart0',
 }), { type: 'setValue', documentVersion: 7, path: ['peripherals', 0, 'name'], value: 'uart0' });
 assert.deepStrictEqual(parseWebviewMessage({
-    type: 'select', documentVersion: 7, path: ['peripherals', 0],
-}), { type: 'select', documentVersion: 7, path: ['peripherals', 0] });
+    type: 'select', path: ['memory', 'ilb'],
+}), { type: 'select', path: ['memory', 'ilb'] });
+assert.strictEqual(parseWebviewMessage({
+    type: 'select', documentVersion: 8, path: ['cpu'],
+}), undefined, 'selection still accepts a stale-version field');
 assert.deepStrictEqual(parseWebviewMessage({
     type: 'unsetValue', documentVersion: 7, path: ['peripherals', 0, 'baseAddress'],
 }), { type: 'unsetValue', documentVersion: 7, path: ['peripherals', 0, 'baseAddress'] });
@@ -367,8 +370,6 @@ const invalidMessages = [
     inheritedType,
     inheritedPath,
     { type: 'select', path: 'cpu.debug' },
-    { type: 'select', path: ['cpu'] },
-    { type: 'select', documentVersion: 0, path: ['cpu'] },
     { type: 'select', path: ['cpu', {}] },
     { type: 'select', path: ['__proto__'] },
     { type: 'select', path: ['prototype'] },
@@ -457,6 +458,7 @@ const currentSetValue = parseWebviewMessage({
 assert.ok(currentSetValue);
 assert.strictEqual(isCurrentDocumentMessage(currentSetValue, 8), true);
 assert.strictEqual(isCurrentDocumentMessage(currentSetValue, 9), false);
+assert.strictEqual(isCurrentDocumentMessage({ type: 'select', path: ['cpu'] }, 99), true);
 assert.strictEqual(isCurrentDocumentMessage({ type: 'validate' }, 9), true);
 
 function applyReplacement(source, replacement) {
@@ -699,8 +701,30 @@ assert.ok(multiView.dependencyRows.some((row) => row.kind === 'module'
     && row.name === 'apb_uart'));
 assert.ok(multiView.dependencyRows.some((row) => row.kind === 'rtl'
     && /packaged files$/.test(row.detail)));
+assert.strictEqual(multiView.documentState, 'saved');
 
-const activeGeneration = { phase: 'generating', message: 'Generating SoC...' };
+const dirtyView = buildSocEditorViewModel(
+    multiText, multiFixture, 12, catalog, ['interrupt'],
+    { actionId: 0, phase: 'idle', message: 'Idle.' },
+    true,
+);
+assert.strictEqual(dirtyView.documentState, 'dirty');
+assert.deepStrictEqual(dirtyView.interruptOptions.controllers, ['intc0']);
+assert.ok(dirtyView.interruptOptions.directSources.includes('intc0.interrupt'));
+assert.ok(dirtyView.interruptOptions.routedSources.includes('uart0.interrupt'));
+assert.ok(!dirtyView.interruptOptions.routedSources.includes('intc0.interrupt'));
+
+const brokenView = buildSocEditorViewModel(
+    '{"cpu":', 'broken.merc32.json', 3, catalog, ['cpu'], undefined, false,
+);
+assert.strictEqual(brokenView.documentState, 'readOnly');
+
+const activeGeneration = {
+    actionId: 3,
+    action: 'generate',
+    phase: 'generating',
+    message: 'Running generator...',
+};
 const activeGenerationView = buildSocEditorViewModel(
     multiText,
     multiFixture,

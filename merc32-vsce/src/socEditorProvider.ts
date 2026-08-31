@@ -23,8 +23,10 @@ import {
     JsonValue,
     parseWebviewMessage,
     SocCatalogItemPresentation,
+    SocEditorActionType,
     SocEditorViewModel,
     SocGenerationState,
+    SocInterruptOptionsPresentation,
     SocJsonPath,
     WebviewToHostMessage,
 } from './socWebviewProtocol';
@@ -34,11 +36,12 @@ type WebviewForHtml = Pick<vscode.Webview, 'asWebviewUri' | 'cspSource'>;
 type UriForHtml = Pick<vscode.Uri, 'path' | 'with'>;
 
 const IDLE_GENERATION: SocGenerationState = {
+    actionId: 0,
     phase: 'idle',
     message: 'No generation run in this editor session.',
 };
 
-type SocEditorCommandType = 'autoAssign' | 'validate' | 'generate';
+type SocEditorCommandType = SocEditorActionType;
 
 /** Task 4 commands return false only when the requested action did not complete. */
 export type SocEditorCommandOutcome = boolean | void;
@@ -51,21 +54,21 @@ const SOC_EDITOR_COMMAND_STATUS: Readonly<Record<SocEditorCommandType, {
 }>> = {
     autoAssign: {
         command: SOC_COMMANDS.autoAssign,
-        start: { phase: 'working', message: 'Assigning addresses...' },
-        success: { phase: 'success', message: 'Address assignment completed.' },
-        failure: { phase: 'error', message: 'Address assignment failed.' },
+        start: { actionId: 0, action: 'autoAssign', phase: 'working', message: 'Assigning addresses...' },
+        success: { actionId: 0, action: 'autoAssign', phase: 'success', message: 'Address assignment completed.' },
+        failure: { actionId: 0, action: 'autoAssign', phase: 'error', message: 'Address assignment failed.' },
     },
     validate: {
         command: SOC_COMMANDS.validate,
-        start: { phase: 'validating', message: 'Validating configuration...' },
-        success: { phase: 'success', message: 'Validation completed.' },
-        failure: { phase: 'error', message: 'Validation failed.' },
+        start: { actionId: 0, action: 'validate', phase: 'validating', message: 'Validating configuration...' },
+        success: { actionId: 0, action: 'validate', phase: 'success', message: 'Validation completed.' },
+        failure: { actionId: 0, action: 'validate', phase: 'error', message: 'Validation failed.' },
     },
     generate: {
         command: SOC_COMMANDS.generate,
-        start: { phase: 'generating', message: 'Generating SoC...' },
-        success: { phase: 'generated', message: 'SoC generation completed.' },
-        failure: { phase: 'error', message: 'SoC generation failed.' },
+        start: { actionId: 0, action: 'generate', phase: 'generating', message: 'Generating SoC...' },
+        success: { actionId: 0, action: 'generate', phase: 'generated', message: 'SoC generation completed.' },
+        failure: { actionId: 0, action: 'generate', phase: 'error', message: 'SoC generation failed.' },
     },
 };
 
@@ -167,6 +170,7 @@ export function buildSocEditorViewModel(
     catalog: ModuleCatalog,
     selectedPath?: SocJsonPath,
     generation: SocGenerationState = IDLE_GENERATION,
+    isDirty = false,
 ): SocEditorViewModel {
     const parsed = parseSocConfig(source, sourceFile, catalog);
     const catalogPresentation = presentCatalog(catalog);
@@ -177,6 +181,7 @@ export function buildSocEditorViewModel(
     if (!parsed.config) {
         return {
             documentVersion,
+            documentState: 'readOnly',
             readOnly: true,
             catalog: catalogPresentation,
             diagnostics: presentDiagnostics(source, sourceFile, parsed.diagnostics, parsed.sourceMap),
@@ -185,6 +190,7 @@ export function buildSocEditorViewModel(
             interruptRows: [],
             portRows: [],
             dependencyRows: [],
+            interruptOptions: emptyInterruptOptions(),
             generation: { ...generation },
         };
     }
@@ -207,6 +213,7 @@ export function buildSocEditorViewModel(
 
     return {
         documentVersion,
+        documentState: isDirty ? 'dirty' : 'saved',
         config: cloneConfig(parsed.config),
         readOnly: false,
         catalog: catalogPresentation,
@@ -226,6 +233,7 @@ export function buildSocEditorViewModel(
         })) : [],
         portRows: plan ? plan.topPorts.map((port) => ({ ...port })) : [],
         dependencyRows: plan ? presentDependencies(parsed.config, catalog, plan.rtlFiles.length) : [],
+        interruptOptions: presentInterruptOptions(parsed.config, catalog),
         generation: { ...generation },
     };
 }
@@ -389,7 +397,7 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
         const postState = async (status?: string): Promise<void> => {
             if (!ready || disposed) return;
             if (status) {
-                actionStatus = { phase: 'error', message: status };
+                actionStatus = { actionId: 0, phase: 'error', message: status };
             }
             const state = buildSocEditorViewModel(
                 document.getText(),
@@ -398,6 +406,7 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
                 this.catalog,
                 selectedPath,
                 actionStatus,
+                document.isDirty,
             );
             selectedPath = state.selectedPath;
             lastPostedVersion = document.version;
@@ -408,6 +417,8 @@ export class Merc32SocEditorProvider implements vscode.CustomTextEditorProvider 
             if (!ready || disposed) return;
             await panel.webview.postMessage({
                 type: 'generationStatus',
+                actionId: status.actionId,
+                ...(status.action === undefined ? {} : { action: status.action }),
                 phase: status.phase,
                 message: status.message,
             } satisfies HostToWebviewMessage);
@@ -678,6 +689,32 @@ function presentCatalog(catalog: ModuleCatalog): SocEditorViewModel['catalog'] {
             parameters: [],
         }));
     return { modules, externalInterfaces };
+}
+
+function emptyInterruptOptions(): SocInterruptOptionsPresentation {
+    return { controllers: [], directSources: [], routedSources: [] };
+}
+
+function presentInterruptOptions(
+    config: SocSourceConfig,
+    catalog: ModuleCatalog,
+): SocInterruptOptionsPresentation {
+    const controllers = config.peripherals
+        .filter((item) => item.type === 'apb_intc')
+        .map((item) => item.name);
+    const sources = config.peripherals.flatMap((item) =>
+        (catalog.modules.get(item.type)?.interrupts ?? [])
+            .map((interrupt) => ({
+                source: `${item.name}.${interrupt}`,
+                controllerOutput: item.type === 'apb_intc',
+            })));
+    return {
+        controllers,
+        directSources: sources.map((item) => item.source),
+        routedSources: sources
+            .filter((item) => !item.controllerOutput)
+            .map((item) => item.source),
+    };
 }
 
 function presentDiagnostics(

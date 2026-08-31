@@ -67,14 +67,28 @@ export interface SocDependencyRow {
 export type SocGenerationPhase =
     | 'idle' | 'working' | 'validating' | 'generating' | 'success' | 'generated' | 'error';
 
+export type SocDocumentState = 'saved' | 'dirty' | 'readOnly';
+export type SocEditorActionType = 'autoAssign' | 'validate' | 'generate';
+
+export interface SocInterruptOptionsPresentation {
+    controllers: readonly string[];
+    directSources: readonly string[];
+    routedSources: readonly string[];
+}
+
 export interface SocGenerationState {
+    actionId: number;
+    action?: SocEditorActionType;
     phase: SocGenerationPhase;
     message: string;
 }
 
+export type SocActionProgress = Pick<SocGenerationState, 'phase' | 'message'>;
+
 /** Serializable editor data; packaged asset locations stay host-only. */
 export interface SocEditorViewModel {
     documentVersion: number;
+    documentState: SocDocumentState;
     config?: JsonObject;
     readOnly: boolean;
     catalog: SocCatalogPresentation;
@@ -84,16 +98,17 @@ export interface SocEditorViewModel {
     interruptRows: readonly SocInterruptRow[];
     portRows: readonly SocPortRow[];
     dependencyRows: readonly SocDependencyRow[];
+    interruptOptions: SocInterruptOptionsPresentation;
     generation: SocGenerationState;
 }
 
 export type HostToWebviewMessage =
     | { type: 'state'; value: SocEditorViewModel }
-    | { type: 'generationStatus'; phase: SocGenerationPhase; message: string };
+    | ({ type: 'generationStatus' } & SocGenerationState);
 
 export type WebviewToHostMessage =
     | { type: 'ready' }
-    | { type: 'select'; documentVersion: number; path: SocJsonPath }
+    | { type: 'select'; path: SocJsonPath }
     | { type: 'setValue'; documentVersion: number; path: SocJsonPath; value: JsonValue }
     | { type: 'unsetValue'; documentVersion: number; path: SocJsonPath }
     | {
@@ -246,10 +261,9 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         case 'reopenAsText':
             return hasOnlyOwnDataProperties(value, ['type']) ? { type: value.type } : undefined;
         case 'select':
-            return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path'])
-                && hasOwn(value, 'documentVersion') && isPositiveSafeInteger(value.documentVersion)
+            return hasOnlyOwnDataProperties(value, ['type', 'path'])
                 && hasOwn(value, 'path') && isPath(value.path)
-                ? { type: 'select', documentVersion: value.documentVersion, path: value.path }
+                ? { type: 'select', path: value.path }
                 : undefined;
         case 'unsetValue':
             return hasOnlyOwnDataProperties(value, ['type', 'documentVersion', 'path'])
