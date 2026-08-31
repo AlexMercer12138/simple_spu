@@ -740,15 +740,15 @@ initial begin
     if (!builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "builtin APB request decode failed");
     @(posedge clk);
     #1;
-    m_rden = 1'b0;
     m_addr = 32'h1000_1008;
     #1;
-    if (builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "request was forwarded more than once");
+    if (builtin_apb_rden || external_gap_rden || m_ack) $fatal(1, "competing request was forwarded while built-in APB was active");
 
     external_gap_ack = 1'b1;
     #1;
     if (m_ack) $fatal(1, "inactive target completed the active request");
     external_gap_ack = 1'b0;
+    m_rden = 1'b0;
 
     repeat (2) @(posedge clk);
     @(negedge clk);
