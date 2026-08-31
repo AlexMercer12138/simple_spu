@@ -42,6 +42,15 @@ function runVisualHarnessContractTests() {
     assert.ok(model.interruptRows.length > 0);
     assert.ok(model.portRows.length > 0);
     assert.ok(model.dependencyRows.length > 0);
+    assert.ok(model.dependencyRows.some((row) => row.name === 'flight_controller_plb_router.v'
+        && row.kind === 'generated/rtl'),
+    'visual fixture must show its generated PLB router dependency');
+    const removedDependencyNames = [
+        ['apb4', 'interconnect.v'].join('_'),
+        ['sync', 'fifo.v'].join('_'),
+    ];
+    assert.ok(!model.dependencyRows.some((row) => removedDependencyNames.includes(row.name)),
+    'visual fixture must not expose removed legacy helper dependencies');
 
     const html = visualEditorHtml();
     assert.ok(html.includes('href="/socEditor.css"'));
@@ -225,7 +234,7 @@ function createVisualModel() {
         dependencyRows: [
             { name: 'flight_controller.v', kind: 'generated/rtl', detail: 'SoC top level' },
             { name: 'core.v', kind: 'asset/rtl', detail: 'MERC32 CPU core' },
-            { name: 'apb4_interconnect.v', kind: 'generated/rtl', detail: 'Peripheral fabric' },
+            { name: 'flight_controller_plb_router.v', kind: 'generated/rtl', detail: 'PLB peripheral router' },
             { name: 'flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
         ],
         interruptOptions: {
