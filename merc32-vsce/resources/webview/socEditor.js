@@ -60,6 +60,7 @@
     let awaitingActionId = false;
     let pendingMutation = false;
     let latestActionId = -1;
+    let latestGeneration;
 
     document.querySelectorAll('[data-command]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -137,7 +138,7 @@
         renderProperties();
         renderSummary();
         renderAddressMap();
-        renderGeneration(model.generation);
+        renderGeneration(latestGeneration);
         restoreInteractionState(interactionState);
     }
 
@@ -572,6 +573,7 @@
 
     function acceptGeneration(generation) {
         if (!generation || generation.actionId < latestActionId) return;
+        latestGeneration = generation;
         if (awaitingActionId && generation.actionId === latestActionId) {
             renderGeneration(generation);
             renderActionControls();
@@ -626,12 +628,13 @@
         remove.type = 'button';
         remove.title = `Remove ${name}`;
         remove.setAttribute('aria-label', `Remove ${name}`);
-        remove.addEventListener('click', () => vscode.postMessage({
+        remove.addEventListener('click', () => postMutation({
             type: 'removeInstance',
             documentVersion: model.documentVersion,
             collection,
             index,
         }));
+        markMutationControl(remove);
         row.append(button, remove);
         return row;
     }
@@ -650,12 +653,13 @@
         add.type = 'button';
         add.title = collection === 'peripherals' ? 'Add peripheral' : 'Add external endpoint';
         add.setAttribute('aria-label', add.title);
-        add.addEventListener('click', () => vscode.postMessage({
+        add.addEventListener('click', () => postMutation({
             type: 'addInstance',
             documentVersion: model.documentVersion,
             collection,
             itemType: select.value,
         }));
+        markMutationControl(add);
         row.append(select, add);
         return row;
     }
@@ -692,8 +696,7 @@
     }
 
     function postSetValue(path, value) {
-        beginMutation();
-        vscode.postMessage({
+        postMutation({
             type: 'setValue',
             documentVersion: model.documentVersion,
             path,
@@ -702,12 +705,16 @@
     }
 
     function postUnsetValue(path) {
-        beginMutation();
-        vscode.postMessage({
+        postMutation({
             type: 'unsetValue',
             documentVersion: model.documentVersion,
             path,
         });
+    }
+
+    function postMutation(message) {
+        beginMutation();
+        vscode.postMessage(message);
     }
 
     function beginMutation() {
@@ -807,6 +814,7 @@
         return node;
     }
 
+    renderActionControls();
     vscode.postMessage({ type: 'ready' });
     return {};
     }

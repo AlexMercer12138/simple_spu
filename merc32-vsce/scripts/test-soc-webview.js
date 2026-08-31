@@ -90,7 +90,7 @@ function modelWithRoutes(count, interruptOverrides = {}) {
     };
 }
 
-function createHarness() {
+function createHarness(beforeStart) {
     const posted = [];
     const dom = new JSDOM(editorHtml(), {
         runScripts: 'outside-only',
@@ -101,6 +101,7 @@ function createHarness() {
             posted.push(JSON.parse(JSON.stringify(message)));
         },
     });
+    if (beforeStart) beforeStart(dom.window.document);
     dom.window.eval(scriptSource);
     const { document } = dom.window;
     return {
@@ -116,6 +117,41 @@ function createHarness() {
             node.click();
         },
     };
+}
+
+function runInitialActionAvailabilityTests() {
+    const rawDom = new JSDOM(editorHtml(), { runScripts: 'outside-only' });
+    const rawDocument = rawDom.window.document;
+    for (const command of ['autoAssign', 'validate', 'generate']) {
+        assert.strictEqual(commandButton(rawDocument, command).disabled, true);
+    }
+    assert.strictEqual(commandButton(rawDocument, 'reopenAsText').disabled, false);
+    rawDom.window.close();
+
+    const harness = createHarness((document) => {
+        document.querySelectorAll('[data-requires-config]').forEach((control) => {
+            control.disabled = false;
+        });
+    });
+    const { document, posted } = harness;
+    for (const command of ['autoAssign', 'validate', 'generate']) {
+        assert.strictEqual(commandButton(document, command).disabled, true);
+    }
+    commandButton(document, 'generate').click();
+    assert.deepStrictEqual(posted, [{ type: 'ready' }]);
+
+    const model = modelFixture();
+    harness.deliver({ type: 'state', value: model });
+    assert.strictEqual(commandButton(document, 'generate').disabled, false);
+    commandButton(document, 'generate').click();
+    assert.strictEqual(commandButton(document, 'generate').disabled, true);
+    harness.deliver({
+        type: 'state',
+        value: { ...model, documentVersion: 18 },
+    });
+    assert.strictEqual(commandButton(document, 'generate').disabled, true);
+
+    harness.dom.window.close();
 }
 
 function navButton(document, label) {
@@ -190,6 +226,65 @@ function runNavigationAndConcurrencyTests() {
     harness.dom.window.close();
 }
 
+function runStaleFullStateGenerationTests() {
+    const harness = createHarness();
+    const { document } = harness;
+    const model = modelFixture();
+    harness.deliver({ type: 'state', value: model });
+    harness.deliver({
+        type: 'generationStatus',
+        actionId: 5,
+        action: 'generate',
+        phase: 'generating',
+        message: 'Latest generator status.',
+    });
+
+    harness.deliver({
+        type: 'state',
+        value: {
+            ...model,
+            documentVersion: 18,
+            config: {
+                ...model.config,
+                project: { ...model.config.project, name: 'refreshed_project' },
+            },
+            generation: {
+                actionId: 4,
+                action: 'generate',
+                phase: 'error',
+                message: 'Stale full-state failure.',
+            },
+        },
+    });
+    assert.strictEqual(document.getElementById('project-title').textContent, 'refreshed_project');
+    assert.strictEqual(document.getElementById('generation-status').dataset.phase, 'generating');
+    assert.match(document.getElementById('generation-status').textContent,
+        /Latest generator status/);
+    assert.doesNotMatch(document.getElementById('generation-status').textContent,
+        /Stale full-state failure/);
+    assert.strictEqual(commandButton(document, 'generate').disabled, true);
+
+    harness.deliver({
+        type: 'state',
+        value: {
+            ...model,
+            documentVersion: 19,
+            generation: {
+                actionId: 5,
+                action: 'generate',
+                phase: 'generated',
+                message: 'Latest generation completed.',
+            },
+        },
+    });
+    assert.strictEqual(document.getElementById('generation-status').dataset.phase, 'generated');
+    assert.match(document.getElementById('generation-status').textContent,
+        /Latest generation completed/);
+    assert.strictEqual(commandButton(document, 'generate').disabled, false);
+
+    harness.dom.window.close();
+}
+
 function runCompactInterruptTests() {
     const harness = createHarness();
     const { document, posted } = harness;
@@ -231,6 +326,52 @@ function runCompactInterruptTests() {
             .map((option) => option.value),
         ['intc0.irq', 'uart0.irq'],
     );
+
+    harness.dom.window.close();
+}
+
+function runNavigationMutationPendingTests() {
+    const harness = createHarness();
+    const { document, posted } = harness;
+    const model = modelWithRoutes(1);
+    harness.deliver({ type: 'state', value: model });
+
+    posted.length = 0;
+    let addPeripheral = document.querySelector('[aria-label="Add peripheral"]');
+    let removeRoute = document.querySelector('[aria-label="Remove route 1"]');
+    addPeripheral.click();
+    assert.deepStrictEqual(posted.at(-1), {
+        type: 'addInstance',
+        documentVersion: 17,
+        collection: 'peripherals',
+        itemType: 'apb_intc',
+    });
+    assert.strictEqual(addPeripheral.disabled, true);
+    assert.strictEqual(removeRoute.disabled, true);
+    const afterAdd = posted.length;
+    addPeripheral.click();
+    removeRoute.click();
+    assert.strictEqual(posted.length, afterAdd);
+
+    harness.deliver({ type: 'state', value: model });
+    posted.length = 0;
+    const removeUart = document.querySelector('[aria-label="Remove uart0"]');
+    removeRoute = document.querySelector('[aria-label="Remove route 1"]');
+    addPeripheral = document.querySelector('[aria-label="Add peripheral"]');
+    removeUart.click();
+    assert.deepStrictEqual(posted.at(-1), {
+        type: 'removeInstance',
+        documentVersion: 17,
+        collection: 'peripherals',
+        index: 1,
+    });
+    assert.strictEqual(removeUart.disabled, true);
+    assert.strictEqual(addPeripheral.disabled, true);
+    assert.strictEqual(removeRoute.disabled, true);
+    const afterRemove = posted.length;
+    removeUart.click();
+    removeRoute.click();
+    assert.strictEqual(posted.length, afterRemove);
 
     harness.dom.window.close();
 }
@@ -405,8 +546,11 @@ function runInteractionRestorationTests() {
     harness.dom.window.close();
 }
 
+runInitialActionAvailabilityTests();
 runNavigationAndConcurrencyTests();
+runStaleFullStateGenerationTests();
 runCompactInterruptTests();
+runNavigationMutationPendingTests();
 runSummaryKeyboardAndDiagnosticTests();
 runInteractionRestorationTests();
 console.log('MERC32 SoC Webview interaction contracts passed.');

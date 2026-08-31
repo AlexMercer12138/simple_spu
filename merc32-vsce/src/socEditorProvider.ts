@@ -102,13 +102,13 @@ export function renderEditorHtml(
                 </div>
             </div>
             <div class="toolbar-actions" role="toolbar" aria-label="SoC actions">
-                <button type="button" data-command="autoAssign" data-requires-config title="Auto-assign addresses">
+                <button type="button" data-command="autoAssign" data-requires-config title="Auto-assign addresses" disabled>
                     Auto-assign
                 </button>
-                <button type="button" data-command="validate" data-requires-config title="Validate configuration">
+                <button type="button" data-command="validate" data-requires-config title="Validate configuration" disabled>
                     Validate
                 </button>
-                <button type="button" class="primary" data-command="generate" data-requires-config title="Generate SoC">
+                <button type="button" class="primary" data-command="generate" data-requires-config title="Generate SoC" disabled>
                     Generate
                 </button>
                 <button type="button" id="reopen-text" data-command="reopenAsText" title="Reopen as text">
