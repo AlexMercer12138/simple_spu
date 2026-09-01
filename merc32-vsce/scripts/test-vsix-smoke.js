@@ -768,6 +768,7 @@ function assertRuntimeDependencies(audit, extensionRoot) {
 
 function assertArchiveExclusions(audit) {
     const forbiddenPrefixes = [
+        'extension/.test-results/',
         'extension/src/',
         'extension/scripts/',
         'extension/rtl/',

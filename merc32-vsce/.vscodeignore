@@ -5,6 +5,7 @@ scripts/**
 **/tests/**
 **/fixtures/**
 .vscode-test/**
+.test-results/**
 .git/**
 rtl/**
 
