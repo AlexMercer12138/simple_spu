@@ -2,7 +2,7 @@
   "name": "merc32-vsce",
   "displayName": "MERC32 Toolchain",
   "description": "VS Code toolchain for MERC32 assembly and Tiny C",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "publisher": "Vikai-mercer",
   "icon": "images/icon.png",
   "repository": "https://github.com/AlexMercer12138/MERC32",
