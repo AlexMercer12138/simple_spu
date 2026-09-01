@@ -190,14 +190,20 @@ suite('MERC32 SoC configurator extension host', () => {
                 [comparablePath(outputA), comparablePath(outputB)].sort(),
             );
             for (const group of initialGroups) {
-                assert.ok(group.artifacts.some((item) => item.relativePath === 'manifest.json'));
-                assert.ok(group.artifacts.some((item) => item.relativePath?.startsWith('rtl/')));
+                assert.deepStrictEqual(group.artifacts.map((item) => item.relativePath), [
+                    undefined,
+                    'manifest.json',
+                    'README.md',
+                    `hardware/${path.basename(group.outputUri.fsPath) === 'host-a' ? 'host_a' : 'host_b'}.v`,
+                    `software/${path.basename(group.outputUri.fsPath) === 'host-a' ? 'host_a' : 'host_b'}.h`,
+                    'software/main.c',
+                ]);
             }
             const persisted = memento.get<unknown[]>(SOC_ARTIFACT_STATE_KEY, []);
             assert.strictEqual(persisted.length, 2);
 
-            const mainFile = path.join(outputA, 'software', 'src', 'main.c');
-            const managedTop = path.join(outputA, 'rtl', 'host_a.v');
+            const mainFile = path.join(outputA, 'software', 'main.c');
+            const managedTop = path.join(outputA, 'hardware', 'host_a.v');
             const originalTop = fs.readFileSync(managedTop);
             const userMain = Buffer.from('/* exact user program */\nint main(void) { return 7; }\n', 'utf8');
             fs.writeFileSync(mainFile, userMain);

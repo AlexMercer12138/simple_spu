@@ -7,7 +7,8 @@ import {
     SOC_EDITOR_VIEW_TYPE,
     SOC_HOST_COMMANDS,
 } from './constants';
-import { assertNoCaseInsensitivePathCollisions, normalizeGeneratedPath } from './soc/fileManager';
+import { parseSocManifest } from './soc';
+import type { SocManifest } from './soc';
 import type { GeneratedSocArtifactRecord } from './socCommands';
 import type { ToolchainArtifact } from './types';
 
@@ -252,19 +253,12 @@ export class SocActionProvider implements vscode.TreeDataProvider<ActionTreeNode
     }
 }
 
-interface ManifestFileRecord {
-    kind: string;
-    logicalSource: string;
-    path: string;
-    sha256?: string;
-}
-
 interface ArtifactManifestBinding {
     paths: readonly string[];
     sourceConfig: string;
 }
 
-/** Selects the three user-facing files only from a structurally valid version-1 manifest. */
+/** Selects compact artifacts only from a structurally valid version-2 manifest. */
 export function artifactPathsFromManifest(value: unknown): string[] | undefined {
     const binding = artifactManifestBinding(value);
     return binding ? [...binding.paths] : undefined;
@@ -619,131 +613,35 @@ async function filterAsync<T>(
     return values.filter((_value, index) => keep[index]);
 }
 
-function isSafeArtifactPath(value: unknown): value is string {
-    if (typeof value !== 'string' || value.length === 0 || value.includes('\\')
-        || value.startsWith('/') || /^[A-Za-z]:/.test(value) || value.includes('://')) {
-        return false;
-    }
-    return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
-
 function artifactManifestBinding(value: unknown): ArtifactManifestBinding | undefined {
-    if (!isObject(value)
-        || value.manifestVersion !== 1
-        || !isObject(value.manifestFile)
-        || value.manifestFile.hashPolicy !== 'excluded-self'
-        || value.manifestFile.kind !== 'control/manifest'
-        || value.manifestFile.path !== 'manifest.json'
-        || typeof value.projectName !== 'string'
-        || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.projectName)
-        || typeof value.sourceConfig !== 'string'
-        || value.sourceConfig.length === 0
-        || value.sourceConfig.includes('\0')
-        || typeof value.generatorVersion !== 'string'
-        || typeof value.resourceRevision !== 'string'
-        || !Array.isArray(value.files)) {
-        return undefined;
-    }
-    let files: ManifestFileRecord[];
+    let manifest: SocManifest;
     try {
-        files = value.files.map((item) => validateManifestFileRecord(item, value.projectName as string));
-        assertNoCaseInsensitivePathCollisions(files.map((item) => item.path));
+        manifest = parseSocManifest(value);
     } catch {
         return undefined;
     }
-    if (files.filter((item) => item.kind === 'scaffold/user-owned').length !== 1) {
-        return undefined;
-    }
-    const expected = [
-        {
-            kind: 'generated/rtl',
-            logicalSource: 'generator:renderSocTop',
-            path: `rtl/${value.projectName}.v`,
-        },
-        {
-            kind: 'generated/software-header',
-            logicalSource: 'generator:renderSocHeader',
-            path: `software/include/${value.projectName}.h`,
-        },
-        {
-            kind: 'generated/address-map',
-            logicalSource: 'generator:renderAddressMap',
-            path: 'address-map.json',
-        },
-    ] as const;
-    for (const required of expected) {
-        const matches = files.filter((item) => item.logicalSource === required.logicalSource);
-        if (matches.length !== 1
-            || matches[0].kind !== required.kind
-            || matches[0].path !== required.path
-            || !isSafeArtifactPath(matches[0].path)) {
-            return undefined;
-        }
-    }
     return {
-        paths: expected.map((item) => item.path),
-        sourceConfig: value.sourceConfig,
+        paths: compactArtifactPaths(manifest),
+        sourceConfig: manifest.sourceConfig,
     };
 }
 
-function validateManifestFileRecord(value: unknown, projectName: string): ManifestFileRecord {
-    if (!isObject(value) || typeof value.path !== 'string'
-        || typeof value.kind !== 'string' || typeof value.logicalSource !== 'string') {
-        throw new Error('Invalid manifest file record.');
-    }
-    const recordPath = normalizeGeneratedPath(value.path);
-    if (value.kind === 'scaffold/user-owned') {
-        if (recordPath !== 'software/src/main.c' || value.sha256 !== undefined
-            || value.logicalSource !== 'templates/main.c.tpl') {
-            throw new Error('Invalid user-owned manifest record.');
-        }
-        return {
-            kind: value.kind,
-            logicalSource: value.logicalSource,
-            path: recordPath,
-        };
-    }
-    if (recordPath === 'software/src/main.c' || recordPath === 'manifest.json'
-        || typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)
-        || !isAllowedManifestRecord(value.kind, value.logicalSource, recordPath, projectName)) {
-        throw new Error('Invalid managed manifest record.');
-    }
-    return {
-        kind: value.kind,
-        logicalSource: value.logicalSource,
-        path: recordPath,
-        sha256: value.sha256,
-    };
-}
-
-function isAllowedManifestRecord(
-    kind: string,
-    logicalSource: string,
-    recordPath: string,
-    projectName: string,
-): boolean {
-    if (kind === 'asset/rtl') {
-        return recordPath.startsWith('rtl/') && logicalSource === recordPath;
-    }
-    const exact = new Map<string, readonly [string, string]>([
-        [`rtl/${projectName}.v`, ['generated/rtl', 'generator:renderSocTop']],
-        [`rtl/generated/${projectName}_plb_router.v`, ['generated/rtl', 'generator:renderPlbRouter']],
-        [`rtl/generated/${projectName}_apb_interconnect.v`, ['generated/rtl', 'generator:renderApbInterconnect']],
-        ['rtl/files.f', ['generated/rtl-file-list', 'generator:rtlFiles']],
-        [`software/include/${projectName}.h`, ['generated/software-header', 'generator:renderSocHeader']],
-        [`config/${projectName}.resolved.json`, ['generated/config', 'generator:renderResolvedConfig']],
-        ['address-map.json', ['generated/address-map', 'generator:renderAddressMap']],
-        ['README.md', ['generated/documentation', 'templates/README.md.tpl']],
-        ['LICENSE', ['asset/license', 'licenses/LICENSE']],
-    ]);
-    const expected = exact.get(recordPath);
-    if (expected !== undefined) {
-        return kind === expected[0] && logicalSource === expected[1];
-    }
-    const memory = /^memory\/(ilb|dlb)_([^/]+)$/.exec(recordPath);
-    return memory !== null && memory[2] !== '.' && memory[2] !== '..'
-        && kind === 'source/memory-init'
-        && logicalSource === `config:memory.${memory[1]}.initFile`;
+function compactArtifactPaths(manifest: SocManifest): string[] {
+    const mandatory = [
+        'README.md',
+        `hardware/${manifest.projectName}.v`,
+        `software/${manifest.projectName}.h`,
+        'software/main.c',
+    ];
+    const firmware = manifest.files
+        .filter((record) => record.kind === 'source/firmware')
+        .map((record) => record.path)
+        .sort((left, right) => {
+            const leftSlot = left.startsWith('firmware/ilb_') ? 0 : 1;
+            const rightSlot = right.startsWith('firmware/ilb_') ? 0 : 1;
+            return leftSlot - rightSlot || compareText(left, right);
+        });
+    return [...mandatory, ...firmware];
 }
 
 function sameConfigIdentity(sourceConfig: string, configUri: vscode.Uri): boolean {

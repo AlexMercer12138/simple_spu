@@ -185,7 +185,7 @@ assert.deepStrictEqual(SOC_ACTION_MODELS.map((item) => [item.label, item.command
 const manifestHash = '0'.repeat(64);
 const artifactManifest = {
     generatorVersion: '2.0.0',
-    manifestVersion: 1,
+    manifestVersion: 2,
     manifestFile: {
         hashPolicy: 'excluded-self',
         kind: 'control/manifest',
@@ -196,53 +196,54 @@ const artifactManifest = {
     sourceConfig: 'C:/workspace/configs/demo.merc32.json',
     files: [
         {
-            kind: 'generated/rtl',
-            logicalSource: 'generator:renderPlbRouter',
-            path: 'rtl/generated/demo_plb_router.v',
+            kind: 'generated/documentation',
+            logicalSource: 'templates/README.md.tpl',
+            path: 'README.md',
             sha256: manifestHash,
         },
         {
-            kind: 'asset/rtl',
-            logicalSource: 'rtl/cpu/core.v',
-            path: 'rtl/cpu/core.v',
+            kind: 'generated/rtl-bundle',
+            logicalSource: 'generator:renderRtlBundle',
+            path: 'hardware/demo.v',
             sha256: manifestHash,
         },
         {
-            kind: 'generated/config',
-            logicalSource: 'generator:renderResolvedConfig',
-            path: 'config/demo.resolved.json',
+            kind: 'generated/software-header',
+            logicalSource: 'generator:renderSocHeader',
+            path: 'software/demo.h',
             sha256: manifestHash,
         },
         {
             kind: 'scaffold/user-owned',
             logicalSource: 'templates/main.c.tpl',
-            path: 'software/src/main.c',
+            path: 'software/main.c',
         },
         {
-            kind: 'generated/software-header',
-            logicalSource: 'generator:renderSocHeader',
-            path: 'software/include/demo.h',
+            kind: 'source/firmware',
+            logicalSource: 'config:memory.ilb.initFile',
+            path: 'firmware/ilb_boot.mem',
             sha256: manifestHash,
         },
         {
-            kind: 'generated/address-map',
-            logicalSource: 'generator:renderAddressMap',
-            path: 'address-map.json',
-            sha256: manifestHash,
-        },
-        {
-            kind: 'generated/rtl',
-            logicalSource: 'generator:renderSocTop',
-            path: 'rtl/demo.v',
+            kind: 'source/firmware',
+            logicalSource: 'config:memory.dlb.initFile',
+            path: 'firmware/dlb_data.bin',
             sha256: manifestHash,
         },
     ],
 };
 assert.deepStrictEqual(artifactPathsFromManifest(artifactManifest), [
-    'rtl/demo.v',
-    'software/include/demo.h',
-    'address-map.json',
-], 'manifest artifact selection did not return the exact safe generated children');
+    'README.md',
+    'hardware/demo.v',
+    'software/demo.h',
+    'software/main.c',
+    'firmware/ilb_boot.mem',
+    'firmware/dlb_data.bin',
+], 'manifest artifact selection did not return the exact safe compact children');
+assert.strictEqual(artifactPathsFromManifest({
+    ...artifactManifest,
+    manifestVersion: 1,
+}), undefined, 'manifest v1 unexpectedly restored legacy artifacts');
 for (const [name, manifest] of [
     ['missing files', { ...artifactManifest, files: undefined }],
     ['wrong files shape', { ...artifactManifest, files: {} }],
@@ -254,28 +255,28 @@ for (const [name, manifest] of [
         ...artifactManifest,
         manifestFile: { ...artifactManifest.manifestFile, path: '../manifest.json' },
     }],
-    ['traversing top path', {
+    ['traversing bundle path', {
         ...artifactManifest,
-        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderSocTop'
+        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderRtlBundle'
             ? { ...item, path: '../demo.v' }
             : item),
     }],
-    ['wrong address-map kind', {
+    ['forged bundle kind', {
         ...artifactManifest,
-        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderAddressMap'
+        files: artifactManifest.files.map((item) => item.logicalSource === 'generator:renderRtlBundle'
             ? { ...item, kind: 'generated/rtl' }
             : item),
     }],
     ['unsafe sibling traversal', {
         ...artifactManifest,
         files: [...artifactManifest.files, {
-            kind: 'asset/rtl', logicalSource: '../outside.v', path: '../outside.v', sha256: manifestHash,
+            kind: 'source/firmware', logicalSource: 'config:memory.ilb.initFile', path: '../outside.v', sha256: manifestHash,
         }],
     }],
     ['absolute sibling path', {
         ...artifactManifest,
         files: [...artifactManifest.files, {
-            kind: 'asset/rtl', logicalSource: 'C:/outside.v', path: 'C:/outside.v', sha256: manifestHash,
+            kind: 'source/firmware', logicalSource: 'config:memory.ilb.initFile', path: 'C:/outside.v', sha256: manifestHash,
         }],
     }],
     ['null sibling', { ...artifactManifest, files: [...artifactManifest.files, null] }],
@@ -288,13 +289,13 @@ for (const [name, manifest] of [
     ['case-insensitive sibling collision', {
         ...artifactManifest,
         files: [...artifactManifest.files, {
-            kind: 'asset/rtl', logicalSource: 'RTL/CPU/CORE.V', path: 'RTL/CPU/CORE.V', sha256: manifestHash,
+            kind: 'source/firmware', logicalSource: 'config:memory.ilb.initFile', path: 'FIRMWARE/ILB_BOOT.MEM', sha256: manifestHash,
         }],
     }],
     ['malformed sibling path', {
         ...artifactManifest,
         files: [...artifactManifest.files, {
-            kind: 'asset/rtl', logicalSource: 'rtl//outside.v', path: 'rtl//outside.v', sha256: manifestHash,
+            kind: 'source/firmware', logicalSource: 'config:memory.ilb.initFile', path: 'firmware//outside.v', sha256: manifestHash,
         }],
     }],
     ['forged sibling role', {
@@ -306,12 +307,12 @@ for (const [name, manifest] of [
     ['forged sibling kind', {
         ...artifactManifest,
         files: [...artifactManifest.files, {
-            kind: 'asset/rtl', logicalSource: 'templates/README.md.tpl', path: 'README.md', sha256: manifestHash,
+            kind: 'generated/rtl-bundle', logicalSource: 'templates/README.md.tpl', path: 'README.md', sha256: manifestHash,
         }],
     }],
     ['invalid managed hash', {
         ...artifactManifest,
-        files: artifactManifest.files.map((item) => item.path === 'rtl/cpu/core.v'
+        files: artifactManifest.files.map((item) => item.path === 'hardware/demo.v'
             ? { ...item, sha256: 'not-a-sha256' }
             : item),
     }],
@@ -320,6 +321,32 @@ for (const [name, manifest] of [
         files: artifactManifest.files.map((item) => item.kind === 'scaffold/user-owned'
             ? { ...item, sha256: manifestHash }
             : item),
+    }],
+    ['main hash', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.path === 'software/main.c'
+            ? { ...item, sha256: manifestHash }
+            : item),
+    }],
+    ['firmware slot mismatch', {
+        ...artifactManifest,
+        files: artifactManifest.files.map((item) => item.path === 'firmware/ilb_boot.mem'
+            ? { ...item, logicalSource: 'config:memory.dlb.initFile' }
+            : item),
+    }],
+    ['duplicate same-slot firmware', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'source/firmware', logicalSource: 'config:memory.ilb.initFile',
+            path: 'firmware/ilb_second.mem', sha256: manifestHash,
+        }],
+    }],
+    ['extra unlisted record', {
+        ...artifactManifest,
+        files: [...artifactManifest.files, {
+            kind: 'generated/config', logicalSource: 'generator:renderResolvedConfig',
+            path: 'config/demo.resolved.json', sha256: manifestHash,
+        }],
     }],
 ]) {
     assert.strictEqual(artifactPathsFromManifest(manifest), undefined,
@@ -1194,6 +1221,7 @@ try {
     const invalidManifestKinds = [
         'invalid-json',
         'read-failure',
+        'legacy-v1',
         'missing-shape',
         'wrong-shape',
         'path-traversal',
@@ -1225,27 +1253,39 @@ try {
     const validLiveManifest = {
         files: [
             {
-                kind: 'generated/rtl',
-                logicalSource: 'generator:renderSocTop',
-                path: 'rtl/live.v',
+                kind: 'generated/documentation',
+                logicalSource: 'templates/README.md.tpl',
+                path: 'README.md',
                 sha256: '1'.repeat(64),
+            },
+            {
+                kind: 'generated/rtl-bundle',
+                logicalSource: 'generator:renderRtlBundle',
+                path: 'hardware/live.v',
+                sha256: '2'.repeat(64),
             },
             {
                 kind: 'generated/software-header',
                 logicalSource: 'generator:renderSocHeader',
-                path: 'software/include/live.h',
-                sha256: '2'.repeat(64),
-            },
-            {
-                kind: 'generated/address-map',
-                logicalSource: 'generator:renderAddressMap',
-                path: 'address-map.json',
+                path: 'software/live.h',
                 sha256: '3'.repeat(64),
             },
             {
                 kind: 'scaffold/user-owned',
                 logicalSource: 'templates/main.c.tpl',
-                path: 'software/src/main.c',
+                path: 'software/main.c',
+            },
+            {
+                kind: 'source/firmware',
+                logicalSource: 'config:memory.ilb.initFile',
+                path: 'firmware/ilb_boot.mem',
+                sha256: '4'.repeat(64),
+            },
+            {
+                kind: 'source/firmware',
+                logicalSource: 'config:memory.dlb.initFile',
+                path: 'firmware/dlb_data.bin',
+                sha256: '5'.repeat(64),
             },
         ],
         generatorVersion: '2.0.0',
@@ -1254,7 +1294,7 @@ try {
             kind: 'control/manifest',
             path: 'manifest.json',
         },
-        manifestVersion: 1,
+        manifestVersion: 2,
         projectName: 'live',
         resourceRevision: 'test-resource-revision',
         sourceConfig: 'C:/workspace/configs/live.merc32.json',
@@ -1270,6 +1310,12 @@ try {
             manifestPayloads.set(manifestUri, Buffer.from('{'));
         } else if (name === 'read-failure') {
             manifestPayloads.set(manifestUri, new Error('manifest read failed'));
+        } else if (name === 'legacy-v1') {
+            manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                manifestVersion: 1,
+                sourceConfig,
+            })));
         } else if (name === 'missing-shape') {
             const { files: _files, ...withoutFiles } = validLiveManifest;
             manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
@@ -1285,7 +1331,7 @@ try {
         } else if (name === 'path-traversal') {
             manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
                 ...validLiveManifest,
-                files: validLiveManifest.files.map((item) => item.logicalSource === 'generator:renderSocTop'
+                files: validLiveManifest.files.map((item) => item.logicalSource === 'generator:renderRtlBundle'
                     ? { ...item, path: '../live.v' }
                     : item),
                 sourceConfig,
@@ -1294,8 +1340,8 @@ try {
             manifestPayloads.set(manifestUri, Buffer.from(JSON.stringify({
                 ...validLiveManifest,
                 files: [...validLiveManifest.files, {
-                    kind: 'asset/rtl',
-                    logicalSource: '../outside.v',
+                    kind: 'source/firmware',
+                    logicalSource: 'config:memory.ilb.initFile',
                     path: '../outside.v',
                     sha256: '4'.repeat(64),
                 }],
@@ -1312,8 +1358,11 @@ try {
         [compilerArtifactUri.toString(), 1],
         [liveOutputUri.toString(), 2],
         [joinTestUri(liveOutputUri, 'manifest.json').toString(), 1],
-        [joinTestUri(liveOutputUri, 'rtl/live.v').toString(), 1],
-        [joinTestUri(liveOutputUri, 'address-map.json').toString(), 1],
+        [joinTestUri(liveOutputUri, 'README.md').toString(), 1],
+        [joinTestUri(liveOutputUri, 'hardware/live.v').toString(), 1],
+        [joinTestUri(liveOutputUri, 'software/live.h').toString(), 1],
+        [joinTestUri(liveOutputUri, 'software/main.c').toString(), 1],
+        [joinTestUri(liveOutputUri, 'firmware/ilb_boot.mem').toString(), 1],
     ]);
     for (const { outputUri } of invalidManifestUris) {
         fileTypes.set(outputUri.toString(), 2);
@@ -1384,7 +1433,12 @@ try {
             artifactWorkspaceUpdates.push([key, value]);
         },
     };
-    const artifactStore = new Merc32ArtifactStore(artifactWorkspaceState, artifactVscode);
+    const artifactErrors = [];
+    const artifactStore = new Merc32ArtifactStore(
+        artifactWorkspaceState,
+        artifactVscode,
+        (error) => artifactErrors.push(error),
+    );
     artifactStore.setCompilerArtifacts([
         { label: 'existing.hex', file: compilerArtifactUri.fsPath, description: 'Assembler output' },
         { label: 'missing.asm', file: missingCompilerArtifactUri.fsPath, description: 'Tiny C output' },
@@ -1396,11 +1450,16 @@ try {
     assert.strictEqual(artifactSnapshot.generatedSocs.length, 1,
         'refresh retained a generated SoC with a missing output/manifest');
     assert.strictEqual(artifactSnapshot.generatedSocs[0].configUri.toString(), liveConfigUri.toString());
+    assert.ok(artifactErrors.some((error) => String(error).includes('legacy-v1')),
+        'persisted v1 manifest bypassed the existing invalid-manifest error callback');
     assert.deepStrictEqual(artifactSnapshot.generatedSocs[0].artifacts.map((item) => item.relativePath), [
         undefined,
         'manifest.json',
-        'rtl/live.v',
-        'address-map.json',
+        'README.md',
+        'hardware/live.v',
+        'software/live.h',
+        'software/main.c',
+        'firmware/ilb_boot.mem',
     ], 'refresh retained a missing generated child or lost a required artifact');
     assert.deepStrictEqual(artifactWorkspaceUpdates.at(-1), [SOC_ARTIFACT_STATE_KEY, [{
         configUri: liveConfigUri.toString(),
@@ -1419,8 +1478,8 @@ try {
         files: validLiveManifest.files.map((item) => ({
             ...item,
             path: item.path
-                .replace('rtl/live.v', 'rtl/recorded.v')
-                .replace('software/include/live.h', 'software/include/recorded.h'),
+                .replace('hardware/live.v', 'hardware/recorded.v')
+                .replace('software/live.h', 'software/recorded.h'),
         })),
     })));
     artifactWorkspaceUpdates.length = 0;
