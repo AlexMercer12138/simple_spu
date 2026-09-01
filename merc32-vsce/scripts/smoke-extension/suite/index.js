@@ -103,37 +103,36 @@ async function run() {
     assert.strictEqual(extension.isActive, true, 'installed extension did not activate');
 
     const requiredOutputs = [
-        'software/src/main.c',
-        'software/include/all_peripherals_soc.h',
-        'config/all_peripherals_soc.resolved.json',
-        'address-map.json',
+        'README.md',
         'manifest.json',
-        'rtl/files.f',
+        'hardware/all_peripherals_soc.v',
+        'software/all_peripherals_soc.h',
+        'software/main.c',
     ];
     for (const logicalPath of requiredOutputs) {
         requireExactFile(path.join(outputDir, ...logicalPath.split('/')),
             `generated ${logicalPath}`);
     }
 
-    const rtlRoot = path.join(outputDir, 'rtl');
-    const fileList = fs.readFileSync(path.join(rtlRoot, 'files.f'), 'utf8')
-        .split(/\r?\n/u)
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-    assert.ok(fileList.length > 0, 'generated rtl/files.f is empty');
-    for (const entry of fileList) {
-        assertSafeRelativePath(entry, 'rtl/files.f entry');
-        const sourceFile = path.resolve(rtlRoot, ...entry.split('/'));
-        assertContained(rtlRoot, sourceFile, `rtl/files.f source ${entry}`);
-        requireExactFile(sourceFile, `rtl/files.f source ${entry}`);
-        assert.ok(!pathsOverlap(repositoryRoot, sourceFile),
-            `rtl/files.f source escaped to the repository checkout: ${entry}`);
+    for (const logicalPath of [
+        'rtl/files.f',
+        'software/src/main.c',
+        'software/include/all_peripherals_soc.h',
+        'config/all_peripherals_soc.resolved.json',
+        'address-map.json',
+        'LICENSE',
+    ]) {
+        assert.strictEqual(fs.existsSync(path.join(outputDir, ...logicalPath.split('/'))), false,
+            `generated output retained legacy path ${logicalPath}`);
     }
 
+    const hardwareFile = path.join(outputDir, 'hardware', 'all_peripherals_soc.v');
+    assert.ok(!pathsOverlap(repositoryRoot, hardwareFile),
+        'generated hardware bundle escaped to the repository checkout');
     const manifestFile = path.join(outputDir, 'manifest.json');
     const manifestText = fs.readFileSync(manifestFile, 'utf8');
     const manifest = JSON.parse(manifestText);
-    assert.strictEqual(manifest.manifestVersion, 1);
+    assert.strictEqual(manifest.manifestVersion, 2);
     assert.strictEqual(manifest.projectName, 'all_peripherals_soc');
     assert.strictEqual(comparablePath(manifest.sourceConfig), comparablePath(configFile));
     assertContained(workspaceRoot, manifest.sourceConfig, 'manifest source configuration');
@@ -156,7 +155,11 @@ async function run() {
         }
     }
 
-    requireExactFile(runIcarusElaboration({ outputDir, rtlRoot }), 'Icarus elaboration output');
+    requireExactFile(runIcarusElaboration({
+        outputDir,
+        hardwareFile,
+        topModule: manifest.projectName,
+    }), 'Icarus elaboration output');
     guardApi.heartbeat(networkGuardToken, 'after-target');
     assertNoNetworkAttempts(networkGuardLog, networkGuardToken, [
         'active',
@@ -166,7 +169,7 @@ async function run() {
     ]);
 
     console.log(`Installed ${EXTENSION_ID} generated the maximal SoC through ${GENERATE_COMMAND}.`);
-    console.log(`Icarus elaborated ${fileList.length} RTL sources with top all_peripherals_soc.`);
+    console.log('Icarus elaborated one RTL source with top all_peripherals_soc.');
 }
 
 async function activate() {

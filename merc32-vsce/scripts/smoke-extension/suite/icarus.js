@@ -7,18 +7,19 @@ const ICARUS_KILL_SIGNAL = 'SIGKILL';
 
 function runIcarusElaboration({
     outputDir,
-    rtlRoot,
+    hardwareFile,
+    topModule,
     timeoutMs = ICARUS_TIMEOUT_MS,
     spawnSync = defaultSpawnSync,
 }) {
     const outputFile = path.join(outputDir, 'all_peripherals.vvp');
     const result = spawnSync('iverilog', [
         '-Wall', '-Wno-timescale', '-g2005',
-        '-s', 'all_peripherals_soc',
+        '-s', topModule,
         '-o', outputFile,
-        '-f', 'files.f',
+        hardwareFile,
     ], {
-        cwd: rtlRoot,
+        cwd: outputDir,
         encoding: 'utf8',
         killSignal: ICARUS_KILL_SIGNAL,
         timeout: timeoutMs,

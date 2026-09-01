@@ -619,28 +619,27 @@ function assembleAndElaborate(name, config) {
         assetRoot: packagedAssetRoot,
     });
 
-    const rtlDirectory = path.join(generationResult.outputDir, 'rtl');
-    const normalizedList = fs.readFileSync(path.join(rtlDirectory, 'files.f'), 'utf8')
-        .trim().split(/\r?\n/).filter(Boolean).sort();
-    assert.deepStrictEqual(listVerilogFiles(rtlDirectory), normalizedList,
-        `${name}: generated files.f must name every and only generated Verilog file`);
+    const hardwareRoot = path.join(generationResult.outputDir, 'hardware');
+    const hardwareFile = path.join(hardwareRoot, `${generatedConfig.project.name}.v`);
+    assert.deepStrictEqual(listVerilogFiles(hardwareRoot), [`${generatedConfig.project.name}.v`],
+        `${name}: hardware output must contain exactly one generated Verilog file`);
 
     const outputFile = path.join(temporaryRoot, name, 'soc.vvp');
     const args = [
         '-Wall', '-Wno-timescale', '-g2005',
         '-s', generatedConfig.project.name,
         '-o', outputFile,
-        '-f', 'files.f',
+        hardwareFile,
     ];
-    assert.deepStrictEqual(args.filter((argument) => argument.endsWith('.v')), [],
-        `${name}: elaboration source files must come only from files.f`);
-    const compile = spawnSync('iverilog', args, { cwd: rtlDirectory, encoding: 'utf8' });
+    assert.strictEqual(args.filter((argument) => argument.endsWith('.v')).length, 1,
+        `${name}: elaboration must consume exactly one generated Verilog file`);
+    const compile = spawnSync('iverilog', args, { cwd: hardwareRoot, encoding: 'utf8' });
     assert.strictEqual(compile.status, 0,
         `${name}: iverilog failed\nstdout:\n${compile.stdout}\nstderr:\n${compile.stderr}`);
     assert.strictEqual(compile.stderr, '', `${name}: iverilog warnings:\n${compile.stderr}`);
     assert.ok(fs.existsSync(outputFile), `${name}: iverilog produced no output`);
-    console.log(`  ${name}: ${normalizedList.length} files via rtl/files.f`);
-    return { rtlDirectory, topModule: generatedConfig.project.name };
+    console.log(`  ${name}: one file via hardware/${generatedConfig.project.name}.v`);
+    return { hardwareRoot, hardwareFile, topModule: generatedConfig.project.name };
 }
 
 function assertRejectedBeforeEmission(name, config, catalog, code, expectedPath) {
@@ -1183,8 +1182,8 @@ function simulateExternalIrqReset(catalog) {
             ],
         },
     };
-    const { rtlDirectory } = assembleAndElaborate('external_irq_reset', config);
-    fs.writeFileSync(path.join(rtlDirectory, 'irq_reset_tb.v'), `
+    const { hardwareRoot, hardwareFile } = assembleAndElaborate('external_irq_reset', config);
+    fs.writeFileSync(path.join(hardwareRoot, 'irq_reset_tb.v'), `
 module irq_reset_tb;
 reg clk;
 reg rst_n;
@@ -1295,15 +1294,19 @@ initial begin
 end
 endmodule
 `);
-    const compile = spawnSync('iverilog', [
+    const args = [
         '-Wall', '-Wno-timescale', '-g2005', '-s', 'irq_reset_tb',
-        '-o', 'irq_reset.vvp', '-f', 'files.f', 'irq_reset_tb.v',
-    ], { cwd: rtlDirectory, encoding: 'utf8' });
+        '-o', 'irq_reset.vvp', hardwareFile, 'irq_reset_tb.v',
+    ];
+    assert.deepStrictEqual(args.filter((argument) => argument.endsWith('.v')),
+        [hardwareFile, 'irq_reset_tb.v'],
+        'external IRQ reset must compile one generated RTL file and its testbench');
+    const compile = spawnSync('iverilog', args, { cwd: hardwareRoot, encoding: 'utf8' });
     assert.strictEqual(compile.status, 0,
         `external IRQ reset compile failed:\n${compile.stdout}\n${compile.stderr}`);
     assert.strictEqual(compile.stderr, '', `external IRQ reset warnings:\n${compile.stderr}`);
     const simulation = spawnSync('vvp', ['irq_reset.vvp'],
-        { cwd: rtlDirectory, encoding: 'utf8' });
+        { cwd: hardwareRoot, encoding: 'utf8' });
     assert.strictEqual(simulation.status, 0,
         `external IRQ reset simulation failed:\n${simulation.stdout}\n${simulation.stderr}`);
     assert.match(simulation.stdout, /external_irq_reset_behavior: PASS/);
@@ -1329,8 +1332,9 @@ function simulateSingleSourceController() {
             ],
         },
     };
-    const { rtlDirectory } = assembleAndElaborate('single_source_controller_behavior', config);
-    fs.writeFileSync(path.join(rtlDirectory, 'single_irq_tb.v'), `
+    const { hardwareRoot, hardwareFile } = assembleAndElaborate(
+        'single_source_controller_behavior', config);
+    fs.writeFileSync(path.join(hardwareRoot, 'single_irq_tb.v'), `
 module single_irq_tb;
 reg clk;
 reg rst_n;
@@ -1441,16 +1445,20 @@ initial begin
 end
 endmodule
 `);
-    const compile = spawnSync('iverilog', [
+    const args = [
         '-Wall', '-Wno-timescale', '-g2005', '-s', 'single_irq_tb',
-        '-o', 'single_irq.vvp', '-f', 'files.f', 'single_irq_tb.v',
-    ], { cwd: rtlDirectory, encoding: 'utf8' });
+        '-o', 'single_irq.vvp', hardwareFile, 'single_irq_tb.v',
+    ];
+    assert.deepStrictEqual(args.filter((argument) => argument.endsWith('.v')),
+        [hardwareFile, 'single_irq_tb.v'],
+        'single-source controller must compile one generated RTL file and its testbench');
+    const compile = spawnSync('iverilog', args, { cwd: hardwareRoot, encoding: 'utf8' });
     assert.strictEqual(compile.status, 0,
         `single-source controller compile failed:\n${compile.stdout}\n${compile.stderr}`);
     assert.strictEqual(compile.stderr, '',
         `single-source controller warnings:\n${compile.stderr}`);
     const simulation = spawnSync('vvp', ['single_irq.vvp'],
-        { cwd: rtlDirectory, encoding: 'utf8' });
+        { cwd: hardwareRoot, encoding: 'utf8' });
     assert.strictEqual(simulation.status, 0,
         `single-source controller simulation failed:\n${simulation.stdout}\n${simulation.stderr}`);
     assert.match(simulation.stdout, /single_source_controller_behavior: PASS/);

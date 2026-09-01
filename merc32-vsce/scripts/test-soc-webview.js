@@ -41,10 +41,10 @@ function runVisualHarnessContractTests() {
     assert.ok(model.addressRows.length > 0);
     assert.ok(model.interruptRows.length > 0);
     assert.ok(model.portRows.length > 0);
-    assert.ok(model.dependencyRows.length > 0);
-    assert.ok(model.dependencyRows.some((row) => row.name === 'flight_controller_plb_router.v'
-        && row.kind === 'generated/rtl'),
-    'visual fixture must show its generated PLB router dependency');
+    assert.deepStrictEqual(model.dependencyRows, [
+        { name: 'hardware/flight_controller.v', kind: 'generated/rtl', detail: 'Complete SoC RTL bundle' },
+        { name: 'software/flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
+    ]);
     const removedDependencyNames = [
         ['apb4', 'interconnect.v'].join('_'),
         ['sync', 'fifo.v'].join('_'),
@@ -232,10 +232,8 @@ function createVisualModel() {
             { name: 'sensor_plb', direction: 'interface', width: 32 },
         ],
         dependencyRows: [
-            { name: 'flight_controller.v', kind: 'generated/rtl', detail: 'SoC top level' },
-            { name: 'core.v', kind: 'asset/rtl', detail: 'MERC32 CPU core' },
-            { name: 'flight_controller_plb_router.v', kind: 'generated/rtl', detail: 'PLB peripheral router' },
-            { name: 'flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
+            { name: 'hardware/flight_controller.v', kind: 'generated/rtl', detail: 'Complete SoC RTL bundle' },
+            { name: 'software/flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
         ],
         interruptOptions: {
             controllers: ['intc0'],

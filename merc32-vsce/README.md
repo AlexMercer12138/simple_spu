@@ -52,10 +52,11 @@ npm run package:vsix
 1. 在工作区中新建任意名称的 `*.merc32.json` 文件。
 2. 直接打开文件使用图形化编辑器，或选择 **Reopen as Text** 编辑 JSON。
 3. 依次执行 **Validate**、**Auto-assign**（需要自动分配地址时）和 **Generate**。
-4. 将生成目录中的 `rtl/files.f` 加入 FPGA 或仿真工程的 Verilog 源文件列表。
-5. 从 `software/src/main.c` 开始编写裸机软件。
+4. 将生成目录中的 `hardware/<project>.v` 作为唯一的 SoC Verilog 源文件加入 FPGA 或仿真工程；例如使用 `iverilog -g2005 -s <project> hardware/<project>.v`。
+5. 从 `software/main.c` 开始编写裸机软件，并包含 `software/<project>.h` 中的软件地址映射。
+6. 如配置了存储器初始化文件，生成器会将其放入可选的 `firmware/` 目录。
 
-VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装后可离线、独立生成，不依赖 MERC32 仓库检出。生成器绝不会覆盖已经存在的 `software/src/main.c`。输出包含可集成的 RTL 和软件起始文件，但不生成 FPGA 工程或 testbench。
+VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装后可离线、独立生成，不依赖 MERC32 仓库检出。生成器绝不会覆盖已经存在的 `software/main.c`。输出包含可集成的 RTL 和软件起始文件，但不生成 FPGA 工程或 testbench。
 
 ### 工具链侧边栏
 
