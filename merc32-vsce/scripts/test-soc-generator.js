@@ -1698,6 +1698,35 @@ try {
     const top = soc.renderSocTop(controllerPlan);
     const router = soc.renderPlbRouter(controllerPlan);
     const apb = soc.renderApbInterconnect(controllerPlan);
+    const bundle = soc.renderRtlBundle(controllerPlan,
+        (logicalPath) => Buffer.from(`module_marker ${logicalPath}\n`, 'utf8'));
+    assert.ok(Buffer.isBuffer(bundle.content));
+    assert.strictEqual(new Set(bundle.logicalSources).size, bundle.logicalSources.length);
+    assert.deepStrictEqual(bundle.logicalSources.slice(0, 4), [
+        'rtl/cpu/MERC32_top.v',
+        'rtl/cpu/core.v',
+        'rtl/misc/div.v',
+        'rtl/misc/mul.v',
+    ]);
+    assert.strictEqual(bundle.logicalSources.at(-1), 'generated/demo_soc.v');
+    for (const source of bundle.logicalSources) {
+        assert.strictEqual((bundle.content.toString('utf8')
+            .match(new RegExp(`Source: ${source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g')) || []).length, 1);
+    }
+    assert.doesNotMatch(bundle.content.toString('utf8'), /`include\b/);
+    assert.strictEqual(soc.renderRtlBundle(controllerPlan,
+        (logicalPath) => Buffer.from(`module_marker ${logicalPath}\n`)).content.equals(bundle.content), true);
+
+    const bodyWithoutFinalNewline = Buffer.from('binary\x00body', 'ascii');
+    const bytePreservingBundle = soc.renderRtlBundle(controllerPlan, (logicalPath) =>
+        logicalPath === 'rtl/cpu/core.v'
+            ? bodyWithoutFinalNewline
+            : Buffer.from(`module_marker ${logicalPath}\n`, 'utf8'));
+    const coreMarker = Buffer.from('// ---- Source: rtl/cpu/core.v ----\n', 'ascii');
+    const coreBodyStart = bytePreservingBundle.content.indexOf(coreMarker) + coreMarker.length;
+    assert.deepStrictEqual(bytePreservingBundle.content.subarray(coreBodyStart,
+        coreBodyStart + bodyWithoutFinalNewline.length + 2),
+        Buffer.concat([bodyWithoutFinalNewline, Buffer.from('\n\n', 'ascii')]));
 
     // Removing the integration top, bridge parameters, physical ports, stateful
     // router, or shared APB decoder must break these observable RTL contracts.

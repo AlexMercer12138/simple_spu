@@ -2,6 +2,7 @@ export * from './address';
 export * from './catalog';
 export * from './config';
 export * from './emitVerilog';
+export * from './emitRtlBundle';
 export * from './emitSoftware';
 export * from './generator';
 export * from './model';
