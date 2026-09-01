@@ -336,6 +336,7 @@ function renderGeneratedFiles(
                 integration: [
                     `Compile with \`iverilog -g2005 -s ${plan.topModule} hardware/${plan.topModule}.v\`.`,
                     `Edit \`software/main.c\` and include \`software/${headerFileName(plan)}\`.`,
+                    ...firmwareIntegrationGuidance(plan),
                 ],
                 outputFiles: expectedGeneratedFiles(plan),
                 rtlSources: rtlBundle.logicalSources,
@@ -343,6 +344,21 @@ function renderGeneratedFiles(
             'templates/README.md.tpl', 'generated/documentation'),
     );
     return result;
+}
+
+function firmwareIntegrationGuidance(plan: SocPlan): readonly string[] {
+    const bindings = (['ilb', 'dlb'] as const).flatMap((slot) => {
+        const memory = plan.memory[slot];
+        if (memory.initFile === undefined) return [];
+        const parameter = `${slot.toUpperCase()}_INIT_FILE`;
+        return [`Generated hardware defaults \`${parameter}\` to \`../firmware/${memory.initFile.outputName}\`, relative to \`hardware/${plan.topModule}.v\`; run the downstream tool from \`hardware/\` or configure its working directory/path resolution so its \`$readmemh\` call resolves that relative path.`];
+    });
+    if (bindings.length === 0) return [];
+    return [
+        ...bindings,
+        'Firmware files are copied byte-for-byte; extensions and formats, including `.bin` and `.coe`, are retained without conversion.',
+        '`$readmemh` simulation/synthesis initialization requires contents compatible with the downstream tool\'s parser; retained formats are not automatically supported.',
+    ];
 }
 
 function inspectTarget(

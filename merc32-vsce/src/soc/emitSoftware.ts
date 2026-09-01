@@ -63,7 +63,7 @@ export function renderGeneratedReadme(
 ): string {
     return applyTemplateContent(template, {
         APB_PERIPHERALS: renderTableOrNone(
-            ['Name', 'Type', 'Module', 'Base address', 'End address', 'Size', 'Parameters'],
+            ['Name', 'Type', 'Module', 'Base address', 'End address', 'Size', 'Parameters', 'Interrupt outputs'],
             plan.peripherals.map((peripheral) => [
                 peripheral.name,
                 peripheral.type,
@@ -72,6 +72,7 @@ export function renderGeneratedReadme(
                 formatHex32(peripheral.endAddress),
                 formatByteSize(peripheral.sizeBytes),
                 formatParameters(peripheral.parameters),
+                formatInterruptOutputs(peripheral.interrupts),
             ]),
         ),
         CPU: renderTable([
@@ -98,16 +99,10 @@ export function renderGeneratedReadme(
             ['Resource revision', metadata.resourceRevision],
         ]),
         INTEGRATION: renderListOrNone(metadata.integration),
-        INTERRUPT_ROUTING: renderTableOrNone(
-            ['Source', 'ID', 'Trigger', 'Top-level port'],
-            plan.interrupt.sources.map((source) => [
-                source.source,
-                source.id === undefined ? 'None' : source.id.toString(),
-                source.trigger === undefined ? plan.interrupt.mode : source.trigger,
-                source.topPort ?? 'None',
-            ]),
-        ),
+        INTERRUPT_ROUTING: renderInterruptRouting(plan),
         MEMORIES: renderTable([
+            'Name', 'Type', 'Base address', 'End address', 'Size', 'Word-address width', 'Firmware binding',
+        ], [
             renderMemoryRow('ILB', plan.memory.ilb, ILB_BASE),
             renderMemoryRow('DLB', plan.memory.dlb, DLB_BASE),
         ]),
@@ -162,10 +157,29 @@ function renderMemoryRow(
         formatHex32(baseAddress),
         formatHex32(baseAddress + memory.sizeBytes - 1n),
         formatByteSize(memory.sizeBytes),
+        `${memory.wordAddressWidth} bits`,
         memory.initFile === undefined
             ? 'None'
-            : `\`$readmemh("firmware/${memory.initFile.outputName}")\``,
+            : `\`$readmemh("../firmware/${memory.initFile.outputName}")\``,
     ];
+}
+
+function renderInterruptRouting(plan: SocPlan): string {
+    const summary = renderTable([
+        ['Mode', plan.interrupt.mode],
+        ['Controller', plan.interrupt.mode === 'controller' ? plan.interrupt.controller : 'None'],
+        ['IRQ count', plan.interrupt.mode === 'controller' ? plan.interrupt.irqCount.toString() : 'None'],
+    ]);
+    const routes = renderTableOrNone(
+        ['Source', 'ID', 'Trigger', 'Top-level port'],
+        plan.interrupt.sources.map((source) => [
+            source.source,
+            source.id === undefined ? 'None' : source.id.toString(),
+            source.trigger ?? 'None',
+            source.topPort ?? 'None',
+        ]),
+    );
+    return `${summary}\n\n${routes}`;
 }
 
 function renderListOrNone(values: readonly string[]): string {
@@ -211,6 +225,10 @@ function formatParameters(parameters: Readonly<Record<string, unknown>>): string
         return `\`${name}=${typeof value === 'bigint' ? value.toString() : String(value)}\``;
     });
     return entries.length === 0 ? 'None' : entries.join('<br>');
+}
+
+function formatInterruptOutputs(interrupts: readonly string[]): string {
+    return interrupts.length === 0 ? 'None' : interrupts.join(', ');
 }
 
 function emitMemoryMacros(

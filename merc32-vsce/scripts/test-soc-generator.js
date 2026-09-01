@@ -1610,6 +1610,13 @@ function assertGenerationOrchestration() {
             'hardware', 'memory_soc.v'), 'utf8');
         assert.match(memoryBundle, /"\.\.\/firmware\/ilb_firmware\.bin"/);
         assert.match(memoryBundle, /"\.\.\/firmware\/dlb_firmware\.mem"/);
+        const memoryReadme = fs.readFileSync(path.join(memoryResult.outputDir, 'README.md'), 'utf8');
+        assert.match(memoryReadme,
+            /`\.\.\/firmware\/ilb_firmware\.bin`, relative to `hardware\/memory_soc\.v`/);
+        assert.match(memoryReadme,
+            /Firmware files are copied byte-for-byte; extensions and formats, including `\.bin` and `\.coe`, are retained without conversion\./);
+        assert.match(memoryReadme,
+            /`\$readmemh` simulation\/synthesis initialization requires contents compatible with the downstream tool's parser; retained formats are not automatically supported\./);
 
         const externalMemory = path.join(root, 'external-memory.mem');
         writeFile(externalMemory, 'feedface\n');
@@ -1709,11 +1716,26 @@ try {
         '## RTL composition', '## Output files', '## Generation identity',
     ]) assert.match(readme, new RegExp(`^${heading}$`, 'm'));
     assert.match(readme, /\| uart0 \| apb_uart \| apb_uart \| 0x10000000 \| 0x10000fff \|/);
+    assert.match(readme,
+        /\| uart0 \| apb_uart \| apb_uart \| 0x10000000 \| 0x10000fff \| 4096 bytes \| .* \| interrupt \|/);
+    assert.match(readme,
+        /\| intc0 \| apb_intc \| apb_intc \| 0x10003000 \| 0x10003fff \| 4096 bytes \| .* \| interrupt \|/);
+    assert.match(readme,
+        /\| ILB \| internal_ram \| 0x00000000 \| 0x00007fff \| 32768 bytes \| 13 bits \| `\$readmemh\("\.\.\/firmware\/ilb_firmware\.mem"\)` \|/);
+    assert.match(readme, /\| Mode \| controller \|/);
+    assert.match(readme, /\| Controller \| intc0 \|/);
+    assert.match(readme, /\| IRQ count \| 4 \|/);
     assert.match(readme, /\| external\.wake \| 3 \| falling \| external_wake \|/);
     assert.match(readme, /\$readmemh/);
     assert.doesNotMatch(readme, /address-map\.json|resolved\.json|rtl\/files\.f|LICENSE/);
     assert.match(readme, /^# demo_soc\n/m);
     assert.doesNotMatch(readme, /successfully generated/i);
+    const noPeripheralInterruptReadme = soc.renderGeneratedReadme({
+        ...controllerPlan,
+        peripherals: [{ ...controllerPlan.peripherals[0], interrupts: [] }],
+    }, readmeMetadata);
+    assert.match(noPeripheralInterruptReadme,
+        /\| uart0 \| apb_uart \| apb_uart \| 0x10000000 \| 0x10000fff \| 4096 bytes \| .* \| None \|/);
     const escapedReadme = soc.renderGeneratedReadme({
         ...controllerPlan,
         peripherals: [{
@@ -1836,6 +1858,12 @@ try {
     sparseRouter.interrupt = { mode: 'direct', source: 'uart0.interrupt' };
     const sparseRouterRtl = soc.renderPlbRouter(
         planFixture(sparseRouter, 'sparse-router.merc32.json'));
+    const directPlan = planFixture(sparseRouter, 'sparse-router.merc32.json');
+    const directReadme = soc.renderGeneratedReadme(directPlan, readmeMetadata);
+    assert.match(directReadme, /\| Mode \| direct \|/);
+    assert.match(directReadme, /\| Controller \| None \|/);
+    assert.match(directReadme, /\| IRQ count \| None \|/);
+    assert.match(directReadme, /\| uart0\.interrupt \| None \| None \| None \|/);
     assert.match(sparseRouterRtl,
         /if \(\(\(m_addr >= 32'h1000_0000\) && \(m_addr <= 32'h1000_0fff\)\) \|\| \(\(m_addr >= 32'h1000_2000\) && \(m_addr <= 32'h1000_2fff\)\)\)/);
     assert.match(sparseRouterRtl,
@@ -1852,6 +1880,13 @@ try {
     };
     const singleSourceTop = soc.renderSocTop(
         planFixture(singleSourceController, 'single-source-controller.merc32.json'));
+    const singleSourceControllerPlan = planFixture(
+        singleSourceController, 'single-source-controller.merc32.json');
+    const singleSourceControllerReadme = soc.renderGeneratedReadme(
+        singleSourceControllerPlan, readmeMetadata);
+    assert.match(singleSourceControllerReadme, /\| Mode \| controller \|/);
+    assert.match(singleSourceControllerReadme, /\| Controller \| intc0 \|/);
+    assert.match(singleSourceControllerReadme, /\| IRQ count \| 1 \|/);
     assert.match(singleSourceTop, /wire \[0:0\] intc0_irq_sources;/);
     assert.match(singleSourceTop, /assign intc0_irq_sources\[0\] = external_only_conditioned;/);
     assert.match(singleSourceTop, /\.IRQ_COUNT\s*\(1\)/);
@@ -1874,8 +1909,11 @@ try {
         outputFiles: [],
         rtlSources: [],
     });
+    assert.match(emptyReadme, /\| Mode \| none \|/);
+    assert.match(emptyReadme, /\| Controller \| None \|/);
+    assert.match(emptyReadme, /\| IRQ count \| None \|/);
     for (const section of [
-        'Integration', 'APB peripherals', 'External interfaces', 'Interrupt routing',
+        'Integration', 'APB peripherals', 'External interfaces',
         'RTL composition', 'Output files',
     ]) assert.match(emptyReadme, new RegExp(`## ${section}\\n\\nNone configured`));
     assert.deepStrictEqual(soc.expectedGeneratedFiles(minimalPlan), [
