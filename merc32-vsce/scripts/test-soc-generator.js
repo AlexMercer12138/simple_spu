@@ -214,10 +214,15 @@ function assertGenerationOrchestration() {
         assert.ok(fs.existsSync(path.join(outputDir, 'software', 'src', 'main.c')));
         assert.match(fs.readFileSync(path.join(outputDir, 'software', 'src', 'main.c'), 'utf8'),
             /asset main template/);
-        assert.match(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'),
-            /Asset README template/);
-        assert.match(fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8'),
+        const generatedReadme = fs.readFileSync(path.join(outputDir, 'README.md'), 'utf8');
+        assert.match(generatedReadme, /Asset README template/);
+        assert.match(generatedReadme,
             new RegExp(fs.realpathSync.native(configFile).replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(generatedReadme, /Compile with `iverilog -g2005 -s demo_soc -f rtl\/files\.f`\./);
+        assert.match(generatedReadme,
+            /Edit `software\/src\/main\.c` and include `software\/include\/demo_soc\.h`\./);
+        assert.match(generatedReadme, /\| `address-map\.json` \|/);
+        assert.match(generatedReadme, /\| `cpu\/MERC32_top\.v` \|/);
         assert.strictEqual(fs.readFileSync(path.join(outputDir, 'LICENSE'), 'utf8'),
             'opaque generator license\n');
         for (const logicalPath of [
@@ -1550,7 +1555,27 @@ try {
     const resolvedConfig = soc.renderResolvedConfig(controllerPlan);
     const addressMap = soc.renderAddressMap(controllerPlan);
     const header = soc.renderSocHeader(controllerPlan);
-    const readme = soc.renderGeneratedReadme(controllerPlan);
+    const readmeMetadata = {
+        sourceIdentity: 'D:/workspace/demo.merc32.json',
+        generatorVersion: '2.0.2',
+        resourceRevision: 'resource-r1',
+        integration: [
+            '`iverilog -g2005 -s demo_soc hardware/demo_soc.v`',
+            'Edit `software/main.c` and include `software/demo_soc.h`.',
+        ],
+        outputFiles: [
+            'README.md', 'manifest.json', 'hardware/demo_soc.v',
+            'firmware/ilb_firmware.mem', 'software/demo_soc.h', 'software/main.c',
+        ],
+        rtlSources: [
+            'rtl/cpu/MERC32_top.v',
+            'rtl/cpu/core.v',
+            'generated/demo_soc_apb_interconnect.v',
+            'generated/demo_soc_plb_router.v',
+            'generated/demo_soc.v',
+        ],
+    };
+    const readme = soc.renderGeneratedReadme(controllerPlan, readmeMetadata);
     const starterMain = soc.renderStarterMain(controllerPlan);
 
     assert.strictEqual(resolvedConfig, soc.renderResolvedConfig(controllerPlan));
@@ -1625,13 +1650,25 @@ try {
         'config/demo_soc.resolved.json', 'address-map.json', 'manifest.json', 'README.md', 'LICENSE',
     ];
     assert.deepStrictEqual(soc.expectedGeneratedFiles(controllerPlan), expectedFiles);
-    const readmeFiles = readme.slice(
-        readme.indexOf('## Generated files\n\n') + '## Generated files\n\n'.length,
-        readme.indexOf('\n## Generation identity'),
-    );
-    assert.strictEqual(readmeFiles, `${expectedFiles.map((file) => `- \`${file}\``).join('\n')}\n`);
-    assert.match(readme, /^# demo_soc\n\nTop module: `demo_soc`\n/m);
+    for (const heading of [
+        '## Integration', '## CPU', '## Memories', '## APB peripherals',
+        '## External interfaces', '## Interrupt routing', '## Top-level ports',
+        '## RTL composition', '## Output files', '## Generation identity',
+    ]) assert.match(readme, new RegExp(`^${heading}$`, 'm'));
+    assert.match(readme, /\| uart0 \| apb_uart \| apb_uart \| 0x10000000 \| 0x10000fff \|/);
+    assert.match(readme, /\| external\.wake \| 3 \| falling \| external_wake \|/);
+    assert.match(readme, /\$readmemh/);
+    assert.doesNotMatch(readme, /address-map\.json|resolved\.json|rtl\/files\.f|LICENSE/);
+    assert.match(readme, /^# demo_soc\n/m);
     assert.doesNotMatch(readme, /successfully generated/i);
+    const escapedReadme = soc.renderGeneratedReadme({
+        ...controllerPlan,
+        peripherals: [{
+            ...controllerPlan.peripherals[0],
+            parameters: { Z: 'back\\slash|line\r\nnext', A: 'first' },
+        }],
+    }, readmeMetadata);
+    assert.match(escapedReadme, /`A=first`<br>`Z=back\\\\slash\\\|line\\r\\nnext`/);
 
     assert.strictEqual(starterMain, [
         '#include "../include/demo_soc.h"',
@@ -1744,6 +1781,16 @@ try {
     assert.doesNotMatch(allTop, /av0_bridge_valid\s*\|/);
 
     const minimalPlan = planFixture(minimal, 'minimal.merc32.json');
+    const emptyReadme = soc.renderGeneratedReadme(minimalPlan, {
+        ...readmeMetadata,
+        integration: [],
+        outputFiles: [],
+        rtlSources: [],
+    });
+    for (const section of [
+        'Integration', 'APB peripherals', 'External interfaces', 'Interrupt routing',
+        'RTL composition', 'Output files',
+    ]) assert.match(emptyReadme, new RegExp(`## ${section}\\n\\nNone configured`));
     assert.deepStrictEqual(soc.expectedGeneratedFiles(minimalPlan), [
         'rtl/minimal_soc.v', 'rtl/generated/minimal_soc_plb_router.v',
         'rtl/cpu/MERC32_top.v', 'rtl/cpu/core.v', 'rtl/misc/div.v', 'rtl/misc/mul.v',
@@ -1763,8 +1810,14 @@ try {
     ]);
     assert.match(soc.renderResolvedConfig(memoryInitPlan), /"initFile": "ilb_firmware\.mem"/);
     assert.match(soc.renderResolvedConfig(memoryInitPlan), /"initFile": "dlb_firmware\.mem"/);
-    assert.match(soc.renderGeneratedReadme(memoryInitPlan), /- `memory\/ilb_firmware\.mem`/);
-    assert.match(soc.renderGeneratedReadme(memoryInitPlan), /- `memory\/dlb_firmware\.mem`/);
+    assert.match(soc.renderGeneratedReadme(memoryInitPlan, {
+        ...readmeMetadata,
+        outputFiles: ['memory/ilb_firmware.mem', 'memory/dlb_firmware.mem'],
+    }), /\| `memory\/ilb_firmware\.mem` \|/);
+    assert.match(soc.renderGeneratedReadme(memoryInitPlan, {
+        ...readmeMetadata,
+        outputFiles: ['memory/ilb_firmware.mem', 'memory/dlb_firmware.mem'],
+    }), /\| `memory\/dlb_firmware\.mem` \|/);
     const inactiveFeatureCollision = clone(minimal);
     inactiveFeatureCollision.memory.ilb.type = 'internal_ram';
     inactiveFeatureCollision.externalInterfaces = [{

@@ -2,18 +2,42 @@
 
 Top module: `{{TOP_MODULE}}`
 
-## Parameters
+## Integration
 
-{{PARAMETERS}}
+{{INTEGRATION}}
 
-## Ports
+## CPU
+
+{{CPU}}
+
+## Memories
+
+{{MEMORIES}}
+
+## APB peripherals
+
+{{APB_PERIPHERALS}}
+
+## External interfaces
+
+{{EXTERNAL_INTERFACES}}
+
+## Interrupt routing
+
+{{INTERRUPT_ROUTING}}
+
+## Top-level ports
 
 {{PORTS}}
 
-## Generated files
+## RTL composition
 
-{{FILES}}
+{{RTL_SOURCES}}
+
+## Output files
+
+{{OUTPUT_FILES}}
 
 ## Generation identity
 
-{{IDENTITY}}
+{{GENERATION_IDENTITY}}

@@ -90,34 +90,78 @@ export function renderSocHeader(plan: SocPlan): string {
     return lines.join('\n');
 }
 
-/** Renders the top-level documentation without claiming files have already been generated. */
+export interface GeneratedReadmeMetadata {
+    sourceIdentity: string;
+    generatorVersion: string;
+    resourceRevision: string;
+    integration: readonly string[];
+    outputFiles: readonly string[];
+    rtlSources: readonly string[];
+}
+
+/** Renders the human-readable description of a generated SoC. */
 export function renderGeneratedReadme(
     plan: SocPlan,
+    metadata: GeneratedReadmeMetadata,
     template: string = readBundledTemplate('README.md.tpl'),
-    sourceIdentity: string = plan.sourceFile,
 ): string {
-    const parameters = [
-        `- Debug: ${plan.cpu.debug ? 'enabled' : 'disabled'}`,
-        `- JTAG ID code: \`${formatHex32(plan.cpu.jtagIdCode)}\``,
-        `- ILB: ${plan.memory.ilb.type}, ${jsonInteger(plan.memory.ilb.sizeBytes)} bytes`,
-        `- DLB: ${plan.memory.dlb.type}, ${jsonInteger(plan.memory.dlb.sizeBytes)} bytes`,
-    ];
-    const ports: string[] = [];
-    for (const port of plan.topPorts) {
-        ports.push(`- \`${port.direction} ${port.name}${port.width === 1 ? '' : `[${port.width - 1}:0]`}\``);
-    }
-    const files = expectedGeneratedFiles(plan).map((file) => `- \`${file}\``);
-    const identity = [
-        `- Project: \`${plan.projectName}\``,
-        `- Top module: \`${plan.topModule}\``,
-        `- Source configuration: \`${sourceIdentity}\``,
-    ];
     return applyTemplateContent(template, {
-        FILES: files.join('\n'),
-        IDENTITY: identity.join('\n'),
-        PARAMETERS: parameters.join('\n'),
-        PORTS: ports.join('\n'),
+        APB_PERIPHERALS: renderTableOrNone(
+            ['Name', 'Type', 'Module', 'Base address', 'End address', 'Size', 'Parameters'],
+            plan.peripherals.map((peripheral) => [
+                peripheral.name,
+                peripheral.type,
+                peripheral.module,
+                formatHex32(peripheral.baseAddress),
+                formatHex32(peripheral.endAddress),
+                formatByteSize(peripheral.sizeBytes),
+                formatParameters(peripheral.parameters),
+            ]),
+        ),
+        CPU: renderTable([
+            ['Debug', plan.cpu.debug ? 'enabled' : 'disabled'],
+            ['JTAG ID code', formatHex32(plan.cpu.jtagIdCode)],
+        ]),
+        EXTERNAL_INTERFACES: renderTableOrNone(
+            ['Name', 'Type', 'Base address', 'End address', 'Size', 'Address width', 'Parameters'],
+            plan.externalInterfaces.map((endpoint) => [
+                endpoint.name,
+                endpoint.type,
+                formatHex32(endpoint.baseAddress),
+                formatHex32(endpoint.endAddress),
+                formatByteSize(endpoint.sizeBytes),
+                `${endpoint.addressWidth} bits`,
+                formatParameters(endpoint.parameters),
+            ]),
+        ),
+        GENERATION_IDENTITY: renderTable([
+            ['Project', plan.projectName],
+            ['Top module', plan.topModule],
+            ['Source configuration', metadata.sourceIdentity],
+            ['Generator version', metadata.generatorVersion],
+            ['Resource revision', metadata.resourceRevision],
+        ]),
+        INTEGRATION: renderListOrNone(metadata.integration),
+        INTERRUPT_ROUTING: renderTableOrNone(
+            ['Source', 'ID', 'Trigger', 'Top-level port'],
+            plan.interrupt.sources.map((source) => [
+                source.source,
+                source.id === undefined ? 'None' : source.id.toString(),
+                source.trigger === undefined ? plan.interrupt.mode : source.trigger,
+                source.topPort ?? 'None',
+            ]),
+        ),
+        MEMORIES: renderTable([
+            renderMemoryRow('ILB', plan.memory.ilb, ILB_BASE),
+            renderMemoryRow('DLB', plan.memory.dlb, DLB_BASE),
+        ]),
+        OUTPUT_FILES: renderTableOrNone(['Path'], metadata.outputFiles.map((file) => [`\`${file}\``])),
+        PORTS: renderTableOrNone(
+            ['Direction', 'Name', 'Width'],
+            plan.topPorts.map((port) => [port.direction, port.name, port.width.toString()]),
+        ),
         PROJECT_NAME: plan.projectName,
+        RTL_SOURCES: renderTableOrNone(['Source'], metadata.rtlSources.map((source) => [`\`${source}\``])),
         TOP_MODULE: plan.topModule,
     });
 }
@@ -157,6 +201,68 @@ export function expectedGeneratedFiles(plan: SocPlan): readonly string[] {
         'LICENSE',
     );
     return files;
+}
+
+function renderMemoryRow(
+    name: string,
+    memory: SocPlan['memory']['ilb'],
+    baseAddress: bigint,
+): string[] {
+    return [
+        name,
+        memory.type,
+        formatHex32(baseAddress),
+        formatHex32(baseAddress + memory.sizeBytes - 1n),
+        formatByteSize(memory.sizeBytes),
+        memory.initFile === undefined
+            ? 'None'
+            : `\`$readmemh("memory/${memory.initFile.outputName}")\``,
+    ];
+}
+
+function renderListOrNone(values: readonly string[]): string {
+    return values.length === 0 ? 'None configured' : values.map((value) => `- ${value}`).join('\n');
+}
+
+function renderTableOrNone(headers: readonly string[], rows: readonly (readonly string[])[]): string {
+    return rows.length === 0 ? 'None configured' : renderTable(headers, rows);
+}
+
+function renderTable(rows: readonly (readonly string[])[]): string;
+function renderTable(headers: readonly string[], rows: readonly (readonly string[])[]): string;
+function renderTable(
+    headersOrRows: readonly (readonly string[])[] | readonly string[],
+    rows?: readonly (readonly string[])[],
+): string {
+    const hasHeaders = rows !== undefined;
+    const tableRows = hasHeaders ? rows : headersOrRows as readonly (readonly string[])[];
+    const headerCells = hasHeaders ? headersOrRows as readonly string[] : ['Property', 'Value'];
+    const renderRow = (cells: readonly string[]): string => `| ${cells.map(escapeTableCell).join(' | ')} |`;
+    return [
+        renderRow(headerCells),
+        `| ${headerCells.map(() => '---').join(' | ')} |`,
+        ...tableRows.map(renderRow),
+    ].join('\n');
+}
+
+function escapeTableCell(value: string): string {
+    return value
+        .replace(/\\/g, '\\\\')
+        .replace(/\|/g, '\\|')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
+}
+
+function formatByteSize(sizeBytes: bigint): string {
+    return `${sizeBytes.toString()} bytes`;
+}
+
+function formatParameters(parameters: Readonly<Record<string, unknown>>): string {
+    const entries = Object.keys(parameters).sort().map((name) => {
+        const value = parameters[name];
+        return `\`${name}=${typeof value === 'bigint' ? value.toString() : String(value)}\``;
+    });
+    return entries.length === 0 ? 'None' : entries.join('<br>');
 }
 
 function resolvedMemory(memory: SocPlan['memory']['ilb'], baseAddress: bigint): object {

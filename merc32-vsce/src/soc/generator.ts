@@ -264,10 +264,12 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
 
     const plan = planned.plan;
     const resourceRevision = readResourceRevision(assetRoot);
+    const generatorVersion = readGeneratorVersion();
     const readmeTemplate = requireAssetFile(assetRoot, 'templates/README.md.tpl').toString('utf8');
     const mainTemplate = requireAssetFile(assetRoot, 'templates/main.c.tpl').toString('utf8');
     const generatedFiles = renderGeneratedFiles(
-        plan, assetRoot, path.dirname(configFile), readmeTemplate, portablePath(configFile));
+        plan, assetRoot, path.dirname(configFile), readmeTemplate, portablePath(configFile),
+        generatorVersion, resourceRevision);
     const mainFile = generatedFile(
         MAIN_PATH,
         renderStarterMain(plan, mainTemplate),
@@ -304,7 +306,7 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
                     sha256: sha256(generated.content),
                 };
             })),
-        generatorVersion: readGeneratorVersion(),
+        generatorVersion,
         manifestFile: {
             hashPolicy: 'excluded-self',
             kind: 'control/manifest',
@@ -333,6 +335,8 @@ function renderGeneratedFiles(
     sourceRoot: string,
     readmeTemplate: string,
     sourceIdentity: string,
+    generatorVersion: string,
+    resourceRevision: string,
 ): GeneratedFile[] {
     const result: GeneratedFile[] = [
         generatedFile(`rtl/${plan.topModule}.v`, renderSocTop(plan),
@@ -369,7 +373,17 @@ function renderGeneratedFiles(
         generatedFile('address-map.json', renderAddressMap(plan),
             'generator:renderAddressMap', 'generated/address-map'),
         generatedFile('README.md', renderGeneratedReadme(
-            plan, readmeTemplate, sourceIdentity),
+            plan, {
+                sourceIdentity,
+                generatorVersion,
+                resourceRevision,
+                integration: [
+                    `Compile with \`iverilog -g2005 -s ${plan.topModule} -f rtl/files.f\`.`,
+                    `Edit \`software/src/main.c\` and include \`software/include/${headerFileName(plan)}\`.`,
+                ],
+                outputFiles: expectedGeneratedFiles(plan),
+                rtlSources: rtlFiles,
+            }, readmeTemplate),
             'templates/README.md.tpl', 'generated/documentation'),
         generatedFile('LICENSE', requireAssetFile(assetRoot, 'licenses/LICENSE'),
             'licenses/LICENSE', 'asset/license'),
