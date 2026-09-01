@@ -358,6 +358,31 @@ function assertVsixContents(audit, extensionRoot) {
         'VSIX is missing the extension license',
     );
 
+    const packagedCss = readArchiveFile(
+        audit,
+        'extension/resources/webview/socEditor.css',
+    ).toString('utf8');
+    assert.match(packagedCss, /\.editor-shell\s*\{[^}]*position:\s*fixed/s);
+    assert.match(packagedCss, /\.editor-shell\s*\{[^}]*inset:\s*0/s);
+    assert.match(packagedCss, /\.workbench\s*\{[^}]*23fr[^}]*46fr[^}]*31fr/s);
+    assert.match(packagedCss, /\.bottom-band\s*\{[^}]*7fr[^}]*3fr/s);
+    assert.doesNotMatch(packagedCss, /\.bottom-band\s*\{[^}]*height:\s*clamp/s);
+
+    const packagedReadme = readArchiveFile(
+        audit,
+        'extension/resources/templates/README.md.tpl',
+    ).toString('utf8');
+    assert.match(packagedReadme, /## Memories/u);
+    assert.match(packagedReadme, /## Interrupt routing/u);
+    assert.match(packagedReadme, /## RTL composition/u);
+
+    const packagedMain = readArchiveFile(
+        audit,
+        'extension/resources/templates/main.c.tpl',
+    ).toString('utf8');
+    assert.match(packagedMain, /#include "\{\{HEADER_FILE\}\}"/u);
+    assert.doesNotMatch(packagedMain, /#include "\.\.\/include\//u);
+
     const resourceManifest = readArchiveJson(audit, RESOURCE_MANIFEST);
     assert.strictEqual(resourceManifest.manifestVersion, 1,
         'resource manifest version is unsupported');
