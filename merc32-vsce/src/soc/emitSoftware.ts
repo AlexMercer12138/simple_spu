@@ -3,7 +3,6 @@ import {
     PlannedExternalInterface,
     PlannedInterruptSource,
     PlannedPeripheral,
-    PlannedPort,
     SocPlan,
 } from './model';
 
@@ -15,49 +14,6 @@ const TRIGGER_MACROS = {
     rising: 'MERC32_IRQ_TRIGGER_RISING',
     falling: 'MERC32_IRQ_TRIGGER_FALLING',
 } as const;
-
-/** Renders the normalized, machine-readable configuration used for this SoC. */
-export function renderResolvedConfig(plan: SocPlan): string {
-    return renderJson({
-        cpu: {
-            debug: plan.cpu.debug,
-            jtagIdCode: formatHex32(plan.cpu.jtagIdCode),
-        },
-        externalInterfaces: plan.externalInterfaces.map(resolvedExternal),
-        interrupt: resolvedInterrupt(plan),
-        memory: {
-            dlb: resolvedMemory(plan.memory.dlb, DLB_BASE),
-            ilb: resolvedMemory(plan.memory.ilb, ILB_BASE),
-        },
-        peripherals: plan.peripherals.map(resolvedPeripheral),
-        project: {
-            name: plan.projectName,
-            outputDir: plan.outputDir,
-            topModule: plan.topModule,
-        },
-        rtlFiles: [...plan.rtlFiles],
-        topPorts: plan.topPorts.map(resolvedPort),
-    });
-}
-
-/** Renders the sole address-map presentation; callers must not create a Markdown map. */
-export function renderAddressMap(plan: SocPlan): string {
-    return renderJson({
-        endpoints: plan.endpoints.map((endpoint) => ({
-            baseAddress: formatHex32(endpoint.baseAddress),
-            endAddress: formatHex32(endpoint.endAddress),
-            kind: endpoint.kind,
-            name: endpoint.name,
-            sizeBytes: jsonInteger(endpoint.sizeBytes),
-            type: endpoint.type,
-        })),
-        memory: {
-            dlb: addressRange('dlb', DLB_BASE, plan.memory.dlb.sizeBytes),
-            ilb: addressRange('ilb', ILB_BASE, plan.memory.ilb.sizeBytes),
-        },
-        project: plan.projectName,
-    });
-}
 
 /** Renders the Tiny C-compatible generated SoC configuration header. */
 export function renderSocHeader(plan: SocPlan): string {
@@ -181,24 +137,16 @@ export function headerFileName(plan: SocPlan): string {
 /** Returns the deterministic output layout shared by the README and generator. */
 export function expectedGeneratedFiles(plan: SocPlan): readonly string[] {
     const files = [
-        `rtl/${plan.topModule}.v`,
-        `rtl/generated/${plan.topModule}_plb_router.v`,
+        'README.md',
+        'manifest.json',
+        `hardware/${plan.topModule}.v`,
     ];
-    if (plan.peripherals.length > 0) {
-        files.push(`rtl/generated/${plan.topModule}_apb_interconnect.v`);
-    }
-    files.push(...plan.rtlFiles, 'rtl/files.f');
     for (const memory of [plan.memory.ilb, plan.memory.dlb]) {
-        if (memory.initFile !== undefined) files.push(`memory/${memory.initFile.outputName}`);
+        if (memory.initFile !== undefined) files.push(`firmware/${memory.initFile.outputName}`);
     }
     files.push(
-        `software/include/${headerFileName(plan)}`,
-        'software/src/main.c',
-        `config/${plan.projectName}.resolved.json`,
-        'address-map.json',
-        'manifest.json',
-        'README.md',
-        'LICENSE',
+        `software/${headerFileName(plan)}`,
+        'software/main.c',
     );
     return files;
 }
@@ -216,7 +164,7 @@ function renderMemoryRow(
         formatByteSize(memory.sizeBytes),
         memory.initFile === undefined
             ? 'None'
-            : `\`$readmemh("memory/${memory.initFile.outputName}")\``,
+            : `\`$readmemh("firmware/${memory.initFile.outputName}")\``,
     ];
 }
 
@@ -263,87 +211,6 @@ function formatParameters(parameters: Readonly<Record<string, unknown>>): string
         return `\`${name}=${typeof value === 'bigint' ? value.toString() : String(value)}\``;
     });
     return entries.length === 0 ? 'None' : entries.join('<br>');
-}
-
-function resolvedMemory(memory: SocPlan['memory']['ilb'], baseAddress: bigint): object {
-    return {
-        baseAddress: formatHex32(baseAddress),
-        endAddress: formatHex32(baseAddress + memory.sizeBytes - 1n),
-        initFile: memory.initFile?.outputName,
-        sizeBytes: jsonInteger(memory.sizeBytes),
-        type: memory.type,
-        wordAddressWidth: memory.wordAddressWidth,
-    };
-}
-
-function resolvedPeripheral(peripheral: PlannedPeripheral): object {
-    return {
-        baseAddress: formatHex32(peripheral.baseAddress),
-        endAddress: formatHex32(peripheral.endAddress),
-        interrupts: [...peripheral.interrupts],
-        module: peripheral.module,
-        name: peripheral.name,
-        parameters: sortedParameters(peripheral.parameters),
-        sizeBytes: jsonInteger(peripheral.sizeBytes),
-        type: peripheral.type,
-    };
-}
-
-function resolvedExternal(endpoint: PlannedExternalInterface): object {
-    return {
-        addressWidth: endpoint.addressWidth,
-        baseAddress: formatHex32(endpoint.baseAddress),
-        endAddress: formatHex32(endpoint.endAddress),
-        name: endpoint.name,
-        parameters: sortedParameters(endpoint.parameters),
-        sizeBytes: jsonInteger(endpoint.sizeBytes),
-        type: endpoint.type,
-    };
-}
-
-function resolvedInterrupt(plan: SocPlan): object {
-    if (plan.interrupt.mode === 'none') return { mode: 'none', sources: [] };
-    if (plan.interrupt.mode === 'direct') {
-        return { mode: 'direct', sources: plan.interrupt.sources.map(resolvedInterruptSource) };
-    }
-    return {
-        controller: plan.interrupt.controller,
-        irqCount: plan.interrupt.irqCount,
-        irqMode: `0x${plan.interrupt.irqMode.toString(16).padStart(16, '0')}`,
-        mode: 'controller',
-        sources: plan.interrupt.sources.map(resolvedInterruptSource),
-    };
-}
-
-function resolvedInterruptSource(source: PlannedInterruptSource): object {
-    return {
-        id: source.id,
-        source: source.source,
-        topPort: source.topPort,
-        trigger: source.trigger,
-    };
-}
-
-function resolvedPort(port: PlannedPort): object {
-    return { direction: port.direction, name: port.name, width: port.width };
-}
-
-function sortedParameters(parameters: Readonly<Record<string, unknown>>): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
-    for (const name of Object.keys(parameters).sort()) {
-        const value = parameters[name];
-        result[name] = typeof value === 'bigint' ? `0x${value.toString(16)}` : value;
-    }
-    return result;
-}
-
-function addressRange(name: string, baseAddress: bigint, sizeBytes: bigint): object {
-    return {
-        baseAddress: formatHex32(baseAddress),
-        endAddress: formatHex32(baseAddress + sizeBytes - 1n),
-        name,
-        sizeBytes: jsonInteger(sizeBytes),
-    };
 }
 
 function emitMemoryMacros(
@@ -416,10 +283,6 @@ function memoryFeatureSuffix(type: SocPlan['memory']['ilb']['type']): string {
 
 function jsonInteger(value: bigint): number | string {
     return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
-}
-
-function renderJson(value: unknown): string {
-    return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 function readBundledTemplate(name: string): string {

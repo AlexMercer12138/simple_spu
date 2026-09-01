@@ -197,7 +197,7 @@ export function renderSocTop(plan: SocPlan): string {
         if (memory.type === 'internal_ram') {
             const defaultPath = memory.initFile === undefined
                 ? ''
-                : `../memory/${memory.initFile.outputName}`;
+                : `../firmware/${memory.initFile.outputName}`;
             parameters.push(`parameter ${prefix.toUpperCase()}_INIT_FILE = ${quoteVerilog(defaultPath)}`);
         }
     }

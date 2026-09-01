@@ -22,13 +22,18 @@ import { parseSocConfig } from './config';
 import {
     expectedGeneratedFiles,
     headerFileName,
-    renderAddressMap,
     renderGeneratedReadme,
-    renderResolvedConfig,
     renderSocHeader,
     renderStarterMain,
 } from './emitSoftware';
-import { renderApbInterconnect, renderPlbRouter, renderSocTop } from './emitVerilog';
+import { renderRtlBundle } from './emitRtlBundle';
+import {
+    ManifestFileRecord,
+    ManifestManagedRecord,
+    parseSocManifest,
+    SocManifest,
+    V2_MAIN_PATH,
+} from './manifest';
 import { SocDiagnostic, SocPlan } from './model';
 import { planSoc } from './planner';
 
@@ -86,37 +91,7 @@ interface GeneratedFile {
     kind: string;
 }
 
-interface ManifestManagedRecord {
-    kind: string;
-    logicalSource: string;
-    path: string;
-    sha256: string;
-}
-
-interface ManifestUserRecord {
-    kind: 'scaffold/user-owned';
-    logicalSource: string;
-    path: 'software/src/main.c';
-}
-
-type ManifestFileRecord = ManifestManagedRecord | ManifestUserRecord;
-
-interface SocManifest {
-    files: readonly ManifestFileRecord[];
-    generatorVersion: string;
-    manifestFile: {
-        hashPolicy: 'excluded-self';
-        kind: 'control/manifest';
-        path: 'manifest.json';
-    };
-    manifestVersion: 1;
-    projectName: string;
-    resourceRevision: string;
-    sourceConfig: string;
-}
-
 interface PreparedGeneration {
-    allowedAssetRtlPaths: ReadonlySet<string>;
     expectedFiles: readonly string[];
     generatedFiles: readonly GeneratedFile[];
     mainFile: GeneratedFile;
@@ -139,7 +114,6 @@ interface ExistingManifest {
     state: InspectedTargetState;
 }
 
-const MAIN_PATH = 'software/src/main.c' as const;
 const MANIFEST_PATH = 'manifest.json';
 
 /** Generates a complete SoC without depending on the VSCode API. */
@@ -148,8 +122,7 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
     let preserveStaging = false;
     try {
         const prepared = prepareGeneration(options);
-        const previousManifest = readExistingManifest(
-            prepared.outputDir, prepared.allowedAssetRtlPaths);
+        const previousManifest = readExistingManifest(prepared.outputDir);
         const previous = previousManifest?.manifest;
         const ownershipChanged = previous !== undefined
             && (!sameCanonicalPath(previous.sourceConfig, prepared.manifest.sourceConfig)
@@ -173,7 +146,7 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             throw new SocGenerationError('Generated files conflict with the existing output.', [],
                 inspection.conflicts);
         }
-        const mainState = inspectRegularTarget(generatedPath(prepared.outputDir, MAIN_PATH));
+        const mainState = inspectRegularTarget(generatedPath(prepared.outputDir, V2_MAIN_PATH));
         const mainExists = mainState.kind === 'regular-file';
 
         stagingDir = createSiblingStagingDirectory(prepared.outputDir);
@@ -183,7 +156,7 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             sha256: sha256(file.content),
         }));
         stagedFiles.push({
-            path: MAIN_PATH,
+            path: V2_MAIN_PATH,
             content: prepared.mainFile.content,
             sha256: sha256(prepared.mainFile.content),
         });
@@ -213,12 +186,12 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
                 }] : []),
             ],
             createOnlyPaths: mainExists ? [] : [{
-                path: MAIN_PATH,
+                path: V2_MAIN_PATH,
                 expected: mainState,
                 installedSha256: sha256(prepared.mainFile.content),
             }],
             removePaths: inspection.stalePaths,
-            invariantPaths: mainExists ? [{ path: MAIN_PATH, expected: mainState }] : [],
+            invariantPaths: mainExists ? [{ path: V2_MAIN_PATH, expected: mainState }] : [],
         });
 
         return Object.freeze({
@@ -226,7 +199,7 @@ export function generateSoc(options: GenerateSocOptions): GenerateSocResult {
             manifestFile: generatedPath(prepared.outputDir, MANIFEST_PATH),
             files: Object.freeze([...prepared.expectedFiles]),
             warnings: Object.freeze([...prepared.warnings]),
-            skippedUserFiles: Object.freeze(mainExists ? [MAIN_PATH] : []),
+            skippedUserFiles: Object.freeze(mainExists ? [V2_MAIN_PATH] : []),
         });
     } catch (error) {
         if (error instanceof ActivationRecoveryError) {
@@ -271,14 +244,16 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
         plan, assetRoot, path.dirname(configFile), readmeTemplate, portablePath(configFile),
         generatorVersion, resourceRevision);
     const mainFile = generatedFile(
-        MAIN_PATH,
+        V2_MAIN_PATH,
         renderStarterMain(plan, mainTemplate),
         'templates/main.c.tpl',
         'scaffold/user-owned',
     );
     const expectedFiles = expectedGeneratedFiles(plan).map(normalizeGeneratedPath);
     assertNoCaseInsensitivePathCollisions(expectedFiles);
-    const actualFiles = new Set([...generatedFiles.map((file) => file.path), MAIN_PATH, MANIFEST_PATH]);
+    const actualFiles = new Set([
+        ...generatedFiles.map((file) => file.path), V2_MAIN_PATH, MANIFEST_PATH,
+    ]);
     if (expectedFiles.length !== actualFiles.size
         || expectedFiles.some((file) => !actualFiles.has(file))) {
         throw new Error(`Generated file inventory differs from expectedGeneratedFiles:\nexpected ${JSON.stringify(expectedFiles)}\nactual ${JSON.stringify([...actualFiles])}`);
@@ -288,11 +263,11 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
         files: Object.freeze(expectedFiles
             .filter((file) => file !== MANIFEST_PATH)
             .map((file): ManifestFileRecord => {
-                if (file === MAIN_PATH) {
+                if (file === V2_MAIN_PATH) {
                     return {
                         kind: 'scaffold/user-owned',
                         logicalSource: 'templates/main.c.tpl',
-                        path: MAIN_PATH,
+                        path: V2_MAIN_PATH,
                     };
                 }
                 const generated = generatedFiles.find((candidate) => candidate.path === file);
@@ -312,13 +287,12 @@ function prepareGeneration(options: GenerateSocOptions): PreparedGeneration {
             kind: 'control/manifest',
             path: MANIFEST_PATH,
         },
-        manifestVersion: 1,
+        manifestVersion: 2,
         projectName: plan.projectName,
         resourceRevision,
         sourceConfig: portablePath(configFile),
     };
     return {
-        allowedAssetRtlPaths: catalogAssetRtlPaths(catalog),
         expectedFiles,
         generatedFiles,
         mainFile,
@@ -338,55 +312,35 @@ function renderGeneratedFiles(
     generatorVersion: string,
     resourceRevision: string,
 ): GeneratedFile[] {
+    const rtlBundle = renderRtlBundle(
+        plan, (logicalPath) => requireAssetFile(assetRoot, logicalPath));
     const result: GeneratedFile[] = [
-        generatedFile(`rtl/${plan.topModule}.v`, renderSocTop(plan),
-            'generator:renderSocTop', 'generated/rtl'),
-        generatedFile(`rtl/generated/${plan.topModule}_plb_router.v`, renderPlbRouter(plan),
-            'generator:renderPlbRouter', 'generated/rtl'),
+        generatedFile(`hardware/${plan.topModule}.v`, rtlBundle.content,
+            'generator:renderRtlBundle', 'generated/rtl-bundle'),
     ];
-    const apb = renderApbInterconnect(plan);
-    if (apb !== undefined) {
-        result.push(generatedFile(`rtl/generated/${plan.topModule}_apb_interconnect.v`, apb,
-            'generator:renderApbInterconnect', 'generated/rtl'));
-    }
-    for (const logicalPath of plan.rtlFiles) {
-        result.push(generatedFile(logicalPath, requireAssetFile(assetRoot, logicalPath),
-            logicalPath, 'asset/rtl'));
-    }
-    const rtlFiles = result.filter((file) => file.path.startsWith('rtl/') && file.path.endsWith('.v'))
-        .map((file) => file.path.slice('rtl/'.length))
-        .sort();
-    result.push(generatedFile('rtl/files.f', `${rtlFiles.join('\n')}\n`,
-        'generator:rtlFiles', 'generated/rtl-file-list'));
     for (const [slot, memory] of [['ilb', plan.memory.ilb], ['dlb', plan.memory.dlb]] as const) {
         if (memory.initFile === undefined) continue;
-        result.push(generatedFile(`memory/${memory.initFile.outputName}`,
+        result.push(generatedFile(`firmware/${memory.initFile.outputName}`,
             readRequiredFile(memory.initFile.source, sourceRoot,
                 `${slot} memory initialization file`),
-            `config:memory.${slot}.initFile`, 'source/memory-init'));
+            `config:memory.${slot}.initFile`, 'source/firmware'));
     }
     result.push(
-        generatedFile(`software/include/${headerFileName(plan)}`, renderSocHeader(plan),
+        generatedFile(`software/${headerFileName(plan)}`, renderSocHeader(plan),
             'generator:renderSocHeader', 'generated/software-header'),
-        generatedFile(`config/${plan.projectName}.resolved.json`, renderResolvedConfig(plan),
-            'generator:renderResolvedConfig', 'generated/config'),
-        generatedFile('address-map.json', renderAddressMap(plan),
-            'generator:renderAddressMap', 'generated/address-map'),
         generatedFile('README.md', renderGeneratedReadme(
             plan, {
                 sourceIdentity,
                 generatorVersion,
                 resourceRevision,
                 integration: [
-                    `Compile with \`iverilog -g2005 -s ${plan.topModule} -f rtl/files.f\`.`,
-                    `Edit \`software/src/main.c\` and include \`software/include/${headerFileName(plan)}\`.`,
+                    `Compile with \`iverilog -g2005 -s ${plan.topModule} hardware/${plan.topModule}.v\`.`,
+                    `Edit \`software/main.c\` and include \`software/${headerFileName(plan)}\`.`,
                 ],
                 outputFiles: expectedGeneratedFiles(plan),
-                rtlSources: rtlFiles,
+                rtlSources: rtlBundle.logicalSources,
             }, readmeTemplate),
             'templates/README.md.tpl', 'generated/documentation'),
-        generatedFile('LICENSE', requireAssetFile(assetRoot, 'licenses/LICENSE'),
-            'licenses/LICENSE', 'asset/license'),
     );
     return result;
 }
@@ -412,7 +366,7 @@ function inspectTarget(
     const existingByCase = new Map(existingEntries.map((entry) => [
         entry.path.toLocaleLowerCase('en-US'), entry,
     ]));
-    const desiredPaths = [...desiredManaged.keys(), MAIN_PATH, MANIFEST_PATH];
+    const desiredPaths = [...desiredManaged.keys(), V2_MAIN_PATH, MANIFEST_PATH];
     const desiredPathsAndParents = new Set<string>();
     const desiredDirectories = new Set<string>();
     for (const desiredPath of desiredPaths) {
@@ -431,10 +385,10 @@ function inspectTarget(
             conflicts.push({ path: existing.path, reason: 'modified-managed' });
         }
     }
-    const mainTarget = generatedPath(outputDir, MAIN_PATH);
+    const mainTarget = generatedPath(outputDir, V2_MAIN_PATH);
     try {
         if (!fs.lstatSync(mainTarget).isFile()) {
-            conflicts.push({ path: MAIN_PATH, reason: 'modified-managed' });
+            conflicts.push({ path: V2_MAIN_PATH, reason: 'modified-managed' });
         }
     } catch (error) {
         if (!isMissingPathError(error)) throw error;
@@ -458,7 +412,7 @@ function inspectTarget(
         const inspectedHash = sha256File(target);
         if (inspectedHash === oldRecord.sha256) {
             if (desired === undefined) {
-                if (oldRecord.kind === 'source/memory-init') {
+                if (oldRecord.kind === 'source/firmware') {
                     conflicts.push({ path: relativePath, reason: 'modified-stale' });
                 } else {
                     stalePaths.set(relativePath, {
@@ -523,10 +477,7 @@ function inspectRegularTarget(target: string): InspectedTargetState {
     }
 }
 
-function readExistingManifest(
-    outputDir: string,
-    allowedAssetRtlPaths: ReadonlySet<string>,
-): ExistingManifest | undefined {
+function readExistingManifest(outputDir: string): ExistingManifest | undefined {
     const manifestFile = generatedPath(outputDir, MANIFEST_PATH);
     if (!fs.existsSync(manifestFile)) return undefined;
     try {
@@ -534,7 +485,7 @@ function readExistingManifest(
         const content = fs.readFileSync(manifestFile);
         const value = JSON.parse(content.toString('utf8')) as unknown;
         return {
-            manifest: validateManifest(value, allowedAssetRtlPaths),
+            manifest: parseSocManifest(value),
             state: {
                 kind: 'regular-file',
                 sha256: sha256(content),
@@ -544,126 +495,6 @@ function readExistingManifest(
     } catch (error) {
         throw diagnosticFailure('SOC_MANIFEST', error);
     }
-}
-
-function validateManifest(
-    value: unknown,
-    allowedAssetRtlPaths: ReadonlySet<string>,
-): SocManifest {
-    if (!isObject(value) || value.manifestVersion !== 1
-        || typeof value.projectName !== 'string'
-        || !isIdentifier(value.projectName)
-        || typeof value.sourceConfig !== 'string'
-        || typeof value.generatorVersion !== 'string'
-        || typeof value.resourceRevision !== 'string'
-        || !isObject(value.manifestFile)
-        || value.manifestFile.hashPolicy !== 'excluded-self'
-        || value.manifestFile.kind !== 'control/manifest'
-        || value.manifestFile.path !== MANIFEST_PATH
-        || !Array.isArray(value.files)) {
-        throw new Error('Existing manifest has an unsupported shape.');
-    }
-    const records: ManifestFileRecord[] = value.files.map((record): ManifestFileRecord => {
-        if (!isObject(record) || typeof record.path !== 'string'
-            || typeof record.kind !== 'string' || typeof record.logicalSource !== 'string') {
-            throw new Error('Existing manifest contains an invalid file record.');
-        }
-        const recordPath = normalizeGeneratedPath(record.path);
-        if (record.kind === 'scaffold/user-owned') {
-            if (recordPath !== MAIN_PATH || record.sha256 !== undefined
-                || record.logicalSource !== 'templates/main.c.tpl') {
-                throw new Error('Existing user-owned scaffold record is invalid.');
-            }
-            return {
-                kind: 'scaffold/user-owned',
-                logicalSource: record.logicalSource,
-                path: MAIN_PATH,
-            };
-        }
-        if (recordPath === MAIN_PATH || recordPath === MANIFEST_PATH || !isSha256(record.sha256)
-            || !isAllowedManagedRecord(
-                record.kind, record.logicalSource, recordPath,
-                value.projectName as string, allowedAssetRtlPaths)) {
-            throw new Error('Existing managed file record is invalid.');
-        }
-        return {
-            kind: record.kind,
-            logicalSource: record.logicalSource,
-            path: recordPath,
-            sha256: record.sha256,
-        };
-    });
-    assertNoCaseInsensitivePathCollisions(records.map((record) => record.path));
-    if (records.filter((record) => record.kind === 'scaffold/user-owned').length !== 1) {
-        throw new Error('Existing manifest must contain exactly one user-owned main.c record.');
-    }
-    return {
-        files: records,
-        generatorVersion: value.generatorVersion,
-        manifestFile: {
-            hashPolicy: 'excluded-self',
-            kind: 'control/manifest',
-            path: MANIFEST_PATH,
-        },
-        manifestVersion: 1,
-        projectName: value.projectName,
-        resourceRevision: value.resourceRevision,
-        sourceConfig: value.sourceConfig,
-    };
-}
-
-function catalogAssetRtlPaths(catalog: ReturnType<typeof loadCatalog>): ReadonlySet<string> {
-    const paths = new Set<string>([
-        'rtl/cpu/MERC32_top.v',
-        'rtl/cpu/core.v',
-        'rtl/misc/div.v',
-        'rtl/misc/mul.v',
-        'rtl/misc/spram.v',
-        'rtl/debug/jtag_debug.v',
-        'rtl/bridge/lb2apb.v',
-    ]);
-    for (const descriptor of catalog.modules.values()) {
-        for (const rtlFile of descriptor.rtlFiles) paths.add(rtlFile);
-    }
-    for (const descriptor of catalog.protocols.values()) {
-        for (const rtlFile of descriptor.rtlFiles) paths.add(rtlFile);
-    }
-    return paths;
-}
-
-function isAllowedManagedRecord(
-    kind: string,
-    logicalSource: string,
-    recordPath: string,
-    projectName: string,
-    allowedAssetRtlPaths: ReadonlySet<string>,
-): boolean {
-    if (kind === 'asset/rtl') {
-        return logicalSource === recordPath && allowedAssetRtlPaths.has(recordPath);
-    }
-    const exact = new Map<string, readonly [string, string]>([
-        [`rtl/${projectName}.v`, ['generated/rtl', 'generator:renderSocTop']],
-        [`rtl/generated/${projectName}_plb_router.v`,
-            ['generated/rtl', 'generator:renderPlbRouter']],
-        [`rtl/generated/${projectName}_apb_interconnect.v`,
-            ['generated/rtl', 'generator:renderApbInterconnect']],
-        ['rtl/files.f', ['generated/rtl-file-list', 'generator:rtlFiles']],
-        [`software/include/${projectName}.h`,
-            ['generated/software-header', 'generator:renderSocHeader']],
-        [`config/${projectName}.resolved.json`,
-            ['generated/config', 'generator:renderResolvedConfig']],
-        ['address-map.json', ['generated/address-map', 'generator:renderAddressMap']],
-        ['README.md', ['generated/documentation', 'templates/README.md.tpl']],
-        ['LICENSE', ['asset/license', 'licenses/LICENSE']],
-    ]);
-    const expected = exact.get(recordPath);
-    if (expected !== undefined) {
-        return kind === expected[0] && logicalSource === expected[1];
-    }
-    const memory = /^memory\/(ilb|dlb)_([^/]+)$/.exec(recordPath);
-    return memory !== null && memory[2] !== '.' && memory[2] !== '..'
-        && kind === 'source/memory-init'
-        && logicalSource === `config:memory.${memory[1]}.initFile`;
 }
 
 function listOutputEntries(
@@ -815,14 +646,6 @@ function sameCanonicalPath(left: string, right: string): boolean {
 
 function isManagedRecord(record: ManifestFileRecord): record is ManifestManagedRecord {
     return record.kind !== 'scaffold/user-owned';
-}
-
-function isSha256(value: unknown): value is string {
-    return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
-}
-
-function isIdentifier(value: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

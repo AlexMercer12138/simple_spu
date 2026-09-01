@@ -1,4 +1,4 @@
-#include "../include/{{HEADER_FILE}}"
+#include "{{HEADER_FILE}}"
 
 int main(void) {
     while (1) {

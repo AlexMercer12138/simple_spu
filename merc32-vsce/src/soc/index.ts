@@ -5,6 +5,7 @@ export * from './emitVerilog';
 export * from './emitRtlBundle';
 export * from './emitSoftware';
 export * from './generator';
+export * from './manifest';
 export * from './model';
 export * from './planner';
 export * from './schema';
