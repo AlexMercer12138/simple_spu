@@ -10,11 +10,16 @@
     background: var(--vscode-editor-background);
 }
 
+html,
+body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
 body {
     margin: 0;
-    min-width: 280px;
-    height: 100vh;
-    overflow: hidden;
+    min-width: 0;
     background: var(--vscode-editor-background);
 }
 
@@ -60,10 +65,12 @@ p {
 }
 
 .editor-shell {
+    position: fixed;
+    inset: 0;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) clamp(112px, 20vh, 180px);
-    width: 100%;
-    height: 100vh;
+    grid-template-rows: auto auto minmax(0, 4fr) minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -155,8 +162,9 @@ p {
 }
 
 .workbench {
+    grid-row: 3;
     display: grid;
-    grid-template-columns: minmax(190px, 0.72fr) minmax(340px, 1.45fr) minmax(250px, 1fr);
+    grid-template-columns: minmax(0, 23fr) minmax(0, 46fr) minmax(0, 31fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -489,10 +497,12 @@ p {
 }
 
 .bottom-band {
+    grid-row: 4;
     display: grid;
-    grid-template-columns: minmax(0, 1.7fr) minmax(240px, 0.7fr);
-    height: clamp(112px, 20vh, 180px);
+    grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+    min-width: 0;
     min-height: 0;
+    overflow: hidden;
     border-top: 1px solid var(--vscode-panel-border);
     background: var(--vscode-panel-background);
 }
@@ -500,6 +510,7 @@ p {
 .address-overview,
 .generation-state {
     min-width: 0;
+    min-height: 0;
     padding: 8px 12px;
     overflow: auto;
 }
@@ -588,20 +599,7 @@ p {
     background: var(--vscode-testing-iconFailed);
 }
 
-@media (max-width: 1020px) {
-    .workbench {
-        grid-template-columns: minmax(190px, 0.72fr) minmax(340px, 1.45fr);
-        grid-template-rows: minmax(0, 1.35fr) minmax(120px, 0.65fr);
-    }
-
-    .summary-pane {
-        grid-column: 1 / -1;
-        border-top: 1px solid var(--vscode-panel-border);
-    }
-}
-
 @media (max-width: 640px) {
-
     .toolbar {
         align-items: flex-start;
         flex-direction: column;
@@ -610,36 +608,6 @@ p {
     .toolbar-actions {
         justify-content: flex-start;
         width: 100%;
-    }
-
-    .workbench {
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: max-content max-content max-content;
-        overflow: auto;
-    }
-
-    .navigation-pane,
-    .property-pane,
-    .summary-pane {
-        grid-column: 1;
-        max-height: none;
-        overflow: visible;
-        border-right: 0;
-        border-bottom: 1px solid var(--vscode-panel-border);
-    }
-
-    .summary-tabs {
-        position: static;
-    }
-
-    .bottom-band {
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    }
-
-    .address-overview {
-        border-right: 0;
-        border-bottom: 1px solid var(--vscode-panel-border);
     }
 }
 

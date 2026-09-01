@@ -22,11 +22,15 @@ function rule(css, selector) {
 }
 
 function runResponsiveCssContractTests() {
-    assert.match(rule(cssSource, '.editor-shell'), /height:\s*100vh/);
+    assert.match(rule(cssSource, '.editor-shell'), /position:\s*fixed/);
+    assert.match(rule(cssSource, '.editor-shell'), /inset:\s*0/);
+    assert.match(rule(cssSource, '.editor-shell'),
+        /minmax\(0,\s*4fr\).*minmax\(0,\s*1fr\)/s);
+    assert.match(rule(cssSource, '.workbench'), /23fr.*46fr.*31fr/s);
+    assert.match(rule(cssSource, '.bottom-band'), /7fr.*3fr/s);
     assert.match(rule(cssSource, '.editor-shell'), /overflow:\s*hidden/);
-    assert.match(rule(cssSource, '.editor-shell'), /minmax\(0,\s*1fr\)/);
-    assert.doesNotMatch(cssSource, /\.editor-shell\s*\{[^}]*height:\s*auto/s);
-    assert.match(rule(cssSource, '.bottom-band'), /height:\s*clamp\(/);
+    assert.doesNotMatch(cssSource, /\.workbench\s*\{[^}]*grid-template-rows/s);
+    assert.doesNotMatch(cssSource, /\.bottom-band\s*\{[^}]*height:\s*clamp/s);
     assert.strictEqual(cssSource.includes('.nav-badge'), false);
     assert.ok(cssSource.includes('.route-row'));
 }
@@ -224,13 +228,15 @@ function createVisualModel() {
             { name: 'sensor_bus', kind: 'external', baseAddress: '0x20000000', endAddress: '0x2000ffff', size: '64 KiB' },
         ],
         interruptRows: routes,
-        portRows: [
-            { name: 'clk_i', direction: 'input', width: 1 },
-            { name: 'rst_ni', direction: 'input', width: 1 },
-            { name: 'uart0_tx_o', direction: 'output', width: 1 },
-            { name: 'gpio0_io', direction: 'inout', width: 16 },
-            { name: 'sensor_plb', direction: 'interface', width: 32 },
-        ],
+        portRows: Array.from({ length: 40 }, (_, index) => ({
+            name: index === 0 ? 'clk_i' : index === 1 ? 'rst_ni'
+                : index === 2 ? 'uart0_tx_o' : index === 3 ? 'gpio0_io'
+                    : index === 4 ? 'sensor_plb' : `external_signal_${index - 5}`,
+            direction: index === 0 || index === 1 ? 'input'
+                : index === 2 ? 'output' : index === 3 ? 'inout'
+                    : index === 4 ? 'interface' : index % 2 === 0 ? 'output' : 'input',
+            width: index === 3 ? 16 : index === 4 ? 32 : index % 7 === 0 ? 8 : 1,
+        })),
         dependencyRows: [
             { name: 'hardware/flight_controller.v', kind: 'generated/rtl', detail: 'Complete SoC RTL bundle' },
             { name: 'software/flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
@@ -246,6 +252,22 @@ function createVisualModel() {
             message: 'Ready to generate the visual fixture.',
         },
     };
+}
+
+function applyVisualScenario(model, scenario) {
+    if (scenario === 'short') {
+        model.selectedPath = ['cpu'];
+        model.visualSummary = 'validation';
+    } else if (scenario === 'ports') {
+        model.selectedPath = ['cpu'];
+        model.visualSummary = 'port';
+    } else if (scenario === 'routes') {
+        model.selectedPath = ['interrupt'];
+        model.visualSummary = 'validation';
+    } else {
+        throw new Error(`Unknown visual scenario: ${scenario}`);
+    }
+    return model;
 }
 
 function visualEditorHtml() {
@@ -269,10 +291,20 @@ function visualEditorHtml() {
 function visualHarnessScript(initialModel) {
     return `(() => {
     'use strict';
-    const state = ${JSON.stringify(initialModel)};
+    const copy = (value) => JSON.parse(JSON.stringify(value));
+    const applyVisualScenario = ${applyVisualScenario.toString()};
+    const query = new URLSearchParams(location.search);
+    const scenario = query.get('scenario') || 'routes';
+    if (query.get('geometry') === '1') {
+        const loadGate = document.createElement('img');
+        loadGate.hidden = true;
+        loadGate.alt = '';
+        loadGate.src = '/geometry-wait.gif';
+        document.body.appendChild(loadGate);
+    }
+    const state = applyVisualScenario(copy(${JSON.stringify(initialModel)}), scenario);
     let nextActionId = state.generation.actionId;
     const messages = [];
-    const copy = (value) => JSON.parse(JSON.stringify(value));
     const dispatch = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
     const sendState = () => dispatch({ type: 'state', value: copy(state) });
     const sendGeneration = (phase, message) => dispatch({
@@ -347,11 +379,84 @@ function visualHarnessScript(initialModel) {
     };
     Object.entries(theme).forEach(([name, value]) => document.documentElement.style.setProperty(name, value));
     window.__socHarness = { state, messages };
+    const rect = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+            left: bounds.left,
+            top: bounds.top,
+            right: bounds.right,
+            bottom: bounds.bottom,
+            width: bounds.width,
+            height: bounds.height,
+        };
+    };
+    const paneGeometry = (selector) => {
+        const element = document.querySelector(selector);
+        const style = getComputedStyle(element);
+        return {
+            ...rect(element),
+            clientWidth: element.clientWidth,
+            clientHeight: element.clientHeight,
+            scrollWidth: element.scrollWidth,
+            scrollHeight: element.scrollHeight,
+            scrollTop: element.scrollTop,
+            overflowX: style.overflowX,
+            overflowY: style.overflowY,
+        };
+    };
+    const recordGeometry = () => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            const shell = document.querySelector('.editor-shell');
+            const toolbar = document.querySelector('.toolbar');
+            const workbench = document.querySelector('.workbench');
+            const bottomBand = document.querySelector('.bottom-band');
+            const scrollingSelector = scenario === 'ports' ? '.summary-pane'
+                : scenario === 'routes' ? '.property-pane' : '.navigation-pane';
+            const scrollingPane = document.querySelector(scrollingSelector);
+            const result = {
+                scenario,
+                viewport: {
+                    width: document.documentElement.clientWidth,
+                    height: document.documentElement.clientHeight,
+                },
+                document: {
+                    clientWidth: document.documentElement.clientWidth,
+                    clientHeight: document.documentElement.clientHeight,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    scrollHeight: document.documentElement.scrollHeight,
+                },
+                shell: rect(shell),
+                shellGridRows: getComputedStyle(shell).gridTemplateRows,
+                toolbar: rect(toolbar),
+                workbench: rect(workbench),
+                navigation: paneGeometry('.navigation-pane'),
+                properties: paneGeometry('.property-pane'),
+                summary: paneGeometry('.summary-pane'),
+                bottomBand: rect(bottomBand),
+                address: paneGeometry('.address-overview'),
+                status: paneGeometry('.generation-state'),
+                scroll: { selector: scrollingSelector, before: scrollingPane.scrollTop },
+            };
+            scrollingPane.scrollTop = 48;
+            requestAnimationFrame(() => {
+                result.scroll.after = scrollingPane.scrollTop;
+                result.shellAfterScroll = rect(shell);
+                result.bottomBandAfterScroll = rect(bottomBand);
+                const output = document.createElement('pre');
+                output.id = 'geometry-result';
+                output.hidden = true;
+                output.textContent = btoa(JSON.stringify(result));
+                document.body.appendChild(output);
+            });
+        }));
+    };
     window.acquireVsCodeApi = () => ({
         postMessage(message) {
             messages.push(copy(message));
             if (message.type === 'ready') {
                 sendState();
+                document.querySelector('[data-summary="' + state.visualSummary + '"]').click();
+                if (query.get('geometry') === '1') recordGeometry();
             } else if (message.type === 'select') {
                 state.selectedPath = copy(message.path);
                 sendState();
@@ -370,8 +475,8 @@ function visualHarnessScript(initialModel) {
 }
 
 function startVisualServer(port) {
-    assert.ok(Number.isInteger(port) && port > 0 && port <= 65535,
-        '--serve requires a port from 1 to 65535');
+    assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535,
+        '--serve requires a port from 0 to 65535');
     const model = createVisualModel();
     const assets = new Map([
         ['/', ['text/html; charset=utf-8', visualEditorHtml()]],
@@ -381,6 +486,17 @@ function startVisualServer(port) {
     ]);
     const server = http.createServer((request, response) => {
         const pathname = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`).pathname;
+        if (pathname === '/geometry-wait.gif') {
+            setTimeout(() => {
+                response.writeHead(200, {
+                    'Content-Type': 'image/gif',
+                    'Cache-Control': 'no-store',
+                    'Content-Length': '26',
+                });
+                response.end(Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64'));
+            }, 500);
+            return;
+        }
         const asset = assets.get(pathname);
         if (!asset) {
             response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -395,7 +511,7 @@ function startVisualServer(port) {
         response.end(asset[1]);
     });
     server.listen(port, '127.0.0.1', () => {
-        console.log(`MERC32 SoC visual harness: http://127.0.0.1:${port}`);
+        console.log(`MERC32 SoC visual harness: http://127.0.0.1:${server.address().port}`);
     });
     return server;
 }
@@ -965,21 +1081,26 @@ function runInteractionRestorationTests() {
     harness.dom.window.close();
 }
 
-runResponsiveCssContractTests();
-runVisualHarnessContractTests();
-runInitialActionAvailabilityTests();
-runDocumentStateLabelTests();
-runNavigationAndConcurrencyTests();
-runStaleFullStateGenerationTests();
-runActiveActionAcknowledgmentTests();
-runTerminalActionAcknowledgmentTests();
-runCompactInterruptTests();
-runNavigationMutationPendingTests();
-runSummaryKeyboardAndDiagnosticTests();
-runInteractionRestorationTests();
-console.log('MERC32 SoC Webview interaction contracts passed.');
-
-const serveIndex = process.argv.indexOf('--serve');
-if (serveIndex !== -1) {
-    startVisualServer(Number(process.argv[serveIndex + 1]));
+function runAllWebviewContractTests() {
+    runResponsiveCssContractTests();
+    runVisualHarnessContractTests();
+    runInitialActionAvailabilityTests();
+    runDocumentStateLabelTests();
+    runNavigationAndConcurrencyTests();
+    runStaleFullStateGenerationTests();
+    runActiveActionAcknowledgmentTests();
+    runTerminalActionAcknowledgmentTests();
+    runCompactInterruptTests();
+    runNavigationMutationPendingTests();
+    runSummaryKeyboardAndDiagnosticTests();
+    runInteractionRestorationTests();
+    console.log('MERC32 SoC Webview interaction contracts passed.');
 }
+
+if (require.main === module) {
+    runAllWebviewContractTests();
+    const serveIndex = process.argv.indexOf('--serve');
+    if (serveIndex !== -1) startVisualServer(Number(process.argv[serveIndex + 1]));
+}
+
+module.exports = { createVisualModel, startVisualServer, visualEditorHtml, visualHarnessScript };
