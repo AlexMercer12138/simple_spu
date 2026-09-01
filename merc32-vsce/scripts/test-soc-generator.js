@@ -159,6 +159,15 @@ function assertStrictManifestParser() {
     const manifest = validManifest();
     assert.deepStrictEqual(soc.parseSocManifest(manifest), manifest);
     const invalid = [
+        ['missing mandatory managed records', (value) => {
+            value.files = value.files.filter((record) => record.path === 'software/main.c');
+        }],
+        ['duplicate ILB firmware slot', (value) => {
+            value.files.push({
+                ...value.files[2],
+                path: 'firmware/ilb_second.hex',
+            });
+        }],
         ['traversal path', (value) => { value.files[0].path = '../README.md'; }],
         ['absolute path', (value) => { value.files[0].path = 'C:/README.md'; }],
         ['wrong hardware project', (value) => { value.files[1].path = 'hardware/other.v'; }],
@@ -353,7 +362,6 @@ function assertGenerationOrchestration() {
             logicalSource: 'templates/main.c.tpl',
             path: 'software/main.c',
         });
-        assertStrictManifestParser();
         const firstInventory = snapshotDirectory(outputDir);
         const repeat = soc.generateSoc({ configFile, assetRoot: assets });
         assert.deepStrictEqual(repeat.skippedUserFiles, ['software/main.c']);
@@ -366,6 +374,23 @@ function assertGenerationOrchestration() {
             ['forged', (manifest) => {
                 manifest.files.find((record) => record.path === 'hardware/demo_soc.v').kind =
                     'generated/software-header';
+            }],
+            ['duplicate-ilb', (manifest) => {
+                for (const name of ['first.bin', 'second.hex']) {
+                    manifest.files.push({
+                        kind: 'source/firmware',
+                        logicalSource: 'config:memory.ilb.initFile',
+                        path: `firmware/ilb_${name}`,
+                        sha256: '0'.repeat(64),
+                    });
+                }
+            }],
+            ['missing-mandatory', (manifest, output) => {
+                manifest.files = manifest.files.filter(
+                    (record) => record.path === 'software/main.c');
+                for (const missing of [
+                    'README.md', 'hardware/demo_soc.v', 'software/demo_soc.h',
+                ]) fs.rmSync(path.join(output, ...missing.split('/')));
             }],
         ];
         const generationModes = [
@@ -380,7 +405,7 @@ function assertGenerationOrchestration() {
                     'demo_soc', 'generated/demo_soc');
                 const generated = soc.generateSoc({ configFile: manifestConfig, assetRoot: assets });
                 const manifest = readManifest(generated.outputDir);
-                mutateManifest(manifest);
+                mutateManifest(manifest, generated.outputDir);
                 writeFile(path.join(generated.outputDir, 'manifest.json'),
                     `${JSON.stringify(manifest, null, 2)}\n`);
                 const beforeRejectedManifest = snapshotDirectory(generated.outputDir);
@@ -395,6 +420,7 @@ function assertGenerationOrchestration() {
                     `${manifestKind}/${mode} must reject before output mutation`);
             }
         }
+        assertStrictManifestParser();
 
         const invalidMainRecords = [
             (manifest, mainHash) => {

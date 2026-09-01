@@ -99,6 +99,18 @@ export function parseSocManifest(value: unknown): SocManifest {
     if (records.filter((record) => record.kind === 'scaffold/user-owned').length !== 1) {
         throw new Error('SoC manifest v2 must contain exactly one user-owned main.c record.');
     }
+    for (const mandatoryPath of exact.keys()) {
+        if (records.filter((record) => record.path === mandatoryPath).length !== 1) {
+            throw new Error(`SoC manifest v2 must contain exactly one ${mandatoryPath} record.`);
+        }
+    }
+    for (const slot of ['ilb', 'dlb'] as const) {
+        const prefix = `firmware/${slot}_`;
+        if (records.filter((record) => record.kind === 'source/firmware'
+            && record.path.startsWith(prefix)).length > 1) {
+            throw new Error(`SoC manifest v2 contains multiple ${slot.toUpperCase()} firmware records.`);
+        }
+    }
     return {
         files: records,
         generatorVersion: value.generatorVersion,
