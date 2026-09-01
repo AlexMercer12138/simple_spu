@@ -9,6 +9,8 @@ export * from './ast';
 export * from './lexer';
 export * from './parser';
 export * from './declarations';
+export * from './sema';
+export * from './initializers';
 
 export interface CompileFileOptions extends CompileOptions {
     preprocess?: CPreprocessOptions;
