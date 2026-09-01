@@ -158,7 +158,39 @@ function assertStrictManifestParser() {
         'parseSocManifest must be exported from the SoC package');
     const manifest = validManifest();
     assert.deepStrictEqual(soc.parseSocManifest(manifest), manifest);
+    for (const sourceConfig of [
+        'C:/workspace/MERC32 configs/demo.merc32.json',
+        '/opt/merc32/项目/demo.merc32.json',
+        '//build-server/merc32 share/demo.merc32.json',
+    ]) {
+        const value = clone(manifest);
+        value.sourceConfig = sourceConfig;
+        value.generatorVersion = '2.0.3+release/candidate.1';
+        value.resourceRevision = '资源-revision/β+1';
+        assert.deepStrictEqual(soc.parseSocManifest(value), value,
+            `valid canonical source identity was rejected: ${sourceConfig}`);
+    }
     const invalid = [
+        ['empty source config', (value) => { value.sourceConfig = ''; }],
+        ['relative source config', (value) => { value.sourceConfig = 'configs/demo.merc32.json'; }],
+        ['non-canonical source separator', (value) => {
+            value.sourceConfig = 'C:\\workspace\\demo.merc32.json';
+        }],
+        ['non-canonical source segment', (value) => {
+            value.sourceConfig = 'D:/workspace/../demo.merc32.json';
+        }],
+        ['source config C0 control', (value) => {
+            value.sourceConfig = 'D:/workspace/demo\0.merc32.json';
+        }],
+        ['source config C1 control', (value) => {
+            value.sourceConfig = '/workspace/demo\u0085.merc32.json';
+        }],
+        ['empty generator version', (value) => { value.generatorVersion = ''; }],
+        ['controlled generator version', (value) => { value.generatorVersion = '2.0.3\nforged'; }],
+        ['empty resource revision', (value) => { value.resourceRevision = ''; }],
+        ['controlled resource revision', (value) => {
+            value.resourceRevision = 'resource\u009frevision';
+        }],
         ['missing mandatory managed records', (value) => {
             value.files = value.files.filter((record) => record.path === 'software/main.c');
         }],
@@ -369,6 +401,18 @@ function assertGenerationOrchestration() {
             'repeat generation must be byte-identical');
 
         const unsupportedManifestMutations = [
+            ['empty-source-config', (manifest) => { manifest.sourceConfig = ''; }],
+            ['controlled-source-config', (manifest) => {
+                manifest.sourceConfig = `${manifest.sourceConfig}\0forged`;
+            }],
+            ['empty-generator-version', (manifest) => { manifest.generatorVersion = ''; }],
+            ['controlled-generator-version', (manifest) => {
+                manifest.generatorVersion = `${manifest.generatorVersion}\nforged`;
+            }],
+            ['empty-resource-revision', (manifest) => { manifest.resourceRevision = ''; }],
+            ['controlled-resource-revision', (manifest) => {
+                manifest.resourceRevision = `${manifest.resourceRevision}\u0085forged`;
+            }],
             ['v1', (manifest) => { manifest.manifestVersion = 1; }],
             ['unsupported', (manifest) => { manifest.manifestVersion = 99; }],
             ['forged', (manifest) => {
@@ -420,8 +464,6 @@ function assertGenerationOrchestration() {
                     `${manifestKind}/${mode} must reject before output mutation`);
             }
         }
-        assertStrictManifestParser();
-
         const invalidMainRecords = [
             (manifest, mainHash) => {
                 manifest.files = manifest.files.filter((record) => record.path !== 'software/main.c');
@@ -2000,6 +2042,7 @@ try {
     assert.match(reservedRouter, /ENDPOINT_NONE\b/);
     assert.match(reservedRouter, /ENDPOINT_TARGET_NONE\b/);
 
+    assertStrictManifestParser();
     assertGenerationOrchestration();
 
     console.log('MERC32 SoC emitter and safe generation tests passed.');

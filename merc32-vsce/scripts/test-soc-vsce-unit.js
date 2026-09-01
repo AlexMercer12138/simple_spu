@@ -1233,6 +1233,17 @@ try {
         configUri: uri(`configs/${name}.merc32.json`),
         outputUri: uri(`generated/${name}`),
     }));
+    const linkedRecoveryUris = [
+        ['linked-output', 'linked_output'],
+        ['linked-manifest', 'linked_manifest'],
+        ['linked-child', 'linked_child'],
+        ['linked-child-ancestor', 'linked_child_ancestor'],
+    ].map(([name, projectName]) => ({
+        name,
+        projectName,
+        configUri: uri(`configs/${name}.merc32.json`),
+        outputUri: uri(`generated/${name}`),
+    }));
     const parseTestUri = (value) => {
         const parsed = new URL(value);
         return uri(decodeURIComponent(parsed.pathname).replace(/^\/workspace\//, ''));
@@ -1246,6 +1257,10 @@ try {
         { configUri: deadConfigUri.toString(), outputUri: deadOutputUri.toString() },
         { configUri: 'not a URI', outputUri: 'also not a URI' },
         ...invalidManifestUris.map(({ configUri, outputUri }) => ({
+            configUri: configUri.toString(),
+            outputUri: outputUri.toString(),
+        })),
+        ...linkedRecoveryUris.map(({ configUri, outputUri }) => ({
             configUri: configUri.toString(),
             outputUri: outputUri.toString(),
         })),
@@ -1354,6 +1369,20 @@ try {
             })));
         }
     }
+    for (const { projectName, configUri, outputUri } of linkedRecoveryUris) {
+        manifestPayloads.set(joinTestUri(outputUri, 'manifest.json').toString(),
+            Buffer.from(JSON.stringify({
+                ...validLiveManifest,
+                projectName,
+                sourceConfig: configUri.fsPath.replace(/\\/g, '/'),
+                files: validLiveManifest.files.map((item) => ({
+                    ...item,
+                    path: item.path
+                        .replace('hardware/live.v', `hardware/${projectName}.v`)
+                        .replace('software/live.h', `software/${projectName}.h`),
+                })),
+            })));
+    }
     const fileTypes = new Map([
         [compilerArtifactUri.toString(), 1],
         [liveOutputUri.toString(), 2],
@@ -1363,13 +1392,30 @@ try {
         [joinTestUri(liveOutputUri, 'software/live.h').toString(), 1],
         [joinTestUri(liveOutputUri, 'software/main.c').toString(), 1],
         [joinTestUri(liveOutputUri, 'firmware/ilb_boot.mem').toString(), 1],
+        [joinTestUri(liveOutputUri, 'hardware').toString(), 2],
+        [joinTestUri(liveOutputUri, 'software').toString(), 2],
+        [joinTestUri(liveOutputUri, 'firmware').toString(), 2],
     ]);
     for (const { outputUri } of invalidManifestUris) {
         fileTypes.set(outputUri.toString(), 2);
         fileTypes.set(joinTestUri(outputUri, 'manifest.json').toString(), 1);
     }
+    for (const { name, projectName, outputUri } of linkedRecoveryUris) {
+        fileTypes.set(outputUri.toString(), name === 'linked-output' ? 66 : 2);
+        fileTypes.set(joinTestUri(outputUri, 'manifest.json').toString(),
+            name === 'linked-manifest' ? 65 : 1);
+        fileTypes.set(joinTestUri(outputUri, 'README.md').toString(), 1);
+        fileTypes.set(joinTestUri(outputUri, 'hardware').toString(),
+            name === 'linked-child-ancestor' ? 66 : 2);
+        fileTypes.set(joinTestUri(outputUri, `hardware/${projectName}.v`).toString(),
+            name === 'linked-child' ? 65 : 1);
+        fileTypes.set(joinTestUri(outputUri, 'software').toString(), 2);
+        fileTypes.set(joinTestUri(outputUri, `software/${projectName}.h`).toString(), 1);
+        fileTypes.set(joinTestUri(outputUri, 'software/main.c').toString(), 1);
+        fileTypes.set(joinTestUri(outputUri, 'firmware').toString(), 2);
+    }
     const artifactVscode = {
-        FileType: { File: 1, Directory: 2 },
+        FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
         Uri: {
             parse: parseTestUri,
             file(value) { return uri(value.replace(/^C:\\workspace\\/, '').replace(/\\/g, '/')); },
@@ -1447,7 +1493,26 @@ try {
     const artifactSnapshot = artifactStore.getSnapshot();
     assert.deepStrictEqual(artifactSnapshot.compiler.map((item) => item.label), ['existing.hex'],
         'refresh retained a missing compiler artifact');
-    assert.strictEqual(artifactSnapshot.generatedSocs.length, 1,
+    const linkedChildRecovery = artifactSnapshot.generatedSocs.find((item) =>
+        item.outputUri.toString() === linkedRecoveryUris[2].outputUri.toString());
+    const linkedAncestorRecovery = artifactSnapshot.generatedSocs.find((item) =>
+        item.outputUri.toString() === linkedRecoveryUris[3].outputUri.toString());
+    assert.deepStrictEqual({
+        linkedOutputRecovered: artifactSnapshot.generatedSocs.some((item) =>
+            item.outputUri.toString() === linkedRecoveryUris[0].outputUri.toString()),
+        linkedManifestRecovered: artifactSnapshot.generatedSocs.some((item) =>
+            item.outputUri.toString() === linkedRecoveryUris[1].outputUri.toString()),
+        linkedManagedChildExposed: linkedChildRecovery?.artifacts.some((item) =>
+            item.relativePath === 'hardware/linked_child.v') ?? null,
+        linkedAncestorChildExposed: linkedAncestorRecovery?.artifacts.some((item) =>
+            item.relativePath === 'hardware/linked_child_ancestor.v') ?? null,
+    }, {
+        linkedOutputRecovered: false,
+        linkedManifestRecovered: false,
+        linkedManagedChildExposed: false,
+        linkedAncestorChildExposed: false,
+    }, 'artifact recovery accepted FileType 65/66 or a linked managed-child ancestor');
+    assert.strictEqual(artifactSnapshot.generatedSocs.length, 3,
         'refresh retained a generated SoC with a missing output/manifest');
     assert.strictEqual(artifactSnapshot.generatedSocs[0].configUri.toString(), liveConfigUri.toString());
     assert.ok(artifactErrors.some((error) => String(error).includes('legacy-v1')),
@@ -1464,7 +1529,10 @@ try {
     assert.deepStrictEqual(artifactWorkspaceUpdates.at(-1), [SOC_ARTIFACT_STATE_KEY, [{
         configUri: liveConfigUri.toString(),
         outputUri: liveOutputUri.toString(),
-    }]], 'dead persisted generated output was not removed from workspace state');
+    }, ...linkedRecoveryUris.slice(2).map(({ configUri, outputUri }) => ({
+        configUri: configUri.toString(),
+        outputUri: outputUri.toString(),
+    }))]], 'dead or linked-root persisted generated output was not removed from workspace state');
 
     const recordedConfigUri = uri('configs/recorded.merc32.json');
     const recordedOutputUri = uri('generated/recorded');
@@ -1490,6 +1558,10 @@ try {
     });
     assert.deepStrictEqual(artifactWorkspaceUpdates.at(-1), [SOC_ARTIFACT_STATE_KEY, [
         { configUri: liveConfigUri.toString(), outputUri: liveOutputUri.toString() },
+        ...linkedRecoveryUris.slice(2).map(({ configUri, outputUri }) => ({
+            configUri: configUri.toString(),
+            outputUri: outputUri.toString(),
+        })),
         { configUri: recordedConfigUri.toString(), outputUri: recordedOutputUri.toString() },
     ]], 'validated generated SoC record was not persisted');
 

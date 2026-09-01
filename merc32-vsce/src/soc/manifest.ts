@@ -44,9 +44,9 @@ export function parseSocManifest(value: unknown): SocManifest {
         );
     }
     if (typeof value.projectName !== 'string' || !isIdentifier(value.projectName)
-        || typeof value.sourceConfig !== 'string'
-        || typeof value.generatorVersion !== 'string'
-        || typeof value.resourceRevision !== 'string'
+        || !isCanonicalSourceConfig(value.sourceConfig)
+        || !isNonEmptyControlFreeString(value.generatorVersion)
+        || !isNonEmptyControlFreeString(value.resourceRevision)
         || !isObject(value.manifestFile)
         || value.manifestFile.hashPolicy !== 'excluded-self'
         || value.manifestFile.kind !== 'control/manifest'
@@ -148,6 +148,24 @@ function isSha256(value: unknown): value is string {
 
 function isIdentifier(value: string): boolean {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function isCanonicalSourceConfig(value: unknown): value is string {
+    if (!isNonEmptyControlFreeString(value) || value.includes('\\')) return false;
+    if (/^[A-Za-z]:\//.test(value)) return hasCanonicalPathSegments(value.slice(3), 1);
+    if (value.startsWith('//')) return hasCanonicalPathSegments(value.slice(2), 3);
+    return value.startsWith('/') && hasCanonicalPathSegments(value.slice(1), 1);
+}
+
+function hasCanonicalPathSegments(value: string, minimum: number): boolean {
+    const segments = value.split('/');
+    return segments.length >= minimum
+        && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+function isNonEmptyControlFreeString(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0
+        && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

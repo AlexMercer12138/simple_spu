@@ -9,6 +9,7 @@ import {
 } from './constants';
 import { parseSocManifest } from './soc';
 import type { SocManifest } from './soc';
+import { assertPathHasNoLinks } from './soc/fileManager';
 import type { GeneratedSocArtifactRecord } from './socCommands';
 import type { ToolchainArtifact } from './types';
 
@@ -386,8 +387,8 @@ export class Merc32ArtifactStore implements vscode.Disposable {
                 continue;
             }
             const manifestUri = this.vscodeApi.Uri.joinPath(outputUri, 'manifest.json');
-            if (!await this.pathExists(outputUri, 'directory')
-                || !await this.pathExists(manifestUri, 'file')) {
+            if (!await this.pathExists(outputUri, 'directory', outputUri)
+                || !await this.pathExists(manifestUri, 'file', outputUri)) {
                 continue;
             }
             let manifest: ArtifactManifestBinding | undefined;
@@ -410,7 +411,7 @@ export class Merc32ArtifactStore implements vscode.Disposable {
             ];
             for (const relativePath of manifest.paths) {
                 const uri = this.vscodeApi.Uri.joinPath(outputUri, ...relativePath.split('/'));
-                if (!await this.pathExists(uri, 'file')) continue;
+                if (!await this.pathExists(uri, 'file', outputUri)) continue;
                 artifacts.push({
                     kind: 'file',
                     label: path.posix.basename(relativePath),
@@ -428,16 +429,43 @@ export class Merc32ArtifactStore implements vscode.Disposable {
         this.fireChanged();
     }
 
-    private async pathExists(uri: vscode.Uri, expected: 'file' | 'directory'): Promise<boolean> {
+    private async pathExists(
+        uri: vscode.Uri,
+        expected: 'file' | 'directory',
+        artifactRoot?: vscode.Uri,
+    ): Promise<boolean> {
         try {
-            const stat = await this.vscodeApi.workspace.fs.stat(uri);
-            const fileType = expected === 'file'
-                ? this.vscodeApi.FileType.File
-                : this.vscodeApi.FileType.Directory;
-            return (stat.type & fileType) === fileType;
+            if (artifactRoot !== undefined
+                && !await this.hasSafeArtifactAncestors(artifactRoot, uri)) return false;
+            return await this.pathHasType(uri, expected);
         } catch {
             return false;
         }
+    }
+
+    private async hasSafeArtifactAncestors(root: vscode.Uri, target: vscode.Uri): Promise<boolean> {
+        if (root.scheme !== target.scheme || root.authority !== target.authority) return false;
+        const relative = path.posix.relative(root.path, target.path);
+        if (relative === '..' || relative.startsWith('../') || path.posix.isAbsolute(relative)) return false;
+        if (target.scheme === 'file') assertPathHasNoLinks(target.fsPath);
+        if (relative === '') return true;
+        if (!await this.pathHasType(root, 'directory')) return false;
+        let ancestor = root;
+        for (const component of relative.split('/').slice(0, -1)) {
+            if (component === '' || component === '.' || component === '..') return false;
+            ancestor = this.vscodeApi.Uri.joinPath(ancestor, component);
+            if (!await this.pathHasType(ancestor, 'directory')) return false;
+        }
+        return true;
+    }
+
+    private async pathHasType(uri: vscode.Uri, expected: 'file' | 'directory'): Promise<boolean> {
+        const stat = await this.vscodeApi.workspace.fs.stat(uri);
+        if ((stat.type & this.vscodeApi.FileType.SymbolicLink) !== 0) return false;
+        const fileType = expected === 'file'
+            ? this.vscodeApi.FileType.File
+            : this.vscodeApi.FileType.Directory;
+        return (stat.type & fileType) === fileType;
     }
 
     private async persist(): Promise<void> {
