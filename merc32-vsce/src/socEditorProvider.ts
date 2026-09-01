@@ -16,8 +16,11 @@ import {
     formatHex32,
     loadCatalog,
     ModuleCatalog,
+    parseByteSize,
     parseSocConfig,
+    parseU32,
     planSoc,
+    rangeEnd,
     SocDiagnostic,
     SocSourceConfig,
 } from './soc';
@@ -185,6 +188,7 @@ export function buildSocEditorViewModel(
             diagnostics: presentDiagnostics(source, sourceFile, parsed.diagnostics, parsed.sourceMap),
             selectedPath: selected,
             addressRows: [],
+            externalInterfacePresentation: [],
             interruptRows: [],
             portRows: [],
             dependencyRows: [],
@@ -224,11 +228,13 @@ export function buildSocEditorViewModel(
             endAddress: formatHex32(endpoint.endAddress),
             size: `${endpoint.sizeBytes.toString()} B`,
         })) : [],
+        externalInterfacePresentation: presentExternalInterfaces(parsed.config),
         interruptRows: plan ? plan.interrupt.sources.map((interrupt) => ({
             source: interrupt.source,
             ...(interrupt.id === undefined ? {} : { id: interrupt.id }),
             ...(interrupt.trigger === undefined ? {} : { trigger: interrupt.trigger }),
         })) : [],
+        interruptController: presentInterruptController(parsed.config),
         portRows: plan ? plan.topPorts.map((port) => ({ ...port })) : [],
         dependencyRows: plan ? presentDependencies(parsed.config, catalog, plan.rtlFiles.length) : [],
         interruptOptions: presentInterruptOptions(parsed.config, catalog),
@@ -463,6 +469,8 @@ export function buildSocDocumentUpdates(
             : undefined;
     }
     if (message.type === 'setValue') {
+        const derived = derivedEditorUpdates(config, message.path, message.value);
+        if (derived !== undefined) return derived;
         if (!isEditableSocPath(config, catalog, message.path)) return undefined;
         return normalizeDependentUpdates(config, message.path, message.value);
     }
@@ -484,14 +492,13 @@ function normalizeDependentUpdates(
     value: JsonValue,
 ): readonly JsonValueUpdate[] {
     if (pathValue.length === 2 && pathValue[0] === 'interrupt' && pathValue[1] === 'mode') {
-        if (value === 'none') return [{ path: ['interrupt'], value: { mode: 'none' } }];
+        if (value === 'none') return leaveControllerUpdates(config, { mode: 'none' });
         if (value === 'direct') {
             const previous = config.interrupt.mode === 'direct' ? config.interrupt.source : 'external.irq';
-            return [{ path: ['interrupt'], value: { mode: 'direct', source: previous } }];
+            return leaveControllerUpdates(config, { mode: 'direct', source: previous });
         }
         if (value === 'controller') {
-            const controller = config.peripherals.find((item) => item.type === 'apb_intc')?.name ?? 'intc0';
-            return [{ path: ['interrupt'], value: { mode: 'controller', controller, sources: [] } }];
+            return controllerModeUpdates(config);
         }
     }
     const updates: JsonValueUpdate[] = [{ path: pathValue, value }];
@@ -505,6 +512,74 @@ function normalizeDependentUpdates(
     return updates;
 }
 
+function derivedEditorUpdates(
+    config: SocSourceConfig,
+    pathValue: SocJsonPath,
+    value: JsonValue,
+): readonly JsonValueUpdate[] | undefined {
+    if (pathValue.length === 3 && pathValue[0] === 'externalInterfaces'
+        && typeof pathValue[1] === 'number' && pathValue[2] === 'highAddress') {
+        const endpoint = config.externalInterfaces[pathValue[1]];
+        if (!endpoint || endpoint.baseAddress === undefined || typeof value !== 'string'
+            || !/^0x[0-9a-fA-F]{8}$/.test(value)) {
+            return undefined;
+        }
+        try {
+            const baseAddress = parseU32(endpoint.baseAddress);
+            const highAddress = parseU32(value);
+            if (highAddress < baseAddress) return undefined;
+            return [{
+                path: ['externalInterfaces', pathValue[1], 'windowSize'],
+                value: Number(highAddress - baseAddress + 1n),
+            }];
+        } catch {
+            return undefined;
+        }
+    }
+    if (pathValue.length === 2 && pathValue[0] === 'interrupt'
+        && pathValue[1] === 'controllerName') {
+        if (config.interrupt.mode !== 'controller' || typeof value !== 'string') return undefined;
+        const index = interruptControllerIndex(config);
+        return index === undefined ? undefined : [
+            { path: ['peripherals', index, 'name'], value },
+            { path: ['interrupt', 'controller'], value },
+        ];
+    }
+    return undefined;
+}
+
+function controllerModeUpdates(config: SocSourceConfig): readonly JsonValueUpdate[] {
+    const existingIndex = config.peripherals.findIndex((item) => item.type === 'apb_intc');
+    if (existingIndex >= 0) {
+        const controller = config.peripherals[existingIndex].name;
+        return [{ path: ['interrupt'], value: { mode: 'controller', controller, sources: [] } }];
+    }
+    const controller = uniqueInstanceName(config.peripherals, 'intc');
+    return [
+        {
+            path: ['peripherals', config.peripherals.length],
+            value: { type: 'apb_intc', name: controller },
+        },
+        { path: ['interrupt'], value: { mode: 'controller', controller, sources: [] } },
+    ];
+}
+
+function leaveControllerUpdates(
+    config: SocSourceConfig,
+    interrupt: JsonObject,
+): readonly JsonValueUpdate[] {
+    const controllerIndex = config.interrupt.mode === 'controller'
+        ? interruptControllerIndex(config)
+        : undefined;
+    return [
+        ...(controllerIndex === undefined ? [] : [{
+            path: ['peripherals', controllerIndex] as const,
+            value: undefined,
+        }]),
+        { path: ['interrupt'], value: interrupt },
+    ];
+}
+
 function newInstance(
     config: SocSourceConfig,
     catalog: ModuleCatalog,
@@ -514,7 +589,8 @@ function newInstance(
     const existing = config[collection];
     if (collection === 'peripherals') {
         const descriptor = catalog.modules.get(itemType);
-        if (!descriptor || (!descriptor.multiple && existing.some((item) => item.type === itemType))) {
+        if (!descriptor || itemType === 'apb_intc'
+            || (!descriptor.multiple && existing.some((item) => item.type === itemType))) {
             return undefined;
         }
         return { type: itemType, name: uniqueInstanceName(existing, itemType.replace(/^apb_/, '')) };
@@ -577,6 +653,7 @@ function isSelectableSocPath(config: SocSourceConfig, pathValue: SocJsonPath): b
 
 function presentCatalog(catalog: ModuleCatalog): SocEditorViewModel['catalog'] {
     const modules = [...catalog.modules.values()]
+        .filter((descriptor) => descriptor.type !== 'apb_intc')
         .sort((left, right) => left.type.localeCompare(right.type))
         .map((descriptor): SocCatalogItemPresentation => ({
             type: descriptor.type,
@@ -604,6 +681,50 @@ function presentCatalog(catalog: ModuleCatalog): SocEditorViewModel['catalog'] {
             parameters: [],
         }));
     return { modules, externalInterfaces };
+}
+
+function presentExternalInterfaces(
+    config: SocSourceConfig,
+): SocEditorViewModel['externalInterfacePresentation'] {
+    return config.externalInterfaces.map((endpoint, index) => {
+        let highAddress: string | undefined;
+        try {
+            if (endpoint.baseAddress !== undefined) {
+                highAddress = formatHex32(rangeEnd(
+                    parseU32(endpoint.baseAddress),
+                    parseByteSize(endpoint.windowSize),
+                ));
+            }
+        } catch {
+            highAddress = undefined;
+        }
+        return {
+            index,
+            name: endpoint.name,
+            ...(highAddress === undefined ? {} : { highAddress }),
+        };
+    });
+}
+
+function interruptControllerIndex(config: SocSourceConfig): number | undefined {
+    if (config.interrupt.mode !== 'controller') return undefined;
+    const controllerName = config.interrupt.controller;
+    const index = config.peripherals.findIndex((item) =>
+        item.type === 'apb_intc' && item.name === controllerName);
+    return index < 0 ? undefined : index;
+}
+
+function presentInterruptController(
+    config: SocSourceConfig,
+): SocEditorViewModel['interruptController'] {
+    const peripheralIndex = interruptControllerIndex(config);
+    if (peripheralIndex === undefined) return undefined;
+    const controller = config.peripherals[peripheralIndex];
+    return {
+        peripheralIndex,
+        name: controller.name,
+        ...(controller.baseAddress === undefined ? {} : { baseAddress: controller.baseAddress }),
+    };
 }
 
 function emptyInterruptOptions(): SocInterruptOptionsPresentation {

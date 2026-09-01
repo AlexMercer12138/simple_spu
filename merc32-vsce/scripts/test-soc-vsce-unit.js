@@ -674,6 +674,81 @@ assert.strictEqual(multiView.documentVersion, 12);
 assert.ok(multiView.config);
 const parsedMultiForEditing = parseSocConfig(multiText, multiFixture, catalog);
 assert.ok(parsedMultiForEditing.config);
+assert.deepStrictEqual(multiView.externalInterfacePresentation, [
+    { index: 0, name: 'apb_ext0', highAddress: '0x10004fff' },
+    { index: 1, name: 'axi0', highAddress: '0x20ffffff' },
+]);
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'setValue', documentVersion: 12,
+    path: ['externalInterfaces', 0, 'highAddress'], value: '0x10005fff',
+}), [{ path: ['externalInterfaces', 0, 'windowSize'], value: 8192 }]);
+for (const invalidHighAddress of ['0x10003fff', '0x10004ff', '0x100000000']) {
+    assert.strictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+        type: 'setValue', documentVersion: 12,
+        path: ['externalInterfaces', 0, 'highAddress'], value: invalidHighAddress,
+    }), undefined, `accepted invalid derived high address: ${invalidHighAddress}`);
+}
+const derivedRangeSource = applyReplacement(multiText, buildJsonReplacement(
+    multiText,
+    buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+        type: 'setValue', documentVersion: 12,
+        path: ['externalInterfaces', 0, 'highAddress'], value: '0x10005fff',
+    }),
+));
+const derivedRangeConfig = JSON.parse(derivedRangeSource);
+assert.strictEqual(derivedRangeConfig.externalInterfaces[0].windowSize, 8192);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(
+    derivedRangeConfig.externalInterfaces[0], 'highAddress'), false);
+assert.ok(!multiView.catalog.modules.some((item) => item.type === 'apb_intc'));
+assert.deepStrictEqual(multiView.interruptController, {
+    peripheralIndex: 3,
+    name: 'intc0',
+    baseAddress: '0x10003000',
+});
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedStandard.config, catalog, {
+    type: 'setValue', documentVersion: 1,
+    path: ['interrupt', 'mode'], value: 'controller',
+}), [
+    { path: ['peripherals', 1], value: { type: 'apb_intc', name: 'intc0' } },
+    { path: ['interrupt'], value: { mode: 'controller', controller: 'intc0', sources: [] } },
+]);
+const controllerNameCollision = JSON.parse(standardJsonLf);
+controllerNameCollision.peripherals[0].name = 'intc0';
+assert.deepStrictEqual(buildSocDocumentUpdates(controllerNameCollision, catalog, {
+    type: 'setValue', documentVersion: 1,
+    path: ['interrupt', 'mode'], value: 'controller',
+}), [
+    { path: ['peripherals', 1], value: { type: 'apb_intc', name: 'intc1' } },
+    { path: ['interrupt'], value: { mode: 'controller', controller: 'intc1', sources: [] } },
+]);
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'setValue', documentVersion: 12,
+    path: ['interrupt', 'mode'], value: 'controller',
+}), [{
+    path: ['interrupt'],
+    value: { mode: 'controller', controller: 'intc0', sources: [] },
+}]);
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'setValue', documentVersion: 12,
+    path: ['interrupt', 'mode'], value: 'none',
+}), [
+    { path: ['peripherals', 3], value: undefined },
+    { path: ['interrupt'], value: { mode: 'none' } },
+]);
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'setValue', documentVersion: 12,
+    path: ['interrupt', 'mode'], value: 'direct',
+}), [
+    { path: ['peripherals', 3], value: undefined },
+    { path: ['interrupt'], value: { mode: 'direct', source: 'external.irq' } },
+]);
+assert.deepStrictEqual(buildSocDocumentUpdates(parsedMultiForEditing.config, catalog, {
+    type: 'setValue', documentVersion: 12,
+    path: ['interrupt', 'controllerName'], value: 'irq_ctrl',
+}), [
+    { path: ['peripherals', 3, 'name'], value: 'irq_ctrl' },
+    { path: ['interrupt', 'controller'], value: 'irq_ctrl' },
+]);
 assert.strictEqual(isEditableSocPath(
     parsedMultiForEditing.config,
     catalog,

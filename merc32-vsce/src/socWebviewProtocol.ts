@@ -46,6 +46,18 @@ export interface SocAddressRow {
     size?: string;
 }
 
+export interface SocExternalInterfacePresentation {
+    index: number;
+    name: string;
+    highAddress?: string;
+}
+
+export interface SocInterruptControllerPresentation {
+    peripheralIndex: number;
+    name: string;
+    baseAddress?: string;
+}
+
 export interface SocInterruptRow {
     source: string;
     id?: number;
@@ -95,7 +107,9 @@ export interface SocEditorViewModel {
     diagnostics: readonly SocViewDiagnostic[];
     selectedPath?: SocJsonPath;
     addressRows: readonly SocAddressRow[];
+    externalInterfacePresentation: readonly SocExternalInterfacePresentation[];
     interruptRows: readonly SocInterruptRow[];
+    interruptController?: SocInterruptControllerPresentation;
     portRows: readonly SocPortRow[];
     dependencyRows: readonly SocDependencyRow[];
     interruptOptions: SocInterruptOptionsPresentation;
