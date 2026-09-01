@@ -1654,7 +1654,11 @@ function assertGenerationOrchestration() {
         assert.match(memoryBundle, /"\.\.\/firmware\/dlb_firmware\.mem"/);
         const memoryReadme = fs.readFileSync(path.join(memoryResult.outputDir, 'README.md'), 'utf8');
         assert.match(memoryReadme,
-            /`\.\.\/firmware\/ilb_firmware\.bin`, relative to `hardware\/memory_soc\.v`/);
+            /Generated hardware binds ILB RAM initialization directly to `\.\.\/firmware\/ilb_firmware\.bin`, relative to `hardware\/memory_soc\.v`/);
+        assert.match(memoryReadme,
+            /Generated hardware binds DLB RAM initialization directly to `\.\.\/firmware\/dlb_firmware\.mem`, relative to `hardware\/memory_soc\.v`/);
+        assert.doesNotMatch(memoryReadme, /(?:ILB|DLB)_INIT_FILE/,
+            'generated documentation must not advertise removed SoC top parameters');
         assert.match(memoryReadme,
             /Firmware files are copied byte-for-byte; extensions and formats, including `\.bin` and `\.coe`, are retained without conversion\./);
         assert.match(memoryReadme,

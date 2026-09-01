@@ -350,8 +350,7 @@ function firmwareIntegrationGuidance(plan: SocPlan): readonly string[] {
     const bindings = (['ilb', 'dlb'] as const).flatMap((slot) => {
         const memory = plan.memory[slot];
         if (memory.initFile === undefined) return [];
-        const parameter = `${slot.toUpperCase()}_INIT_FILE`;
-        return [`Generated hardware defaults \`${parameter}\` to \`../firmware/${memory.initFile.outputName}\`, relative to \`hardware/${plan.topModule}.v\`; run the downstream tool from \`hardware/\` or configure its working directory/path resolution so its \`$readmemh\` call resolves that relative path.`];
+        return [`Generated hardware binds ${slot.toUpperCase()} RAM initialization directly to \`../firmware/${memory.initFile.outputName}\`, relative to \`hardware/${plan.topModule}.v\`; run the downstream tool from \`hardware/\` or configure its working directory/path resolution so its \`$readmemh\` call resolves that relative path.`];
     });
     if (bindings.length === 0) return [];
     return [

@@ -385,7 +385,7 @@ function validateGeneratedVerilogSymbols(
     }
     for (const prefix of ['ilb', 'dlb'] as const) {
         if (config.memory?.[prefix]?.type === 'internal_ram') {
-            reserve('top', [`${prefix.toUpperCase()}_INIT_FILE`, `${prefix}_ram_inst`]);
+            reserve('top', [`${prefix}_ram_inst`]);
         } else {
             reserve('top', [
                 `${prefix}_rden`, `${prefix}_wren`, `${prefix}_addr`,

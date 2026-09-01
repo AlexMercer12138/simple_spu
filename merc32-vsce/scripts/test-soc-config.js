@@ -604,6 +604,25 @@ assertDiagnostic(diagnosticsFor(cpuInstanceCollision), 'SOC_VERILOG_SYMBOL_COLLI
     ['peripherals', 0, 'name']);
 assert.strictEqual(planInMemory(cpuInstanceCollision).plan, undefined);
 
+const removedTopParameterName = clone(minimal);
+removedTopParameterName.memory.ilb = { type: 'internal_ram', size: '32KiB' };
+removedTopParameterName.peripherals = [{
+    type: 'removed_parameter_fixture', name: 'ILB_INIT', baseAddress: '0x10000000',
+}];
+const removedParameterModules = new Map(catalog.modules);
+removedParameterModules.set('removed_parameter_fixture', {
+    ...catalog.modules.get('apb_uart'),
+    type: 'removed_parameter_fixture',
+    parameters: {},
+    ports: [{ name: 'FILE', direction: 'input', width: 1 }],
+    interrupts: [],
+});
+const removedParameterCatalog = { modules: removedParameterModules, protocols: catalog.protocols };
+assert.deepStrictEqual(withoutWarnings(validateSocConfig(
+    removedTopParameterName, removedParameterCatalog)), [],
+    'removed SoC top parameter names must no longer be reserved symbols');
+assert.ok(planInMemory(removedTopParameterName, removedParameterCatalog).plan);
+
 const distinctExternalSynchronizers = clone(minimal);
 distinctExternalSynchronizers.peripherals = [{
     type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
