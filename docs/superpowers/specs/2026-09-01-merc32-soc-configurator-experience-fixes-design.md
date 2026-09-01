@@ -364,4 +364,3 @@ The Verilog workflow will use the repository's available verification tools.
 If the required VKS MCP simulation tools are unavailable in this environment,
 the final report will state that explicitly and will distinguish the existing
 Icarus-based repository verification from VKS verification.
-
