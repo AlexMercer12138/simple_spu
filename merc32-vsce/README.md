@@ -1,6 +1,6 @@
 # MERC32 Toolchain for VSCode
 
-[![Version](https://img.shields.io/badge/Version-2.0.2-blue.svg)](https://github.com/AlexMercer12138/MERC32)
+[![Version](https://img.shields.io/badge/Version-2.0.3-blue.svg)](https://github.com/AlexMercer12138/MERC32)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 MERC32 CPU 的统一 VSCode 扩展，内置汇编器与 Tiny C 编译器，并通过活动栏侧边栏组织构建命令与产物。打开 `.asm` / `.c` 文件时，扩展提供语法高亮、代码片段与右上角一键编译按钮，可将源码编译输出为 Verilog、COE、MIF、Intel HEX、Binary 或 `$readmemh` 内存文件。
