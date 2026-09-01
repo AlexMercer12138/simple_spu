@@ -1,8 +1,8 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
 import { compileC, CompilerError, CompileOptions, CompileResult } from './tinyc';
-import { Merc32Object } from './ast';
+import { Merc32Object } from '../linker/objectFormat';
 
-export type { Merc32Object } from './ast';
+export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
 export * from './source';
 export * from './ast';
@@ -35,7 +35,15 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
 
 /** Compatibility boundary for the typed frontend; code generation remains the existing compiler. */
 export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
-    return { format: 'merc32-object', assembly: compileC(source, options).assembly };
+    const assembly = compileC(source, options).assembly;
+    return {
+        version: 1,
+        target: 'merc32',
+        abi: 'merc32-c-v1',
+        sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }],
+        symbols: [],
+        relocations: [],
+    };
 }
 
 export {

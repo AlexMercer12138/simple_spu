@@ -4,6 +4,12 @@ const { builtinType, pointerType, arrayType, structLayout, typeSize, typeAlignme
 assert.strictEqual(typeSize(builtinType('int')), 4);
 assert.strictEqual(typeSize(builtinType('unsigned int')), 4);
 assert.strictEqual(typeSize(builtinType('float')), 4);
+assert.strictEqual(typeSize(builtinType('long')), 4);
+assert.strictEqual(typeSize(builtinType('unsigned long')), 4);
+assert.strictEqual(typeSize(builtinType('long long')), 8);
+assert.strictEqual(typeSize(builtinType('unsigned long long')), 8);
+assert.strictEqual(typeSize(builtinType('double')), 8);
+assert.strictEqual(typeSize(builtinType('long double')), 8);
 assert.strictEqual(pointerType(builtinType('char')).kind, 'pointer');
 assert.strictEqual(typeSize(pointerType(builtinType('char'))), 4);
 assert.strictEqual(typeSize(arrayType(builtinType('short'), 3)), 6);

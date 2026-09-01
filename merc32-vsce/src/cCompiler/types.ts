@@ -1,6 +1,7 @@
 export type BuiltinTypeName =
     | 'void' | 'char' | 'unsigned char' | 'short' | 'unsigned short'
-    | 'int' | 'unsigned int' | 'float';
+    | 'int' | 'unsigned int' | 'long' | 'unsigned long'
+    | 'long long' | 'unsigned long long' | 'float' | 'double' | 'long double';
 
 export interface TypeQualifiers {
     readonly const: boolean;
@@ -91,7 +92,7 @@ export function enumUnderlyingType(_type: EnumType): BuiltinType { return builti
 
 export function typeSize(type: CType): number {
     switch (type.kind) {
-        case 'builtin': return ({ void: 0, char: 1, 'unsigned char': 1, short: 2, 'unsigned short': 2, int: 4, 'unsigned int': 4, float: 4 } as Record<BuiltinTypeName, number>)[type.name];
+        case 'builtin': return ({ void: 0, char: 1, 'unsigned char': 1, short: 2, 'unsigned short': 2, int: 4, 'unsigned int': 4, long: 4, 'unsigned long': 4, 'long long': 8, 'unsigned long long': 8, float: 4, double: 8, 'long double': 8 } as Record<BuiltinTypeName, number>)[type.name];
         case 'pointer': return 4;
         case 'function': throw new Error('function type has no object size');
         case 'array':
@@ -113,7 +114,7 @@ export function typeAlignment(type: CType): number {
     return Math.max(1, Math.min(4, typeSize(type)));
 }
 export function isIntegerType(type: CType): boolean {
-    return type.kind === 'builtin' && ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int'].includes(type.name)
+    return type.kind === 'builtin' && ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long'].includes(type.name)
         || type.kind === 'enum' || type.kind === 'typedef' && !!type.target && isIntegerType(type.target);
 }
 export function isScalarType(type: CType): boolean { return isIntegerType(type) || type.kind === 'pointer' || type.kind === 'enum' || type.kind === 'builtin' && type.name === 'float'; }

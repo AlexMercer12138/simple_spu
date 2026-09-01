@@ -23,3 +23,16 @@ The type nodes and nested field/parameter collections are frozen, and qualifiers
 ## Concerns
 
 `Merc32Object` is intentionally a minimal adapter contract containing the existing assembly output. Future backend work may extend its symbols/relocations without changing the existing `compileC` API. The new model is not wired into the legacy parser yet, by design for this module-boundary task.
+
+## Fix Round 1
+
+- Extended the MERC32 scalar model with `long`, `unsigned long`, `long long`, `unsigned long long`, `double`, and `long double`. Sizes are 4, 4, 8, 8, 8, and 8 bytes respectively; integer predicates include all integer widths.
+- Added the shared `merc32-vsce/src/linker/objectFormat.ts` boundary with version, target, ABI, sections, symbols, relocations, and debug locations. `compileCToObject` now returns that relocatable-compatible shape and no longer exposes an assembly-only top-level contract. `compileC` remains unchanged.
+
+Fix verification from `merc32-vsce`:
+
+- `npm run compile` -> passed.
+- `node scripts/test-c-types.js` -> passed (`C type model tests passed`), including all newly added scalar-size assertions.
+- `npm run test:c` -> passed (`MERC32 VSCE C compiler integration test passed`).
+
+Fix self-review concern: the object adapter stores legacy assembly text as the provisional text-section content so downstream linker work has a stable shared type boundary; it emits no symbols or relocations until the planned object-producing backend replaces the compatibility path.
