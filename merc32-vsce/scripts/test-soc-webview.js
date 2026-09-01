@@ -11,6 +11,8 @@ const scriptPath = path.join(__dirname, '..', 'resources', 'webview', 'socEditor
 const scriptSource = fs.readFileSync(scriptPath, 'utf8');
 const cssPath = path.join(__dirname, '..', 'resources', 'webview', 'socEditor.css');
 const cssSource = fs.readFileSync(cssPath, 'utf8');
+const geometryRunnerPath = path.join(__dirname, 'test-soc-webview-geometry.js');
+const geometryRunnerApi = require(geometryRunnerPath);
 const { selectionForDiagnosticPath } = require(scriptPath);
 const VISUAL_HARNESS_NONCE = 'VISUAL_HARNESS_NONCE';
 
@@ -254,6 +256,89 @@ function createVisualModel() {
     };
 }
 
+function runGeometryBrowserTimeoutTests() {
+    const { runBrowserProcess } = geometryRunnerApi;
+    assert.strictEqual(typeof runBrowserProcess, 'function',
+        'geometry runner must expose bounded browser execution');
+    const startedAt = Date.now();
+    assert.throws(() => runBrowserProcess(process.execPath, [
+        '-e', 'setTimeout(() => {}, 5000);',
+    ], { timeoutMs: 50, label: 'unit timeout' }), /unit timeout timed out after 50 ms/);
+    assert.ok(Date.now() - startedAt < 2000, 'browser timeout must terminate promptly');
+}
+
+function syntheticGeometryResult() {
+    const rect = (left, top, width, height) => ({
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+    });
+    const pane = (left, top, width, height) => ({
+        ...rect(left, top, width, height),
+        clientWidth: width,
+        clientHeight: height,
+        scrollWidth: width,
+        scrollHeight: height,
+        scrollTop: 0,
+        overflowX: 'auto',
+        overflowY: 'auto',
+    });
+    const shell = rect(0, 0, 1000, 500);
+    const bottomBand = rect(0, 420, 1000, 80);
+    return {
+        scenario: 'short',
+        viewport: { width: 1000, height: 500 },
+        document: { clientWidth: 1000, clientHeight: 500, scrollWidth: 1000, scrollHeight: 500 },
+        shell,
+        shellGridRows: '60px 40px 320px 80px',
+        toolbar: rect(0, 0, 1000, 60),
+        workbench: rect(0, 100, 1000, 320),
+        navigation: pane(0, 100, 230, 320),
+        properties: pane(230, 100, 460, 320),
+        summary: pane(690, 100, 310, 320),
+        bottomBand,
+        address: pane(0, 420, 700, 80),
+        status: pane(700, 420, 300, 80),
+        validation: { rowCount: 2, rowMinWidth: 300, messageMinWidth: 200 },
+        scroll: { selector: '.navigation-pane', before: 0, after: 0 },
+        shellAfterScroll: { ...shell },
+        bottomBandAfterScroll: { ...bottomBand },
+    };
+}
+
+function runGeometryShellAnchorTests() {
+    const { assertGeometry } = geometryRunnerApi;
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const viewport = { name: 'synthetic', width: 1000, height: 500 };
+    const base = syntheticGeometryResult();
+    assert.doesNotThrow(() => assertGeometry(base, viewport, 'short'));
+
+    const shiftedWorkbench = clone(base);
+    shiftedWorkbench.workbench.left = 5;
+    shiftedWorkbench.workbench.right = 1005;
+    assert.throws(() => assertGeometry(shiftedWorkbench, viewport, 'short'), /workbench.*shell/i);
+
+    const shiftedBottom = clone(base);
+    shiftedBottom.bottomBand.left = 5;
+    shiftedBottom.bottomBand.right = 1005;
+    assert.throws(() => assertGeometry(shiftedBottom, viewport, 'short'), /bottom.*shell/i);
+
+    const bandGap = clone(base);
+    bandGap.workbench.top -= 5;
+    bandGap.workbench.bottom -= 5;
+    assert.throws(() => assertGeometry(bandGap, viewport, 'short'), /workbench.*bottom/i);
+
+    const blankStrip = clone(base);
+    for (const name of ['workbench', 'navigation', 'properties', 'summary', 'bottomBand', 'address', 'status']) {
+        blankStrip[name].top -= 5;
+        blankStrip[name].bottom -= 5;
+    }
+    assert.throws(() => assertGeometry(blankStrip, viewport, 'short'), /bottom.*shell/i);
+}
+
 function applyVisualScenario(model, scenario) {
     if (scenario === 'short') {
         model.selectedPath = ['cpu'];
@@ -413,6 +498,10 @@ function visualHarnessScript(initialModel) {
             const scrollingSelector = scenario === 'ports' ? '.summary-pane'
                 : scenario === 'routes' ? '.property-pane' : '.navigation-pane';
             const scrollingPane = document.querySelector(scrollingSelector);
+            const diagnostics = [...document.querySelectorAll('.diagnostic')].map((diagnostic) => ({
+                rowWidth: diagnostic.getBoundingClientRect().width,
+                messageWidth: diagnostic.querySelector('.diagnostic-message').getBoundingClientRect().width,
+            }));
             const result = {
                 scenario,
                 viewport: {
@@ -435,6 +524,11 @@ function visualHarnessScript(initialModel) {
                 bottomBand: rect(bottomBand),
                 address: paneGeometry('.address-overview'),
                 status: paneGeometry('.generation-state'),
+                validation: diagnostics.length ? {
+                    rowCount: diagnostics.length,
+                    rowMinWidth: Math.min(...diagnostics.map((diagnostic) => diagnostic.rowWidth)),
+                    messageMinWidth: Math.min(...diagnostics.map((diagnostic) => diagnostic.messageWidth)),
+                } : undefined,
                 scroll: { selector: scrollingSelector, before: scrollingPane.scrollTop },
             };
             scrollingPane.scrollTop = 48;
@@ -1084,6 +1178,8 @@ function runInteractionRestorationTests() {
 function runAllWebviewContractTests() {
     runResponsiveCssContractTests();
     runVisualHarnessContractTests();
+    runGeometryBrowserTimeoutTests();
+    runGeometryShellAnchorTests();
     runInitialActionAvailabilityTests();
     runDocumentStateLabelTests();
     runNavigationAndConcurrencyTests();

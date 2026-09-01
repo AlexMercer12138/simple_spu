@@ -7,6 +7,7 @@ const { JSDOM } = require('jsdom');
 
 const extensionRoot = path.join(__dirname, '..');
 const screenshotRoot = path.join(extensionRoot, '.test-results', 'soc-webview-geometry');
+const BROWSER_PROCESS_TIMEOUT_MS = 30000;
 const viewports = [
     { name: 'wide', width: 1440, height: 900 },
     { name: 'medium', width: 1000, height: 760 },
@@ -90,6 +91,25 @@ function stopServer(server) {
     });
 }
 
+function runBrowserProcess(executable, args, options = {}) {
+    const timeoutMs = options.timeoutMs === undefined ? BROWSER_PROCESS_TIMEOUT_MS : options.timeoutMs;
+    const label = options.label || 'Browser process';
+    assert.ok(Number.isInteger(timeoutMs) && timeoutMs > 0, 'browser timeout must be a positive integer');
+    const browser = spawnSync(executable, args, {
+        cwd: extensionRoot,
+        encoding: 'utf8',
+        maxBuffer: 20 * 1024 * 1024,
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+        windowsHide: true,
+    });
+    if (browser.error && browser.error.code === 'ETIMEDOUT') {
+        throw new Error(`${label} timed out after ${timeoutMs} ms`);
+    }
+    assert.ifError(browser.error);
+    return browser;
+}
+
 function launchBrowser(executable, serverUrl, viewport, scenario) {
     const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-soc-geometry-'));
     const screenshotFile = path.join(screenshotRoot, `${viewport.name}-${scenario}.png`);
@@ -103,11 +123,8 @@ function launchBrowser(executable, serverUrl, viewport, scenario) {
         `${serverUrl}/?scenario=${scenario}&geometry=1`,
     ];
     try {
-        const browser = spawnSync(executable, args, {
-            cwd: extensionRoot,
-            encoding: 'utf8',
-            maxBuffer: 20 * 1024 * 1024,
-            windowsHide: true,
+        const browser = runBrowserProcess(executable, args, {
+            label: `Browser ${viewport.name}/${scenario}`,
         });
         const output = browser.stdout || '';
         const errors = browser.stderr || '';
@@ -156,6 +173,14 @@ function assertGeometry(result, viewport, scenario) {
         right: result.viewport.width,
         bottom: result.viewport.height,
     }, `${label} shell`);
+    assertClose(result.workbench.left, result.shell.left, 1, `${label} workbench/shell left`);
+    assertClose(result.workbench.right, result.shell.right, 1, `${label} workbench/shell right`);
+    assertClose(result.bottomBand.left, result.shell.left, 1, `${label} bottom/shell left`);
+    assertClose(result.bottomBand.right, result.shell.right, 1, `${label} bottom/shell right`);
+    assert.ok(result.workbench.bottom <= result.bottomBand.top + 1, `${label} workbench/bottom overlap`);
+    assertClose(result.workbench.bottom, result.bottomBand.top, 1,
+        `${label} workbench/bottom vertical adjacency`);
+    assertClose(result.bottomBand.bottom, result.shell.bottom, 1, `${label} bottom/shell bottom`);
     assert.strictEqual(result.document.scrollWidth, result.document.clientWidth, `${label} document width`);
     assert.strictEqual(result.document.scrollHeight, result.document.clientHeight, `${label} document height`);
     assertSameRow(result.navigation, result.properties, `${label} navigation/properties`);
@@ -177,6 +202,15 @@ function assertGeometry(result, viewport, scenario) {
     for (const pane of ['navigation', 'properties', 'summary', 'address', 'status']) {
         assert.strictEqual(result[pane].overflowX, 'auto', `${label} ${pane} overflow-x`);
         assert.strictEqual(result[pane].overflowY, 'auto', `${label} ${pane} overflow-y`);
+    }
+    if (scenario !== 'ports') {
+        assert.ok(result.validation && result.validation.rowCount > 0, `${label} Validation diagnostics missing`);
+        if (viewport.name === 'narrow') {
+            assert.ok(result.validation.rowMinWidth >= 150,
+                `${label} diagnostic row width ${result.validation.rowMinWidth} must remain readable`);
+            assert.ok(result.validation.messageMinWidth >= 150,
+                `${label} diagnostic message width ${result.validation.messageMinWidth} must remain readable`);
+        }
     }
     if (scenario === 'ports') {
         assert.ok(result.summary.scrollHeight > result.summary.clientHeight, `${label} Ports must overflow Summary`);
@@ -228,7 +262,11 @@ async function main() {
     }
 }
 
-main().catch((error) => {
-    console.error(error.stack || error);
-    process.exitCode = 1;
-});
+if (require.main === module) {
+    main().catch((error) => {
+        console.error(error.stack || error);
+        process.exitCode = 1;
+    });
+}
+
+module.exports = { assertGeometry, runBrowserProcess };
