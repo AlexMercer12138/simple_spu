@@ -16,8 +16,13 @@ class Parser {
     const base = this.parseBaseType();
     if (this.is(';')) { this.take(); return [{ kind: base.kind === 'struct' ? 'struct-declaration' : 'declaration', type: base, declarators: [], location: { file:'', line:first.line, column:first.column } }]; }
     const result: Declaration[] = []; const ds: Declarator[] = [];
-    do { ds.push(this.parseDeclarator(base)); if (!this.is(',')) break; this.take(); } while (true);
-    this.consumeInitializerAndSemicolon();
+    do {
+      ds.push(this.parseDeclarator(base));
+      this.consumeInitializer();
+      if (!this.is(',')) break;
+      this.take();
+    } while (true);
+    if (this.is(';')) this.take();
     if (isTypedef) { ds.forEach(d => { if (d.name) this.typedefs.set(d.name, d.type); }); result.push({ kind:'typedef', type: base, declarators: ds }); }
     else result.push({ kind:'declaration', type: base, declarators: ds });
     return result;
@@ -33,16 +38,109 @@ class Parser {
     return valid.includes(id) ? builtinType(id as any) : typedefType(id || 'int');
   }
   private parseDeclarator(base: CType): Declarator {
-    let type = base; while (this.is('*')) { this.take(); if (this.is('const') || this.is('volatile')) this.take(); type = pointerType(type); }
+    const node = this.parseDeclaratorNode();
+    return { name: node.name, type: this.applyDeclarator(base, node) };
+  }
+
+  private parseDeclaratorNode(): DeclaratorNode {
+    const pointers: number[] = [];
+    while (this.is('*')) {
+      this.take();
+      if (this.is('const') || this.is('volatile')) this.take();
+      pointers.push(1);
+    }
     let name: string | undefined;
-    if (this.is('(')) { this.take(); const inner = this.parseDeclarator(type); this.take(')'); name = inner.name; type = inner.type; }
-    else if (this.peek().kind === 'identifier') name = this.take().text;
+    let inner: DeclaratorNode | undefined;
+    if (this.is('(')) {
+      this.take();
+      inner = this.parseDeclaratorNode();
+      this.take(')');
+    } else if (this.peek().kind === 'identifier') {
+      name = this.take().text;
+    }
+    const suffixes: DeclaratorSuffix[] = [];
     while (true) {
-      if (this.is('[')) { this.take(); let len: number|null = null; if (!this.is(']')) { const t=this.take(); len = t.value === undefined ? Number(t.text) : t.value; } this.take(']'); type = arrayType(type, Number.isFinite(len as number) ? len : null); continue; }
-      if (this.is('(')) { this.take(); const params: CType[] = []; let variadic=false; while (!this.is(')')) { if (this.is('...')) { variadic=true; this.take(); break; } const pt=this.parseBaseType(); const pd=this.parseDeclarator(pt); params.push(pd.type); if (!this.is(',')) break; this.take(); } this.take(')'); type = functionType(type, params, variadic); continue; }
+      if (this.is('[')) {
+        this.take();
+        let length: number | null = null;
+        if (!this.is(']')) {
+          const t = this.take();
+          const parsed = t.value === undefined ? Number(t.text) : t.value;
+          length = Number.isFinite(parsed) ? parsed : null;
+        }
+        this.take(']');
+        suffixes.push({ kind: 'array', length });
+        continue;
+      }
+      if (this.is('(')) {
+        this.take();
+        const params: CType[] = [];
+        let variadic = false;
+        while (!this.is(')')) {
+          if (this.is('...')) { variadic = true; this.take(); break; }
+          const parameterType = this.parseBaseType();
+          const parameter = this.parseDeclaratorNode();
+          let parameterCType = this.applyDeclarator(parameterType, parameter);
+          if (parameterCType.kind === 'array') parameterCType = pointerType(parameterCType.element);
+          params.push(parameterCType);
+          if (!this.is(',')) break;
+          this.take();
+        }
+        this.take(')');
+        suffixes.push({ kind: 'function', parameters: params, variadic });
+        continue;
+      }
       break;
     }
-    return { name, type };
+    return { name, pointers, inner, suffixes };
   }
-  private consumeInitializerAndSemicolon() { if (this.is('=')) { this.take(); let depth=0; while (this.peek().kind!=='eof' && !(depth===0 && (this.is(';') || this.is(',')))) { if (this.is('{')||this.is('(')||this.is('[')) depth++; if (this.is('}')||this.is(')')||this.is(']')) depth--; this.take(); } } if (this.is(';')) this.take(); }
+
+  private applyDeclarator(base: CType, node: DeclaratorNode): CType {
+    if (node.inner) {
+      // A suffix outside parentheses binds before an inner pointer: (*f)(int)
+      // is a pointer to a function, while *f(int) is a function returning a pointer.
+      if (node.suffixes.length > 0 && node.inner.pointers.length > 0 && !node.inner.inner) {
+        let type = base;
+        for (let n = node.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.suffixes[n]);
+        for (let n = node.inner.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.inner.suffixes[n]);
+        for (let n = 0; n < node.inner.pointers.length; n++) type = pointerType(type);
+        return type;
+      }
+      let type = this.applyDeclarator(base, node.inner);
+      for (let n = node.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.suffixes[n]);
+      return type;
+    }
+    let type = base;
+    for (let n = 0; n < node.pointers.length; n++) type = pointerType(type);
+    for (let n = node.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.suffixes[n]);
+    return type;
+  }
+
+  private applySuffix(type: CType, suffix: DeclaratorSuffix): CType {
+    return suffix.kind === 'array'
+      ? arrayType(type, suffix.length)
+      : functionType(type, suffix.parameters, suffix.variadic);
+  }
+
+  private consumeInitializer() {
+    if (!this.is('=')) return;
+    this.take();
+    let depth = 0;
+    while (this.peek().kind !== 'eof' && !(depth === 0 && (this.is(';') || this.is(',')))) {
+      if (this.is('{') || this.is('(') || this.is('[')) depth++;
+      if (this.is('}') || this.is(')') || this.is(']')) depth--;
+      this.take();
+    }
+  }
 }
+
+interface DeclaratorNode {
+  readonly name?: string;
+  readonly pointers: readonly number[];
+  readonly inner?: DeclaratorNode;
+  readonly suffixes: readonly DeclaratorSuffix[];
+}
+
+type DeclaratorSuffix =
+  | { readonly kind: 'array'; readonly length: number | null }
+  | { readonly kind: 'function'; readonly parameters: readonly CType[]; readonly variadic: boolean };
