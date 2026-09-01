@@ -604,19 +604,19 @@ assertDiagnostic(diagnosticsFor(cpuInstanceCollision), 'SOC_VERILOG_SYMBOL_COLLI
     ['peripherals', 0, 'name']);
 assert.strictEqual(planInMemory(cpuInstanceCollision).plan, undefined);
 
-const synchronizerCollision = clone(minimal);
-synchronizerCollision.peripherals = [{
+const distinctExternalSynchronizers = clone(minimal);
+distinctExternalSynchronizers.peripherals = [{
     type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000',
 }];
-synchronizerCollision.interrupt = {
+distinctExternalSynchronizers.interrupt = {
     mode: 'controller', controller: 'intc0', sources: [
         { source: 'external.foo', id: 0, trigger: 'high' },
         { source: 'external.foo_sync', id: 1, trigger: 'low' },
     ],
 };
-assertDiagnostic(diagnosticsFor(synchronizerCollision), 'SOC_VERILOG_SYMBOL_COLLISION',
-    ['interrupt', 'sources', 1, 'source']);
-assert.strictEqual(planInMemory(synchronizerCollision).plan, undefined);
+assert.deepStrictEqual(withoutWarnings(diagnosticsFor(distinctExternalSynchronizers)), []);
+assert.ok(planInMemory(distinctExternalSynchronizers).plan,
+    'occurrence-numbered external synchronizers cannot collide through source identifiers');
 
 const generatedNameModules = new Map(catalog.modules);
 generatedNameModules.set('collision_fixture', {
@@ -829,6 +829,14 @@ duplicateIrqSource.interrupt.sources[1].source = 'uart0.interrupt';
 assertDiagnostic(diagnosticsFor(duplicateIrqSource), 'SOC_IRQ_SOURCE_DUPLICATE',
     ['interrupt', 'sources', 1, 'source']);
 
+const repeatedExternalIrq = clone(multi);
+repeatedExternalIrq.interrupt.sources = [
+    { source: 'external.irq', id: 0, trigger: 'high' },
+    { source: 'external.irq', id: 1, trigger: 'rising' },
+];
+assert.deepStrictEqual(withoutWarnings(diagnosticsFor(repeatedExternalIrq)), [],
+    'external interrupt selections represent distinct route occurrences');
+
 const duplicateId = clone(multi);
 duplicateId.interrupt.sources[1].id = 0;
 assertDiagnostic(diagnosticsFor(duplicateId), 'SOC_IRQ_ID_DUPLICATE',
@@ -891,8 +899,8 @@ externalPortCollision.externalInterfaces.push({
     windowSize: '4KiB', addressWidth: 32,
 });
 externalPortCollision.interrupt = { mode: 'direct', source: 'external.lb_addr' };
-assertDiagnostic(diagnosticsFor(externalPortCollision), 'SOC_PORT_COLLISION',
-    ['interrupt', 'source']);
+assert.deepStrictEqual(withoutWarnings(diagnosticsFor(externalPortCollision)), [],
+    'numbered external interrupt ports do not inherit source identifiers');
 
 const noAddresses = clone(multi);
 for (const endpoint of [...noAddresses.peripherals, ...noAddresses.externalInterfaces]) {
@@ -996,10 +1004,13 @@ assert.strictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext
 assert.deepStrictEqual(plan.externalInterfaces.find((item) => item.name === 'apb_ext0').parameters,
     { APB_ADDR_WIDTH: 12 });
 assert.strictEqual(plan.topPorts.find((item) => item.name === 'apb_ext0_m_apb_paddr').width, 12);
-assert.strictEqual(plan.topPorts.find((item) => item.name === 'external_wake').direction, 'input');
+assert.strictEqual(plan.topPorts.find((item) => item.name === 'external_interrupt0').direction, 'input');
 assert.deepStrictEqual(plan.interrupt.sources.map((item) => [item.id, item.source]), [
     [0, 'uart0.interrupt'], [1, 'uart1.interrupt'], [2, 'gpio0.interrupt'],
     [3, 'external.wake'],
+]);
+assert.deepStrictEqual(plan.interrupt.sources.map((item) => item.topPort), [
+    undefined, undefined, undefined, 'external_interrupt0',
 ]);
 assert.deepStrictEqual(plan.interrupt.sources.map((item) => [item.id, item.trigger]), [
     [0, 'high'], [1, 'low'], [2, 'rising'], [3, 'falling'],
@@ -1008,6 +1019,63 @@ assert.strictEqual(plan.interrupt.irqCount, 4);
 assert.strictEqual(plan.interrupt.irqMode & 0xffn, 0xe4n);
 assert.deepStrictEqual(plan.peripherals.find((item) => item.name === 'intc0').parameters,
     { IRQ_COUNT: 4, IRQ_MODE: 0xe4n });
+
+const repeatedExternalPlanConfig = clone(multi);
+repeatedExternalPlanConfig.peripherals.find((item) => item.type === 'apb_intc').parameters = {
+    IRQ_COUNT: 31,
+    IRQ_MODE: 123,
+};
+repeatedExternalPlanConfig.interrupt.sources = [
+    { source: 'external.irq', id: 0, trigger: 'high' },
+    { source: 'uart0.interrupt', id: 1, trigger: 'low' },
+    { source: 'external.irq', id: 2, trigger: 'rising' },
+];
+const repeatedExternalPlan = planInMemory(repeatedExternalPlanConfig).plan;
+assert.ok(repeatedExternalPlan);
+assert.deepStrictEqual(repeatedExternalPlan.interrupt.sources.map((item) => item.topPort), [
+    'external_interrupt0', undefined, 'external_interrupt1',
+]);
+assert.deepStrictEqual(repeatedExternalPlan.topPorts
+    .filter((item) => item.name.startsWith('external_interrupt'))
+    .map((item) => item.name), ['external_interrupt0', 'external_interrupt1']);
+assert.deepStrictEqual(
+    repeatedExternalPlan.peripherals.find((item) => item.name === 'intc0').parameters,
+    { IRQ_COUNT: 3, IRQ_MODE: 0x24n },
+    'route-derived interrupt parameters override legacy stored values');
+
+const reorderedExternalPlanConfig = clone(repeatedExternalPlanConfig);
+reorderedExternalPlanConfig.interrupt.sources = [
+    { source: 'external.first', id: 2, trigger: 'rising' },
+    { source: 'uart0.interrupt', id: 0, trigger: 'high' },
+    { source: 'external.second', id: 1, trigger: 'low' },
+];
+const reorderedExternalPlan = planInMemory(reorderedExternalPlanConfig).plan;
+assert.ok(reorderedExternalPlan);
+assert.deepStrictEqual(reorderedExternalPlan.interrupt.sources.map((item) => [item.id, item.topPort]), [
+    [0, undefined], [1, 'external_interrupt1'], [2, 'external_interrupt0'],
+], 'external pin numbers follow route occurrence order before IRQ-ID sorting');
+
+const compactedExternalPlanConfig = clone(repeatedExternalPlanConfig);
+compactedExternalPlanConfig.interrupt.sources.shift();
+compactedExternalPlanConfig.interrupt.sources[0].id = 0;
+compactedExternalPlanConfig.interrupt.sources[1].id = 1;
+const compactedExternalPlan = planInMemory(compactedExternalPlanConfig).plan;
+assert.ok(compactedExternalPlan);
+assert.deepStrictEqual(compactedExternalPlan.interrupt.sources.map((item) => item.topPort), [
+    undefined, 'external_interrupt0',
+], 'removing an earlier external route compacts generated pin numbering');
+
+const manyExternalPlanConfig = clone(multi);
+manyExternalPlanConfig.interrupt.sources = Array.from({ length: 12 }, (_, index) => ({
+    source: 'external.irq', id: index, trigger: 'high',
+}));
+const manyExternalPlan = planInMemory(manyExternalPlanConfig).plan;
+assert.ok(manyExternalPlan);
+assert.deepStrictEqual(manyExternalPlan.topPorts
+    .filter((item) => item.name.startsWith('external_interrupt'))
+    .map((item) => item.name),
+Array.from({ length: 12 }, (_, index) => `external_interrupt${index}`),
+'external interrupt ports are ordered by numeric suffix');
 assert.ok(plan.rtlFiles.includes('rtl/apb_intc/apb_intc.v'));
 assert.ok(plan.rtlFiles.includes('rtl/misc/spram.v'));
 assert.ok(plan.rtlFiles.includes('rtl/debug/jtag_debug.v'));

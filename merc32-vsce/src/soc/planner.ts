@@ -281,36 +281,51 @@ function planInterrupt(config: SocSourceConfig): PlannedInterrupt {
     if (source.mode === 'direct') {
         return {
             mode: 'direct',
-            sources: [planInterruptSource(source.source)],
+            sources: [planInterruptSource(
+                source.source,
+                source.source.startsWith('external.') ? 0 : undefined,
+            )],
         };
     }
-    const ordered = [...source.sources].sort((left, right) => left.id - right.id);
+    let externalOccurrence = 0;
+    const planned = source.sources.map((item) => planControllerInterruptSource(
+        item,
+        item.source.startsWith('external.') ? externalOccurrence++ : undefined,
+    ));
+    const ordered = planned.sort((left, right) => left.id! - right.id!);
     let irqMode = 0n;
     for (const item of ordered) {
-        irqMode |= TRIGGER_ENCODING[item.trigger] << BigInt(item.id * 2);
+        irqMode |= TRIGGER_ENCODING[item.trigger!] << BigInt(item.id! * 2);
     }
     return {
         mode: 'controller',
         controller: source.controller,
-        irqCount: Math.max(...ordered.map((item) => item.id)) + 1,
+        irqCount: Math.max(...ordered.map((item) => item.id!)) + 1,
         irqMode: BigInt.asUintN(64, irqMode),
-        sources: ordered.map(planControllerInterruptSource),
+        sources: ordered,
     };
 }
 
-function planControllerInterruptSource(source: ControllerInterruptSource): PlannedInterruptSource {
+function planControllerInterruptSource(
+    source: ControllerInterruptSource,
+    externalOccurrence: number | undefined,
+): PlannedInterruptSource {
     return {
-        ...planInterruptSource(source.source),
+        ...planInterruptSource(source.source, externalOccurrence),
         id: source.id,
         trigger: source.trigger,
     };
 }
 
-function planInterruptSource(source: string): PlannedInterruptSource {
-    const externalName = /^external\.(.+)$/.exec(source)?.[1];
+function planInterruptSource(
+    source: string,
+    externalOccurrence: number | undefined,
+): PlannedInterruptSource {
     return {
         source,
-        ...(externalName === undefined ? {} : { topPort: `external_${externalName}` }),
+        ...(externalOccurrence === undefined
+            ? {}
+            : { topPort: `external_interrupt${externalOccurrence}` }),
     };
 }
 
@@ -348,10 +363,16 @@ function planTopPorts(
     const externalInterrupts = interrupt.sources
         .filter((source): source is PlannedInterruptSource & { topPort: string } => source.topPort !== undefined)
         .map((source) => source.topPort!);
-    for (const name of [...new Set(externalInterrupts)].sort()) {
+    for (const name of [...new Set(externalInterrupts)].sort(compareExternalInterruptPorts)) {
         ports.push({ name, direction: 'input', width: 1 });
     }
     return ports;
+}
+
+function compareExternalInterruptPorts(left: string, right: string): number {
+    const leftIndex = Number(left.slice('external_interrupt'.length));
+    const rightIndex = Number(right.slice('external_interrupt'.length));
+    return leftIndex - rightIndex;
 }
 
 function planMemoryPorts(prefix: 'ilb' | 'dlb', addressWidth: number): PlannedPort[] {

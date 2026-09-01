@@ -493,16 +493,15 @@ function validateGeneratedVerilogSymbols(
                 path: ['interrupt', 'sources', index, 'source'] as const,
             }))
             : [];
-    const externalPorts = new Set<string>();
+    let externalOccurrence = 0;
     for (const source of sources) {
         const match = typeof source.source === 'string'
             ? /^external\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.source)
             : null;
-        if (match === null || externalPorts.has(match[1])) {
+        if (match === null) {
             continue;
         }
-        externalPorts.add(match[1]);
-        const port = `external_${match[1]}`;
+        const port = `external_interrupt${externalOccurrence++}`;
         record('top', [port], source.path);
         if (interrupt.mode === 'controller') {
             const names = [
@@ -675,13 +674,12 @@ function validateInterrupts(
     add: DiagnosticAdder,
 ): void {
     const usedSources = new Set<string>();
-    const externalPorts = new Set<string>();
-    const externalMacros = new Map<string, string>();
 
     const validateSource = (
         source: unknown,
         path: readonly (string | number)[],
         forbidControllerOutput: boolean,
+        externalOccurrence: number,
     ): source is string => {
         if (typeof source !== 'string') {
             add('SOC_IRQ_SOURCE', path, 'Interrupt source must be a source reference.');
@@ -689,19 +687,7 @@ function validateInterrupts(
         }
         const external = /^external\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source);
         if (external) {
-            const identifier = external[1];
-            if (!externalPorts.has(identifier)) {
-                recordTopPort(`external_${identifier}`, path);
-                externalPorts.add(identifier);
-            }
-            const macro = identifier.toUpperCase();
-            const existing = externalMacros.get(macro);
-            if (existing !== undefined && existing !== identifier) {
-                add('SOC_MACRO_COLLISION', path,
-                    `External interrupt ${identifier} collides with another generated macro name.`);
-            } else {
-                externalMacros.set(macro, identifier);
-            }
+            recordTopPort(`external_interrupt${externalOccurrence}`, path);
             return true;
         }
         const peripheral = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source);
@@ -721,7 +707,7 @@ function validateInterrupts(
 
     const interrupt = config.interrupt as SocSourceConfig['interrupt'];
     if (interrupt.mode === 'direct') {
-        if (validateSource(interrupt.source, ['interrupt', 'source'], false)) {
+        if (validateSource(interrupt.source, ['interrupt', 'source'], false, 0)) {
             usedSources.add(interrupt.source);
         }
     } else if (interrupt.mode === 'controller') {
@@ -737,15 +723,20 @@ function validateInterrupts(
         }
         const sourceNames = new Set<string>();
         const ids = new Set<number>();
+        let externalOccurrence = 0;
         for (let index = 0; index < (interrupt.sources?.length ?? 0); index += 1) {
             const source = interrupt.sources[index];
             const rootPath: readonly (string | number)[] = ['interrupt', 'sources', index];
-            const sourceValid = validateSource(source.source, [...rootPath, 'source'], true);
+            const external = typeof source.source === 'string'
+                && /^external\.[A-Za-z_][A-Za-z0-9_]*$/.test(source.source);
+            const routeExternalOccurrence = external ? externalOccurrence++ : 0;
+            const sourceValid = validateSource(
+                source.source, [...rootPath, 'source'], true, routeExternalOccurrence);
             if (typeof source.source === 'string') {
-                if (sourceNames.has(source.source)) {
+                if (!external && sourceNames.has(source.source)) {
                     add('SOC_IRQ_SOURCE_DUPLICATE', [...rootPath, 'source'],
                         `Interrupt source ${source.source} is assigned more than once.`);
-                } else {
+                } else if (!external) {
                     sourceNames.add(source.source);
                 }
                 if (sourceValid) {
@@ -766,8 +757,8 @@ function validateInterrupts(
             }
             if (projectNameValid && sourceValid && Number.isSafeInteger(source.id)
                 && source.id >= 0 && source.id <= 31 && IRQ_TRIGGERS.has(source.trigger)) {
-                const instance = source.source.startsWith('external.')
-                    ? `external_${source.source.slice('external.'.length)}`
+                const instance = external
+                    ? `external_interrupt${routeExternalOccurrence}`
                     : source.source.replace(/\.interrupt$/, '');
                 const prefix = `${config.project.name.toUpperCase()}_${instance.toUpperCase()}`;
                 recordHeaderMacro(`${prefix}_IRQ`, [...rootPath, 'source']);

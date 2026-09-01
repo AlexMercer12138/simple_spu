@@ -1743,7 +1743,7 @@ try {
     const starterMain = soc.renderStarterMain(controllerPlan);
 
     assert.strictEqual(header, [
-        '#ifndef DEMO_SOC_H', '#define DEMO_SOC_H', '#define DEMO_SOC_ILB_BASE 0x00000000', '#define DEMO_SOC_ILB_SIZE 32768', '#define DEMO_SOC_ILB_END 0x00007fff', '#define DEMO_SOC_FEATURE_ILB_INTERNAL_RAM 1', '#define DEMO_SOC_DLB_BASE 0x08000000', '#define DEMO_SOC_DLB_SIZE 65536', '#define DEMO_SOC_DLB_END 0x0800ffff', '#define DEMO_SOC_FEATURE_DLB_EXTERNAL_LOCAL_BUS 1', '#define DEMO_SOC_FEATURE_DEBUG 1', '#define DEMO_SOC_UART0_BASE 0x10000000', '#define DEMO_SOC_UART0_SIZE 4096', '#define DEMO_SOC_UART0_END 0x10000fff', '#define DEMO_SOC_FEATURE_UART0 1', '#define DEMO_SOC_UART1_BASE 0x10001000', '#define DEMO_SOC_UART1_SIZE 4096', '#define DEMO_SOC_UART1_END 0x10001fff', '#define DEMO_SOC_FEATURE_UART1 1', '#define DEMO_SOC_GPIO0_BASE 0x10002000', '#define DEMO_SOC_GPIO0_SIZE 4096', '#define DEMO_SOC_GPIO0_END 0x10002fff', '#define DEMO_SOC_FEATURE_GPIO0 1', '#define DEMO_SOC_INTC0_BASE 0x10003000', '#define DEMO_SOC_INTC0_SIZE 4096', '#define DEMO_SOC_INTC0_END 0x10003fff', '#define DEMO_SOC_FEATURE_INTC0 1', '#define DEMO_SOC_APB_EXT0_BASE 0x10004000', '#define DEMO_SOC_APB_EXT0_SIZE 4096', '#define DEMO_SOC_APB_EXT0_END 0x10004fff', '#define DEMO_SOC_FEATURE_APB_EXT0 1', '#define DEMO_SOC_AXI0_BASE 0x20000000', '#define DEMO_SOC_AXI0_SIZE 16777216', '#define DEMO_SOC_AXI0_END 0x20ffffff', '#define DEMO_SOC_FEATURE_AXI0 1', '#define MERC32_IRQ_TRIGGER_HIGH 0', '#define MERC32_IRQ_TRIGGER_LOW 1', '#define MERC32_IRQ_TRIGGER_RISING 2', '#define MERC32_IRQ_TRIGGER_FALLING 3', '#define DEMO_SOC_UART0_IRQ 0', '#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH', '#define DEMO_SOC_UART1_IRQ 1', '#define DEMO_SOC_UART1_IRQ_TRIGGER MERC32_IRQ_TRIGGER_LOW', '#define DEMO_SOC_GPIO0_IRQ 2', '#define DEMO_SOC_GPIO0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_RISING', '#define DEMO_SOC_EXTERNAL_WAKE_IRQ 3', '#define DEMO_SOC_EXTERNAL_WAKE_IRQ_TRIGGER MERC32_IRQ_TRIGGER_FALLING', '#endif', '',
+        '#ifndef DEMO_SOC_H', '#define DEMO_SOC_H', '#define DEMO_SOC_ILB_BASE 0x00000000', '#define DEMO_SOC_ILB_SIZE 32768', '#define DEMO_SOC_ILB_END 0x00007fff', '#define DEMO_SOC_FEATURE_ILB_INTERNAL_RAM 1', '#define DEMO_SOC_DLB_BASE 0x08000000', '#define DEMO_SOC_DLB_SIZE 65536', '#define DEMO_SOC_DLB_END 0x0800ffff', '#define DEMO_SOC_FEATURE_DLB_EXTERNAL_LOCAL_BUS 1', '#define DEMO_SOC_FEATURE_DEBUG 1', '#define DEMO_SOC_UART0_BASE 0x10000000', '#define DEMO_SOC_UART0_SIZE 4096', '#define DEMO_SOC_UART0_END 0x10000fff', '#define DEMO_SOC_FEATURE_UART0 1', '#define DEMO_SOC_UART1_BASE 0x10001000', '#define DEMO_SOC_UART1_SIZE 4096', '#define DEMO_SOC_UART1_END 0x10001fff', '#define DEMO_SOC_FEATURE_UART1 1', '#define DEMO_SOC_GPIO0_BASE 0x10002000', '#define DEMO_SOC_GPIO0_SIZE 4096', '#define DEMO_SOC_GPIO0_END 0x10002fff', '#define DEMO_SOC_FEATURE_GPIO0 1', '#define DEMO_SOC_INTC0_BASE 0x10003000', '#define DEMO_SOC_INTC0_SIZE 4096', '#define DEMO_SOC_INTC0_END 0x10003fff', '#define DEMO_SOC_FEATURE_INTC0 1', '#define DEMO_SOC_APB_EXT0_BASE 0x10004000', '#define DEMO_SOC_APB_EXT0_SIZE 4096', '#define DEMO_SOC_APB_EXT0_END 0x10004fff', '#define DEMO_SOC_FEATURE_APB_EXT0 1', '#define DEMO_SOC_AXI0_BASE 0x20000000', '#define DEMO_SOC_AXI0_SIZE 16777216', '#define DEMO_SOC_AXI0_END 0x20ffffff', '#define DEMO_SOC_FEATURE_AXI0 1', '#define MERC32_IRQ_TRIGGER_HIGH 0', '#define MERC32_IRQ_TRIGGER_LOW 1', '#define MERC32_IRQ_TRIGGER_RISING 2', '#define MERC32_IRQ_TRIGGER_FALLING 3', '#define DEMO_SOC_UART0_IRQ 0', '#define DEMO_SOC_UART0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_HIGH', '#define DEMO_SOC_UART1_IRQ 1', '#define DEMO_SOC_UART1_IRQ_TRIGGER MERC32_IRQ_TRIGGER_LOW', '#define DEMO_SOC_GPIO0_IRQ 2', '#define DEMO_SOC_GPIO0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_RISING', '#define DEMO_SOC_EXTERNAL_INTERRUPT0_IRQ 3', '#define DEMO_SOC_EXTERNAL_INTERRUPT0_IRQ_TRIGGER MERC32_IRQ_TRIGGER_FALLING', '#endif', '',
     ].join('\n'));
     assert.doesNotMatch(header, /#define\s+\w+\s*\(/);
 
@@ -1767,7 +1767,7 @@ try {
     assert.match(readme, /\| Mode \| controller \|/);
     assert.match(readme, /\| Controller \| intc0 \|/);
     assert.match(readme, /\| IRQ count \| 4 \|/);
-    assert.match(readme, /\| external\.wake \| 3 \| falling \| external_wake \|/);
+    assert.match(readme, /\| external\.wake \| 3 \| falling \| external_interrupt0 \|/);
     assert.match(readme, /\$readmemh/);
     assert.doesNotMatch(readme, /address-map\.json|resolved\.json|rtl\/files\.f|LICENSE/);
     assert.match(readme, /^# demo_soc\n/m);
@@ -1869,12 +1869,12 @@ try {
     assert.strictEqual((top.match(/\bapb_intc\b/g) || []).length, 1);
     assert.match(top, /\.IRQ_COUNT\s*\(4\)/);
     assert.match(top, /\.IRQ_MODE\s*\(64'he4\)/);
-    assert.match(top, /reg external_wake_meta/);
-    assert.match(top, /reg external_wake_sync/);
-    assert.match(top, /reg \[1:0\] external_wake_history_valid/);
-    assert.match(top, /reg external_wake_conditioned/);
-    assert.match(top, /reg external_wake_armed/);
-    assert.match(top, /intc0_irq_sources\[3\] = external_wake_conditioned/);
+    assert.match(top, /reg external_interrupt0_meta/);
+    assert.match(top, /reg external_interrupt0_sync/);
+    assert.match(top, /reg \[1:0\] external_interrupt0_history_valid/);
+    assert.match(top, /reg external_interrupt0_conditioned/);
+    assert.match(top, /reg external_interrupt0_armed/);
+    assert.match(top, /intc0_irq_sources\[3\] = external_interrupt0_conditioned/);
     assert.match(top, /\.interrupt\s*\(intc0_interrupt\)/);
     assert.match(router, /32'h2000_0000/);
     assert.match(router, /active_endpoint/);
@@ -1930,8 +1930,43 @@ try {
     assert.match(singleSourceControllerReadme, /\| Controller \| intc0 \|/);
     assert.match(singleSourceControllerReadme, /\| IRQ count \| 1 \|/);
     assert.match(singleSourceTop, /wire \[0:0\] intc0_irq_sources;/);
-    assert.match(singleSourceTop, /assign intc0_irq_sources\[0\] = external_only_conditioned;/);
+    assert.match(singleSourceTop, /input wire external_interrupt0/);
+    assert.match(singleSourceTop, /assign intc0_irq_sources\[0\] = external_interrupt0_conditioned;/);
     assert.match(singleSourceTop, /\.IRQ_COUNT\s*\(1\)/);
+
+    const repeatedExternalController = clone(minimal);
+    repeatedExternalController.peripherals = [
+        { type: 'apb_uart', name: 'uart0', baseAddress: '0x10000000' },
+        {
+            type: 'apb_intc', name: 'intc0', baseAddress: '0x10001000',
+            parameters: { IRQ_COUNT: 31, IRQ_MODE: 123 },
+        },
+    ];
+    repeatedExternalController.interrupt = {
+        mode: 'controller', controller: 'intc0', sources: [
+            { source: 'external.irq', id: 0, trigger: 'high' },
+            { source: 'uart0.interrupt', id: 1, trigger: 'low' },
+            { source: 'external.irq', id: 2, trigger: 'rising' },
+        ],
+    };
+    const repeatedExternalControllerPlan = planFixture(
+        repeatedExternalController, 'repeated-external-controller.merc32.json');
+    const repeatedExternalTop = soc.renderSocTop(repeatedExternalControllerPlan);
+    const repeatedExternalHeader = soc.renderSocHeader(repeatedExternalControllerPlan);
+    assert.deepStrictEqual(repeatedExternalControllerPlan.interrupt.sources
+        .map((source) => source.topPort), [
+        'external_interrupt0', undefined, 'external_interrupt1',
+    ]);
+    assert.match(repeatedExternalTop, /input wire external_interrupt0/);
+    assert.match(repeatedExternalTop, /input wire external_interrupt1/);
+    assert.match(repeatedExternalTop,
+        /assign intc0_irq_sources\[0\] = external_interrupt0_conditioned;/);
+    assert.match(repeatedExternalTop,
+        /assign intc0_irq_sources\[2\] = external_interrupt1_conditioned;/);
+    assert.match(repeatedExternalTop, /\.IRQ_COUNT\s*\(3\)/);
+    assert.match(repeatedExternalTop, /\.IRQ_MODE\s*\(64'h24\)/);
+    assert.match(repeatedExternalHeader, /#define .*_EXTERNAL_INTERRUPT0_IRQ 0/);
+    assert.match(repeatedExternalHeader, /#define .*_EXTERNAL_INTERRUPT1_IRQ 2/);
 
     const all = JSON.parse(fs.readFileSync(
         path.join(fixtureDirectory, 'all-peripherals.merc32.json'), 'utf8'));
@@ -2028,9 +2063,9 @@ try {
     directExternal.interrupt = { mode: 'direct', source: 'external.wake' };
     const directExternalTop = soc.renderSocTop(
         planFixture(directExternal, 'direct-external.merc32.json'));
-    assert.match(directExternalTop, /input wire external_wake/);
-    assert.match(directExternalTop, /\.interrupt\s*\(external_wake\)/);
-    assert.doesNotMatch(directExternalTop, /external_wake_(?:meta|sync)/);
+    assert.match(directExternalTop, /input wire external_interrupt0/);
+    assert.match(directExternalTop, /\.interrupt\s*\(external_interrupt0\)/);
+    assert.doesNotMatch(directExternalTop, /external_interrupt0_(?:meta|sync)/);
 
     const reservedName = clone(minimal);
     reservedName.externalInterfaces = [{
