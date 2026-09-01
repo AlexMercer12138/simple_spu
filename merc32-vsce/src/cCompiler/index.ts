@@ -11,6 +11,10 @@ export * from './parser';
 export * from './declarations';
 export * from './sema';
 export * from './initializers';
+export * from './ir';
+export * from './lower';
+export * from './codegen';
+export * from './registers';
 
 export interface CompileFileOptions extends CompileOptions {
     preprocess?: CPreprocessOptions;
