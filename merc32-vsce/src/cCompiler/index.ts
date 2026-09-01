@@ -6,6 +6,9 @@ export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
 export * from './source';
 export * from './ast';
+export * from './lexer';
+export * from './parser';
+export * from './declarations';
 
 export interface CompileFileOptions extends CompileOptions {
     preprocess?: CPreprocessOptions;
