@@ -191,17 +191,7 @@ export function renderApbInterconnect(plan: SocPlan): string | undefined {
 /** Renders the generated SoC integration top from an immutable plan. */
 export function renderSocTop(plan: SocPlan): string {
     const writer = new VerilogWriter();
-    const parameters: string[] = [];
-    for (const prefix of ['ilb', 'dlb'] as const) {
-        const memory = plan.memory[prefix];
-        if (memory.type === 'internal_ram') {
-            const defaultPath = memory.initFile === undefined
-                ? ''
-                : `../firmware/${memory.initFile.outputName}`;
-            parameters.push(`parameter ${prefix.toUpperCase()}_INIT_FILE = ${quoteVerilog(defaultPath)}`);
-        }
-    }
-    emitModuleHeader(writer, plan.topModule, parameters, plan.topPorts.map(formatTopPort));
+    emitModuleHeader(writer, plan.topModule, [], plan.topPorts.map(formatTopPort));
     emitTopWires(writer, plan);
     emitExternalInterruptSynchronizers(writer, plan);
     emitCpuInstance(writer, plan);
@@ -258,7 +248,8 @@ function emitExternalInterruptSynchronizers(writer: VerilogWriter, plan: SocPlan
     }
     const externalSources = plan.interrupt.sources
         .filter((source): source is typeof source & { topPort: string } => source.topPort !== undefined)
-        .sort((left, right) => left.topPort.localeCompare(right.topPort));
+        .sort((left, right) => externalInterruptIndex(left.topPort)
+            - externalInterruptIndex(right.topPort));
     for (const source of externalSources) {
         const port = source.topPort;
         const inactive = source.trigger === 'low' || source.trigger === 'falling'
@@ -354,7 +345,9 @@ function emitMemoryInstances(writer: VerilogWriter, plan: SocPlan): void {
         }
         emitInstance(writer, 'spram', `${prefix}_ram_inst`, [
             ['ADDR_WIDTH', `${memory.wordAddressWidth}`],
-            ['INIT_FILE', `${prefix.toUpperCase()}_INIT_FILE`],
+            ['INIT_FILE', quoteVerilog(memory.initFile === undefined
+                ? ''
+                : `../firmware/${memory.initFile.outputName}`)],
         ], [
             ['clk', 'clk'], ['wr', `cpu_${prefix}_wren`], ['rd', `cpu_${prefix}_rden`],
             ['be', `cpu_${prefix}_strb`], ['din', `cpu_${prefix}_wdata`],
@@ -362,6 +355,10 @@ function emitMemoryInstances(writer: VerilogWriter, plan: SocPlan): void {
             ['ack', `cpu_${prefix}_ack`],
         ]);
     }
+}
+
+function externalInterruptIndex(port: string): number {
+    return Number(port.slice('external_interrupt'.length));
 }
 
 function emitRouterInstance(writer: VerilogWriter, plan: SocPlan): void {

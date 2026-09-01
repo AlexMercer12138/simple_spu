@@ -1848,6 +1848,10 @@ try {
     // Removing the integration top, bridge parameters, physical ports, stateful
     // router, or shared APB decoder must break these observable RTL contracts.
     assert.match(top, /^module demo_soc\b/m);
+    assert.doesNotMatch(top, /^module demo_soc\s*#\(/m,
+        'generated SoC top configuration must come only from the JSON plan');
+    assert.doesNotMatch(top, /parameter\s+(?:ILB|DLB)_INIT_FILE/);
+    assert.match(top, /\.INIT_FILE\s*\("\.\.\/firmware\/ilb_firmware\.mem"\)/);
     assert.match(top, /MERC32_top #\(/);
     assert.match(top, /apb_uart[^;]*uart0_inst/s);
     assert.match(top, /\.AXI_ADDR_WIDTH\s*\(32\)/);
@@ -1977,9 +1981,11 @@ try {
     const minimalPlan = planFixture(minimal, 'minimal.merc32.json');
     const uninitializedInternal = clone(minimal);
     uninitializedInternal.memory.ilb = { type: 'internal_ram', size: '32KiB' };
-    assert.match(soc.renderSocTop(planFixture(
-        uninitializedInternal, 'uninitialized-internal.merc32.json')),
-    /parameter ILB_INIT_FILE = ""/);
+    const uninitializedInternalTop = soc.renderSocTop(planFixture(
+        uninitializedInternal, 'uninitialized-internal.merc32.json'));
+    assert.doesNotMatch(uninitializedInternalTop, /^module minimal_soc\s*#\(/m);
+    assert.doesNotMatch(uninitializedInternalTop, /parameter ILB_INIT_FILE/);
+    assert.match(uninitializedInternalTop, /\.INIT_FILE\s*\(""\)/);
     const emptyReadme = soc.renderGeneratedReadme(minimalPlan, {
         ...readmeMetadata,
         integration: [],

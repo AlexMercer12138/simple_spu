@@ -1214,10 +1214,10 @@ irq_reset_soc dut (
     .dlb_rden(dlb_rden), .dlb_wren(dlb_wren), .dlb_addr(dlb_addr),
     .dlb_strb(dlb_strb), .dlb_wdata(dlb_wdata),
     .dlb_rdata(dlb_rdata), .dlb_ack(dlb_ack),
-    .external_active_low(external_active_low),
-    .external_rise(external_rise),
-    .external_fall(external_fall),
-    .external_high(external_high)
+    .external_interrupt0(external_active_low),
+    .external_interrupt1(external_rise),
+    .external_interrupt2(external_fall),
+    .external_interrupt3(external_high)
 );
 
 always #5 clk = ~clk;
@@ -1362,7 +1362,7 @@ single_irq_soc dut (
     .dlb_rden(dlb_rden), .dlb_wren(dlb_wren), .dlb_addr(dlb_addr),
     .dlb_strb(dlb_strb), .dlb_wdata(dlb_wdata),
     .dlb_rdata(dlb_rdata), .dlb_ack(dlb_ack),
-    .external_only(external_only)
+    .external_interrupt0(external_only)
 );
 
 always #5 clk = ~clk;
@@ -1569,8 +1569,9 @@ async function run() {
             { source: 'external.foo_sync', id: 1, trigger: 'low' },
         ],
     };
-    assertRejectedBeforeEmission('synchronizer_symbol_collision', synchronizerCollision, catalog,
-        'SOC_VERILOG_SYMBOL_COLLISION', ['interrupt', 'sources', 1, 'source']);
+    assert.ok(planSoc(synchronizerCollision, catalog, {
+        baseDirectory: fixtureDirectory,
+    }).plan, 'occurrence-numbered external interrupt symbols must not collide');
 
     const generatedModuleDescriptors = new Map(catalog.modules);
     generatedModuleDescriptors.set('collision_fixture', {
