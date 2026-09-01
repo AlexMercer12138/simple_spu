@@ -1,6 +1,6 @@
 # MERC32 Toolchain for VSCode
 
-[![Version](https://img.shields.io/badge/Version-2.0.3-blue.svg)](https://github.com/AlexMercer12138/MERC32)
+[![Version](https://img.shields.io/badge/Version-2.1.0-blue.svg)](https://github.com/AlexMercer12138/MERC32)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 MERC32 CPU 的统一 VSCode 扩展，内置汇编器与 Tiny C 编译器，并通过活动栏侧边栏组织构建命令与产物。打开 `.asm` / `.c` 文件时，扩展提供语法高亮、代码片段与右上角一键编译按钮，可将源码编译输出为 Verilog、COE、MIF、Intel HEX、Binary 或 `$readmemh` 内存文件。
@@ -55,6 +55,12 @@ npm run package:vsix
 4. 将生成目录中的 `hardware/<project>.v` 作为唯一的 SoC Verilog 源文件加入 FPGA 或仿真工程；例如使用 `iverilog -g2005 -s <project> hardware/<project>.v`。
 5. 从 `software/main.c` 开始编写裸机软件，并包含 `software/<project>.h` 中的软件地址映射。
 6. 如配置了存储器初始化文件，生成器会将其放入可选的 `firmware/` 目录。
+
+配置器中的地址字段固定显示 `0x` 前缀并只编辑 8 位十六进制数字，RAM 容量固定显示 `KiB` 后缀。外部接口使用包含在地址范围内的 **High Address**；保存时 JSON 仍保持版本 1 的 `windowSize` 字段，并按 `windowSize = High Address - Base Address + 1` 自动换算。
+
+选择 **Controller** 中断模式后，配置器会自动创建并管理一个 `apb_intc`，其 Instance name 与 Base address 在 Interrupts 页面修改，`IRQ_COUNT` 和 `IRQ_MODE` 由路由自动生成。中断源通过下拉框选择已添加外设的中断或可重复选择的 External interrupt；生成 RTL 时，外部中断引脚按路由出现顺序命名为 `external_interrupt0`、`external_interrupt1` 等。
+
+生成的项目 SoC 顶层模块只公开端口，不公开配置参数；CPU、桥接器、RAM 和外设参数都由 JSON 配置对应的生成结果内部维护。
 
 VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装后可离线、独立生成，不依赖 MERC32 仓库检出。生成器绝不会覆盖已经存在的 `software/main.c`。输出包含可集成的 RTL 和软件起始文件，但不生成 FPGA 工程或 testbench。
 
