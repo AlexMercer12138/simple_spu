@@ -36,3 +36,13 @@ Fix verification from `merc32-vsce`:
 - `npm run test:c` -> passed (`MERC32 VSCE C compiler integration test passed`).
 
 Fix self-review concern: the object adapter stores legacy assembly text as the provisional text-section content so downstream linker work has a stable shared type boundary; it emits no symbols or relocations until the planned object-producing backend replaces the compatibility path.
+
+## Fix Round 2
+
+Updated `isScalarType` to classify `double` and `long double` as scalar floating types, with focused assertions for both representations.
+
+Verification from `merc32-vsce`:
+
+- `npm run compile` -> passed.
+- `node scripts/test-c-types.js` -> passed (`C type model tests passed`).
+- `npm run test:c` -> passed (`MERC32 VSCE C compiler integration test passed`).

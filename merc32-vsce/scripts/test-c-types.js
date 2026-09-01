@@ -19,5 +19,7 @@ assert.strictEqual(layout.alignment, 4);
 assert.strictEqual(typeAlignment(builtinType('int')), 4);
 assert.ok(isIntegerType(builtinType('int')));
 assert.ok(isScalarType(pointerType(builtinType('char'))));
+assert.ok(isScalarType(builtinType('double')));
+assert.ok(isScalarType(builtinType('long double')));
 assert.ok(!isCompleteType(builtinType('void')));
 console.log('C type model tests passed');

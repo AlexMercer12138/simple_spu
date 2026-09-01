@@ -117,7 +117,10 @@ export function isIntegerType(type: CType): boolean {
     return type.kind === 'builtin' && ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long'].includes(type.name)
         || type.kind === 'enum' || type.kind === 'typedef' && !!type.target && isIntegerType(type.target);
 }
-export function isScalarType(type: CType): boolean { return isIntegerType(type) || type.kind === 'pointer' || type.kind === 'enum' || type.kind === 'builtin' && type.name === 'float'; }
+export function isScalarType(type: CType): boolean {
+    return isIntegerType(type) || type.kind === 'pointer' || type.kind === 'enum'
+        || type.kind === 'builtin' && ['float', 'double', 'long double'].includes(type.name);
+}
 export function isCompleteType(type: CType): boolean {
     if (type.kind === 'array') return type.length !== null && isCompleteType(type.element);
     if (type.kind === 'function') return false;
