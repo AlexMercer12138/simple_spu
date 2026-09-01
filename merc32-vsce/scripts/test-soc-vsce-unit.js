@@ -832,10 +832,14 @@ const dirtyView = buildSocEditorViewModel(
     true,
 );
 assert.strictEqual(dirtyView.documentState, 'dirty');
-assert.deepStrictEqual(dirtyView.interruptOptions.controllers, ['intc0']);
-assert.ok(dirtyView.interruptOptions.directSources.includes('intc0.interrupt'));
-assert.ok(dirtyView.interruptOptions.routedSources.includes('uart0.interrupt'));
-assert.ok(!dirtyView.interruptOptions.routedSources.includes('intc0.interrupt'));
+assert.deepStrictEqual(dirtyView.interruptOptions.directSources, [
+    { value: 'uart0.interrupt', label: 'uart0.interrupt', kind: 'peripheral' },
+    { value: 'uart1.interrupt', label: 'uart1.interrupt', kind: 'peripheral' },
+    { value: 'gpio0.interrupt', label: 'gpio0.interrupt', kind: 'peripheral' },
+    { value: 'external', label: 'External interrupt', kind: 'external' },
+]);
+assert.deepStrictEqual(dirtyView.interruptOptions.routedSources,
+    dirtyView.interruptOptions.directSources);
 
 const brokenView = buildSocEditorViewModel(
     '{"cpu":', 'broken.merc32.json', 3, catalog, ['cpu'], undefined, false,

@@ -82,10 +82,15 @@ export type SocGenerationPhase =
 export type SocDocumentState = 'saved' | 'dirty' | 'readOnly';
 export type SocEditorActionType = 'autoAssign' | 'validate' | 'generate';
 
+export interface SocInterruptSourceOptionPresentation {
+    value: string;
+    label: string;
+    kind: 'peripheral' | 'external';
+}
+
 export interface SocInterruptOptionsPresentation {
-    controllers: readonly string[];
-    directSources: readonly string[];
-    routedSources: readonly string[];
+    directSources: readonly SocInterruptSourceOptionPresentation[];
+    routedSources: readonly SocInterruptSourceOptionPresentation[];
 }
 
 export interface SocGenerationState {

@@ -160,8 +160,11 @@
         system.body.appendChild(navButton('DLB memory', ['memory', 'dlb']));
         componentNav.appendChild(system.root);
 
-        const peripherals = section('APB peripherals', String(model.config.peripherals.length));
-        model.config.peripherals.forEach((item, index) => {
+        const ordinaryPeripherals = model.config.peripherals
+            .map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.type !== 'apb_intc');
+        const peripherals = section('APB peripherals', String(ordinaryPeripherals.length));
+        ordinaryPeripherals.forEach(({ item, index }) => {
             peripherals.body.appendChild(instanceRow(
                 item.name,
                 item.type,
@@ -214,8 +217,8 @@
             addField('Debug port', ['cpu', 'debug'], Boolean(model.config.cpu.debug), {
                 kind: 'boolean', optional: true,
             });
-            addField('JTAG ID code', ['cpu', 'jtagIdCode'], model.config.cpu.jtagIdCode || '', {
-                kind: 'text', optional: true, placeholder: '0x4d320001 (default)',
+            addHexField('JTAG ID code', ['cpu', 'jtagIdCode'], model.config.cpu.jtagIdCode || '', {
+                optional: true, className: 'cpu-jtag-id', placeholder: '4d320001',
             });
         } else if (root === 'memory') {
             renderMemory(selected[1]);
@@ -238,7 +241,7 @@
                 { value: 'external_local_bus', label: 'External local bus' },
             ],
         });
-        addField('Capacity', ['memory', slot, 'size'], memory.size, { kind: valueKind(memory.size) });
+        addKibField('Capacity', ['memory', slot, 'size'], memory.size);
         if (memory.type === 'internal_ram') {
             addField('Initialization file', ['memory', slot, 'initFile'], memory.initFile || '', {
                 kind: 'text', optional: true,
@@ -256,8 +259,8 @@
             options: model.catalog.modules.map((item) => ({ value: item.type, label: item.label })),
         });
         addField('Instance name', ['peripherals', index, 'name'], peripheral.name, { kind: 'text' });
-        addField('Base address', ['peripherals', index, 'baseAddress'], peripheral.baseAddress || '', {
-            kind: 'text', optional: true,
+        addHexField('Base address', ['peripherals', index, 'baseAddress'], peripheral.baseAddress || '', {
+            optional: true, className: 'peripheral-base-address',
         });
         if (descriptor && descriptor.parameters.length) {
             propertyForm.appendChild(groupHeading('Module parameters'));
@@ -290,11 +293,15 @@
             options: model.catalog.externalInterfaces.map((item) => ({ value: item.type, label: item.label })),
         });
         addField('Instance name', ['externalInterfaces', index, 'name'], endpoint.name, { kind: 'text' });
-        addField('Base address', ['externalInterfaces', index, 'baseAddress'], endpoint.baseAddress || '', {
-            kind: 'text', optional: true,
+        addHexField('Base address', ['externalInterfaces', index, 'baseAddress'], endpoint.baseAddress || '', {
+            optional: true, className: 'external-base-address',
         });
-        addField('Window size', ['externalInterfaces', index, 'windowSize'], endpoint.windowSize, {
-            kind: valueKind(endpoint.windowSize),
+        const presentation = model.externalInterfacePresentation
+            .find((item) => item.index === index);
+        addHexField('High address', ['externalInterfaces', index, 'highAddress'],
+            presentation && presentation.highAddress || '', {
+                className: 'external-high-address',
+                disabled: !presentation || !presentation.highAddress,
         });
         addField('Address width', ['externalInterfaces', index, 'addressWidth'], endpoint.addressWidth, {
             kind: 'number', minimum: 1, maximum: 32,
@@ -313,19 +320,22 @@
             ],
         });
         if (interrupt.mode === 'direct') {
-            appendInterruptSourceOptions(model.interruptOptions.directSources);
-            addField('Source', ['interrupt', 'source'], interrupt.source, {
-                kind: 'text',
+            addInterruptSourceField('Source', ['interrupt', 'source'], interrupt.source,
+                model.interruptOptions.directSources, [], {
                 className: 'interrupt-direct-source',
-                list: 'interrupt-source-options',
             });
         } else if (interrupt.mode === 'controller') {
-            addField('Controller', ['interrupt', 'controller'], interrupt.controller, {
-                kind: 'select',
-                className: 'interrupt-controller',
-                options: model.interruptOptions.controllers.map((value) => ({ value, label: value })),
-            });
-            appendInterruptSourceOptions(model.interruptOptions.routedSources);
+            const controller = model.interruptController;
+            if (controller) {
+                addField('Instance name', ['interrupt', 'controllerName'], controller.name, {
+                    kind: 'text', className: 'interrupt-controller-name',
+                });
+                addHexField('Base address',
+                    ['peripherals', controller.peripheralIndex, 'baseAddress'],
+                    controller.baseAddress || '', {
+                        optional: true, className: 'interrupt-controller-base',
+                    });
+            }
             const editor = element('div', 'route-editor');
             const header = element('div', 'route-header');
             header.append(
@@ -339,15 +349,18 @@
                 const route = element('div', 'route-row');
                 route.setAttribute('role', 'group');
                 route.setAttribute('aria-label', `Route ${index + 1}`);
-                const sourceControl = document.createElement('input');
-                sourceControl.type = 'text';
+                const sourceControl = interruptSourceSelect(
+                    source.source,
+                    model.interruptOptions.routedSources,
+                    interrupt.sources.filter((unused, sourceIndex) => sourceIndex !== index)
+                        .map((item) => item.source),
+                );
                 sourceControl.className = 'route-source';
-                sourceControl.value = source.source;
-                sourceControl.setAttribute('list', 'interrupt-source-options');
                 sourceControl.setAttribute('aria-label', `Route ${index + 1} source`);
                 setFieldPath(sourceControl, ['interrupt', 'sources', index, 'source']);
                 sourceControl.addEventListener('change', () => postSetValue(
-                    ['interrupt', 'sources', index, 'source'], sourceControl.value,
+                    ['interrupt', 'sources', index, 'source'],
+                    selectedInterruptSource(sourceControl.value, source.source, interrupt.sources),
                 ));
 
                 const idControl = document.createElement('input');
@@ -403,7 +416,7 @@
                 while (usedIds.has(id)) id += 1;
                 postSetValue(['interrupt', 'sources'], [
                     ...interrupt.sources,
-                    { source: `external.irq${id}`, id, trigger: 'high' },
+                    { source: nextExternalInterruptSource(interrupt.sources), id, trigger: 'high' },
                 ]);
             });
             markMutationControl(addRoute);
@@ -413,15 +426,152 @@
         }
     }
 
-    function appendInterruptSourceOptions(sources) {
-        const list = document.createElement('datalist');
-        list.id = 'interrupt-source-options';
-        sources.forEach((value) => {
+    function addInterruptSourceField(labelText, path, value, options, usedSources, fieldOptions) {
+        const row = element('label', 'field-row');
+        const label = element('span', 'field-label', labelText);
+        const detail = element('span', 'field-detail');
+        const control = interruptSourceSelect(value, options, usedSources);
+        if (fieldOptions.className) control.className = fieldOptions.className;
+        setFieldPath(control, path);
+        markMutationControl(control);
+        control.addEventListener('change', () => postSetValue(
+            path,
+            selectedInterruptSource(control.value, value, [{ source: value }]),
+        ));
+        detail.appendChild(control);
+        row.append(label, detail);
+        propertyForm.appendChild(row);
+    }
+
+    function interruptSourceSelect(current, options, usedSources) {
+        const control = document.createElement('select');
+        const used = new Set(usedSources.filter((source) => !isExternalInterruptSource(source)));
+        options.forEach((sourceOption) => {
+            if (sourceOption.kind === 'peripheral'
+                && used.has(sourceOption.value) && sourceOption.value !== current) return;
             const option = document.createElement('option');
-            option.value = value;
-            list.appendChild(option);
+            option.value = sourceOption.value;
+            option.textContent = sourceOption.label;
+            option.selected = sourceOption.kind === 'external'
+                ? isExternalInterruptSource(current)
+                : sourceOption.value === current;
+            control.appendChild(option);
         });
-        propertyForm.appendChild(list);
+        return control;
+    }
+
+    function selectedInterruptSource(selected, current, sources) {
+        if (selected !== 'external') return selected;
+        return isExternalInterruptSource(current) ? current : nextExternalInterruptSource(sources);
+    }
+
+    function nextExternalInterruptSource(sources) {
+        const used = new Set(sources.map((source) => source.source));
+        for (let index = 0; ; index += 1) {
+            const candidate = `external.irq${index}`;
+            if (!used.has(candidate)) return candidate;
+        }
+    }
+
+    function isExternalInterruptSource(source) {
+        return typeof source === 'string' && source.startsWith('external.');
+    }
+
+    function addHexField(labelText, path, value, options) {
+        const row = element('label', 'field-row');
+        const label = element('span', 'field-label', labelText);
+        const detail = element('span', 'field-detail');
+        const group = element('span', `unit-input ${options.className || ''}`.trim());
+        const prefix = element('span', 'input-prefix', '0x');
+        const control = document.createElement('input');
+        control.type = 'text';
+        control.inputMode = 'text';
+        control.maxLength = 8;
+        control.value = hexBody(value);
+        if (options.placeholder) control.placeholder = options.placeholder;
+        control.addEventListener('input', () => {
+            control.value = control.value.replace(/[^0-9a-f]/gi, '').slice(0, 8).toLowerCase();
+            setControlValidity(control, control.value === '' && options.optional
+                || control.value.length === 8);
+        });
+        control.addEventListener('change', () => {
+            if (control.value === '' && options.optional) {
+                postUnsetValue(path);
+            } else if (/^[0-9a-f]{8}$/.test(control.value)) {
+                postSetValue(path, `0x${control.value}`);
+            }
+        });
+        setFieldPath(control, path);
+        markMutationControl(control);
+        if (options.disabled) control.disabled = true;
+        group.append(prefix, control);
+        detail.appendChild(group);
+        if (options.optional) appendReset(detail, labelText, path);
+        row.append(label, detail);
+        propertyForm.appendChild(row);
+    }
+
+    function addKibField(labelText, path, value) {
+        const row = element('label', 'field-row');
+        const label = element('span', 'field-label', labelText);
+        const detail = element('span', 'field-detail');
+        const group = element('span', 'unit-input memory-capacity');
+        const control = document.createElement('input');
+        control.type = 'number';
+        control.min = '1';
+        control.step = '1';
+        const kib = byteSizeToWholeKib(value);
+        control.value = kib === undefined ? '' : String(kib);
+        setControlValidity(control, kib !== undefined);
+        control.addEventListener('change', () => {
+            if (/^[0-9]+$/.test(control.value) && Number(control.value) > 0) {
+                postSetValue(path, `${control.value}KiB`);
+            }
+        });
+        setFieldPath(control, path);
+        markMutationControl(control);
+        group.append(control, element('span', 'input-suffix', 'KiB'));
+        detail.appendChild(group);
+        row.append(label, detail);
+        propertyForm.appendChild(row);
+    }
+
+    function byteSizeToWholeKib(value) {
+        let bytes;
+        if (typeof value === 'number' && Number.isSafeInteger(value)) bytes = value;
+        else if (typeof value === 'string') {
+            const match = /^([0-9]+)(KiB|MiB)?$/i.exec(value);
+            if (!match) return undefined;
+            bytes = Number(match[1]);
+            if (match[2] && match[2].toLowerCase() === 'kib') bytes *= 1024;
+            if (match[2] && match[2].toLowerCase() === 'mib') bytes *= 1024 * 1024;
+        }
+        return Number.isSafeInteger(bytes) && bytes > 0 && bytes % 1024 === 0
+            ? bytes / 1024 : undefined;
+    }
+
+    function hexBody(value) {
+        return typeof value === 'string' && /^0x[0-9a-f]{1,8}$/i.test(value)
+            ? value.slice(2).padStart(8, '0').toLowerCase() : '';
+    }
+
+    function setControlValidity(control, valid) {
+        control.setAttribute('aria-invalid', String(!valid));
+        control.classList.toggle('field-invalid', !valid);
+    }
+
+    function appendReset(detail, labelText, path) {
+        const reset = element('button', 'field-reset', '-');
+        reset.type = 'button';
+        reset.title = `Clear ${labelText}`;
+        reset.setAttribute('aria-label', reset.title);
+        reset.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            postUnsetValue(path);
+        });
+        markMutationControl(reset);
+        detail.appendChild(reset);
     }
 
     function addField(labelText, path, value, options) {

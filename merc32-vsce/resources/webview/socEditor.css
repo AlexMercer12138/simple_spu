@@ -319,6 +319,44 @@ p {
     padding: 4px 6px;
 }
 
+.unit-input {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: stretch;
+    min-width: 0;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 3px;
+    background: var(--vscode-input-background);
+}
+
+.unit-input input {
+    min-height: 26px;
+    border: 0;
+    border-radius: 0;
+}
+
+.input-prefix,
+.input-suffix {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--vscode-descriptionForeground);
+    user-select: none;
+}
+
+.input-prefix {
+    padding-right: 0;
+}
+
+.input-suffix {
+    padding-left: 0;
+}
+
+.field-invalid {
+    outline: 1px solid var(--vscode-inputValidation-errorBorder);
+    outline-offset: -1px;
+}
+
 .field-detail input[type='checkbox'] {
     width: 16px;
     height: 16px;

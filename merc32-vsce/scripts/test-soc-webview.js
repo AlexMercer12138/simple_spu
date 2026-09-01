@@ -100,7 +100,7 @@ function modelFixture(overrides = {}) {
                 dlb: { type: 'internal_ram', size: 16384 },
             },
             peripherals: [
-                { type: 'apb_intc', name: 'intc0' },
+                { type: 'apb_intc', name: 'intc0', baseAddress: '0x10000000' },
                 { type: 'apb_uart', name: 'uart0' },
             ],
             externalInterfaces: [],
@@ -108,7 +108,6 @@ function modelFixture(overrides = {}) {
         },
         catalog: {
             modules: [
-                { type: 'apb_intc', label: 'APB INTC', multiple: true, parameters: [] },
                 { type: 'apb_uart', label: 'APB UART', multiple: true, parameters: [] },
             ],
             externalInterfaces: [],
@@ -116,13 +115,24 @@ function modelFixture(overrides = {}) {
         diagnostics: [],
         selectedPath: ['project'],
         addressRows: [],
+        externalInterfacePresentation: [],
         interruptRows: [],
+        interruptController: {
+            peripheralIndex: 0,
+            name: 'intc0',
+            baseAddress: '0x10000000',
+        },
         portRows: [],
         dependencyRows: [],
         interruptOptions: {
-            controllers: ['intc0'],
-            directSources: ['intc0.irq', 'uart0.irq'],
-            routedSources: ['uart0.irq'],
+            directSources: [
+                { value: 'uart0.interrupt', label: 'uart0.interrupt', kind: 'peripheral' },
+                { value: 'external', label: 'External interrupt', kind: 'external' },
+            ],
+            routedSources: [
+                { value: 'uart0.interrupt', label: 'uart0.interrupt', kind: 'peripheral' },
+                { value: 'external', label: 'External interrupt', kind: 'external' },
+            ],
         },
         generation: {
             actionId: 3,
@@ -192,7 +202,6 @@ function createVisualModel() {
         },
         catalog: {
             modules: [
-                { type: 'apb_intc', label: 'APB interrupt controller', multiple: false, parameters: [] },
                 { type: 'apb_uart', label: 'APB UART', multiple: true, parameters: [] },
                 { type: 'apb_gpio', label: 'APB GPIO', multiple: true, parameters: [] },
                 { type: 'apb_timer', label: 'APB timer', multiple: true, parameters: [] },
@@ -229,6 +238,14 @@ function createVisualModel() {
             { name: 'spi0', kind: 'peripheral', baseAddress: '0x10004000', endAddress: '0x10004fff', size: '4 KiB' },
             { name: 'sensor_bus', kind: 'external', baseAddress: '0x20000000', endAddress: '0x2000ffff', size: '64 KiB' },
         ],
+        externalInterfacePresentation: [
+            { index: 0, name: 'sensor_bus', highAddress: '0x2000ffff' },
+        ],
+        interruptController: {
+            peripheralIndex: 0,
+            name: 'intc0',
+            baseAddress: '0x10000000',
+        },
         interruptRows: routes,
         portRows: Array.from({ length: 40 }, (_, index) => ({
             name: index === 0 ? 'clk_i' : index === 1 ? 'rst_ni'
@@ -244,9 +261,16 @@ function createVisualModel() {
             { name: 'software/flight_controller.h', kind: 'generated/header', detail: 'Software address map' },
         ],
         interruptOptions: {
-            controllers: ['intc0'],
-            directSources: ['uart0.irq', 'timer0.irq', ...routes.slice(2).map((route) => route.source)],
-            routedSources: ['uart0.irq', 'timer0.irq', ...routes.slice(2).map((route) => route.source)],
+            directSources: [
+                { value: 'uart0.irq', label: 'uart0.irq', kind: 'peripheral' },
+                { value: 'timer0.irq', label: 'timer0.irq', kind: 'peripheral' },
+                { value: 'external', label: 'External interrupt', kind: 'external' },
+            ],
+            routedSources: [
+                { value: 'uart0.irq', label: 'uart0.irq', kind: 'peripheral' },
+                { value: 'timer0.irq', label: 'timer0.irq', kind: 'peripheral' },
+                { value: 'external', label: 'External interrupt', kind: 'external' },
+            ],
         },
         generation: {
             actionId: 7,
@@ -748,8 +772,12 @@ function runNavigationAndConcurrencyTests() {
     assert.strictEqual(commandButton(document, 'generate').textContent.trim(), 'Generate');
     assert.strictEqual(navButton(document, 'Project').getAttribute('aria-current'), 'true');
     assert.strictEqual(navButton(document, 'CPU').hasAttribute('aria-current'), false);
-    assert.strictEqual(navButton(document, 'intc0').title, 'apb_intc');
-    assert.strictEqual(navButton(document, 'intc0').textContent, 'intc0');
+    assert.strictEqual(navButton(document, 'intc0'), undefined);
+    assert.deepStrictEqual(
+        [...document.querySelector('[aria-label="Peripheral type"]').options]
+            .map((option) => option.value),
+        ['apb_uart'],
+    );
 
     harness.click('[data-command="generate"]');
     harness.click('[data-command="generate"]');
@@ -784,6 +812,83 @@ function runNavigationAndConcurrencyTests() {
         message: 'Generation completed.',
     });
     assert.strictEqual(commandButton(document, 'generate').disabled, false);
+
+    harness.dom.window.close();
+}
+
+function runFixedUnitFieldTests() {
+    const harness = createHarness();
+    const { dom, document, posted } = harness;
+    const model = modelFixture({
+        selectedPath: ['cpu'],
+        config: {
+            ...modelFixture().config,
+            cpu: { debug: false, jtagIdCode: '0x4d320001' },
+        },
+    });
+    harness.deliver({ type: 'state', value: model });
+
+    const jtag = document.querySelector('.cpu-jtag-id');
+    assert.strictEqual(jtag.querySelector('.input-prefix').textContent, '0x');
+    const jtagBody = jtag.querySelector('input');
+    assert.strictEqual(jtagBody.value, '4d320001');
+    posted.length = 0;
+    jtagBody.value = '12xzABcd999';
+    jtagBody.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    assert.strictEqual(jtagBody.value, '12abcd99');
+    jtagBody.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.deepStrictEqual(posted.at(-1), {
+        type: 'setValue', documentVersion: 17,
+        path: ['cpu', 'jtagIdCode'], value: '0x12abcd99',
+    });
+
+    harness.deliver({ type: 'state', value: {
+        ...model,
+        selectedPath: ['memory', 'ilb'],
+        config: {
+            ...model.config,
+            memory: {
+                ...model.config.memory,
+                ilb: { type: 'internal_ram', size: '32KiB' },
+            },
+        },
+    } });
+    const capacity = document.querySelector('.memory-capacity');
+    assert.strictEqual(capacity.querySelector('.input-suffix').textContent, 'KiB');
+    const capacityBody = capacity.querySelector('input');
+    assert.strictEqual(capacityBody.value, '32');
+    posted.length = 0;
+    capacityBody.value = '64';
+    capacityBody.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.deepStrictEqual(posted.at(-1), {
+        type: 'setValue', documentVersion: 17,
+        path: ['memory', 'ilb', 'size'], value: '64KiB',
+    });
+
+    const externalModel = createVisualModel();
+    externalModel.selectedPath = ['externalInterfaces', 0];
+    externalModel.config.memory.ilb.size = '32KiB';
+    harness.deliver({ type: 'state', value: externalModel });
+    assert.strictEqual([...document.querySelectorAll('[data-field-path]')].some((control) =>
+        control.dataset.fieldPath === '["externalInterfaces",0,"windowSize"]'), false);
+    const base = document.querySelector('.external-base-address');
+    assert.strictEqual(base.querySelector('.input-prefix').textContent, '0x');
+    assert.strictEqual(base.querySelector('input').value, '20000000');
+    const high = document.querySelector('.external-high-address');
+    assert.strictEqual(high.querySelector('.input-prefix').textContent, '0x');
+    const highBody = high.querySelector('input');
+    assert.strictEqual(highBody.value, '2000ffff');
+    posted.length = 0;
+    highBody.value = '2001ffff';
+    highBody.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.deepStrictEqual(posted.at(-1), {
+        type: 'setValue', documentVersion: 42,
+        path: ['externalInterfaces', 0, 'highAddress'], value: '0x2001ffff',
+    });
+    posted.length = 0;
+    highBody.value = '2001fff';
+    highBody.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.strictEqual(posted.length, 0);
 
     harness.dom.window.close();
 }
@@ -922,16 +1027,15 @@ function runCompactInterruptTests() {
 
     assert.strictEqual(document.querySelectorAll('.route-row').length, 3);
     const routeSource = document.querySelector('.route-row .route-source');
-    assert.strictEqual(routeSource.getAttribute('list'), 'interrupt-source-options');
-    assert.deepStrictEqual(
-        [...document.querySelector('.interrupt-controller').options].map((option) => option.value),
-        ['intc0'],
-    );
-    assert.deepStrictEqual(
-        [...document.querySelectorAll('#interrupt-source-options option')]
-            .map((option) => option.value),
-        ['uart0.irq'],
-    );
+    assert.strictEqual(routeSource.tagName, 'SELECT');
+    assert.strictEqual(document.querySelector('.interrupt-controller'), null);
+    assert.strictEqual(document.querySelector('.interrupt-controller-name').value, 'intc0');
+    assert.strictEqual(document.querySelector('.interrupt-controller-base .input-prefix').textContent, '0x');
+    assert.deepStrictEqual([...routeSource.options].map((option) => option.textContent), [
+        'uart0.interrupt', 'External interrupt',
+    ]);
+    assert.ok([...document.querySelectorAll('.route-source')].every((select) =>
+        [...select.options].some((option) => option.textContent === 'External interrupt')));
     assert.strictEqual(document.querySelector('.add-route').disabled, false);
     harness.click('.add-route');
     assert.strictEqual(posted.at(-1).value.at(-1).id, 3);
@@ -945,15 +1049,14 @@ function runCompactInterruptTests() {
 
     const directModel = modelWithRoutes(0, {
         mode: 'direct',
-        source: 'uart0.irq',
+        source: 'uart0.interrupt',
     });
     harness.deliver({ type: 'state', value: directModel });
-    assert.strictEqual(document.querySelector('.interrupt-direct-source').list.id,
-        'interrupt-source-options');
+    assert.strictEqual(document.querySelector('.interrupt-direct-source').tagName, 'SELECT');
     assert.deepStrictEqual(
-        [...document.querySelectorAll('#interrupt-source-options option')]
-            .map((option) => option.value),
-        ['intc0.irq', 'uart0.irq'],
+        [...document.querySelector('.interrupt-direct-source').options]
+            .map((option) => option.textContent),
+        ['uart0.interrupt', 'External interrupt'],
     );
 
     harness.dom.window.close();
@@ -973,7 +1076,7 @@ function runNavigationMutationPendingTests() {
         type: 'addInstance',
         documentVersion: 17,
         collection: 'peripherals',
-        itemType: 'apb_intc',
+        itemType: 'apb_uart',
     });
     assert.strictEqual(addPeripheral.disabled, true);
     assert.strictEqual(removeRoute.disabled, true);
@@ -1183,6 +1286,7 @@ function runAllWebviewContractTests() {
     runInitialActionAvailabilityTests();
     runDocumentStateLabelTests();
     runNavigationAndConcurrencyTests();
+    runFixedUnitFieldTests();
     runStaleFullStateGenerationTests();
     runActiveActionAcknowledgmentTests();
     runTerminalActionAcknowledgmentTests();

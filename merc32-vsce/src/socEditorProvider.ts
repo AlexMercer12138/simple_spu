@@ -728,28 +728,34 @@ function presentInterruptController(
 }
 
 function emptyInterruptOptions(): SocInterruptOptionsPresentation {
-    return { controllers: [], directSources: [], routedSources: [] };
+    return { directSources: [], routedSources: [] };
 }
 
 function presentInterruptOptions(
     config: SocSourceConfig,
     catalog: ModuleCatalog,
 ): SocInterruptOptionsPresentation {
-    const controllers = config.peripherals
-        .filter((item) => item.type === 'apb_intc')
-        .map((item) => item.name);
     const sources = config.peripherals.flatMap((item) =>
         (catalog.modules.get(item.type)?.interrupts ?? [])
             .map((interrupt) => ({
                 source: `${item.name}.${interrupt}`,
                 controllerOutput: item.type === 'apb_intc',
             })));
+    const peripheralSources = sources
+        .filter((item) => !item.controllerOutput)
+        .map((item) => ({
+            value: item.source,
+            label: item.source,
+            kind: 'peripheral' as const,
+        }));
+    const external = {
+        value: 'external',
+        label: 'External interrupt',
+        kind: 'external' as const,
+    };
     return {
-        controllers,
-        directSources: sources.map((item) => item.source),
-        routedSources: sources
-            .filter((item) => !item.controllerOutput)
-            .map((item) => item.source),
+        directSources: [...peripheralSources, external],
+        routedSources: [...peripheralSources, external],
     };
 }
 
