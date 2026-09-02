@@ -44,7 +44,7 @@ class Parser {
   }
   private parseDeclarator(base: CType): Declarator {
     const node = this.parseDeclaratorNode();
-    return { name: node.name, type: this.applyDeclarator(base, node) };
+    return { name: node.name, type: this.applyDeclarator(base, node), parameters: node.functionParameters };
   }
 
   private parseDeclaratorNode(): DeclaratorNode {
@@ -79,7 +79,7 @@ class Parser {
       }
       if (this.is('(')) {
         this.take();
-        const params: CType[] = [];
+        const params: FunctionParameter[] = [];
         let variadic = false;
         if (this.is('void') && this.peek(1).text === ')') this.take();
         while (!this.is(')')) {
@@ -88,7 +88,7 @@ class Parser {
           const parameter = this.parseDeclaratorNode();
           let parameterCType = this.applyDeclarator(parameterType, parameter);
           if (parameterCType.kind === 'array') parameterCType = pointerType(parameterCType.element);
-          params.push(parameterCType);
+          params.push({ name: parameter.name, type: parameterCType, location: { file: '', line: this.peek(-1).line, column: this.peek(-1).column } });
           if (!this.is(',')) break;
           this.take();
         }
@@ -98,7 +98,8 @@ class Parser {
       }
       break;
     }
-    return { name, pointers, inner, suffixes };
+    const functionSuffix = suffixes.find((suffix): suffix is FunctionSuffix => suffix.kind === 'function');
+    return { name, pointers, inner, suffixes, functionParameters: functionSuffix?.parameters };
   }
 
   private applyDeclarator(base: CType, node: DeclaratorNode): CType {
@@ -125,7 +126,7 @@ class Parser {
   private applySuffix(type: CType, suffix: DeclaratorSuffix): CType {
     return suffix.kind === 'array'
       ? arrayType(type, suffix.length)
-      : functionType(type, suffix.parameters, suffix.variadic);
+      : functionType(type, suffix.parameters.map(parameter => parameter.type), suffix.variadic);
   }
 
   private consumeInitializer() {
@@ -149,13 +150,59 @@ class Parser {
 
   private parseStatement(): Statement {
     if (this.is('{')) return this.parseCompoundStatement();
-    const start = this.take('return');
-    const expression = this.is(';') ? undefined : this.parseExpression();
+    if (this.is('return')) {
+      const start = this.take();
+      const expression = this.is(';') ? undefined : this.parseExpression();
+      this.take(';');
+      return { kind: 'return', expression, location: { file: '', line: start.line, column: start.column } };
+    }
+    if (this.startsDeclaration()) return this.parseLocalDeclaration();
+    const expression = this.parseExpression();
     this.take(';');
-    return { kind: 'return', expression, location: { file: '', line: start.line, column: start.column } };
+    return { kind: 'expression', expression, location: expression.location };
+  }
+
+  private startsDeclaration(): boolean {
+    return ['const','volatile','unsigned','signed','short','long','int','char','void','float','double','struct','union'].includes(this.peek().text)
+      || this.peek().kind === 'identifier' && this.typedefs.has(this.peek().text);
+  }
+
+  private parseLocalDeclaration(): Statement {
+    const start = this.peek();
+    const type = this.parseBaseType();
+    const declarator = this.parseDeclarator(type);
+    if (!declarator.name) throw new Error(`local declaration requires a name at ${start.line}:${start.column}`);
+    const initializer = this.is('=') ? (this.take(), this.parseExpression()) : undefined;
+    this.take(';');
+    return { kind: 'local-declaration', name: declarator.name, type: declarator.type, initializer,
+      location: { file: '', line: start.line, column: start.column } };
   }
 
   private parseExpression(): Expression {
+    return this.parseAssignmentExpression();
+  }
+
+  private parseAssignmentExpression(): Expression {
+    const left = this.parseBinaryExpression(0);
+    if (!this.is('=')) return left;
+    if (left.kind !== 'identifier') throw new Error(`assignment target must be an identifier at ${this.peek().line}:${this.peek().column}`);
+    this.take();
+    return { kind: 'assignment', target: left, value: this.parseAssignmentExpression(), location: left.location };
+  }
+
+  private parseBinaryExpression(minimumPrecedence: number): Expression {
+    let left = this.parsePrimaryExpression();
+    while (true) {
+      const operator = this.peek().text;
+      const precedence = binaryPrecedence(operator);
+      if (precedence < minimumPrecedence) return left;
+      this.take();
+      const right = this.parseBinaryExpression(precedence + 1);
+      left = { kind: 'binary', operator, left, right, location: left.location };
+    }
+  }
+
+  private parsePrimaryExpression(): Expression {
     const token = this.peek();
     if (token.kind === 'number') {
       this.take();
@@ -192,8 +239,27 @@ interface DeclaratorNode {
   readonly pointers: readonly number[];
   readonly inner?: DeclaratorNode;
   readonly suffixes: readonly DeclaratorSuffix[];
+  readonly functionParameters?: readonly FunctionParameter[];
 }
 
+interface FunctionParameter { readonly name?: string; readonly type: CType; readonly location: { readonly file: string; readonly line: number; readonly column: number; }; }
+interface FunctionSuffix { readonly kind: 'function'; readonly parameters: readonly FunctionParameter[]; readonly variadic: boolean; }
 type DeclaratorSuffix =
   | { readonly kind: 'array'; readonly length: number | null }
-  | { readonly kind: 'function'; readonly parameters: readonly CType[]; readonly variadic: boolean };
+  | FunctionSuffix;
+
+function binaryPrecedence(operator: string): number {
+  switch (operator) {
+    case '||': return 1;
+    case '&&': return 2;
+    case '|': return 3;
+    case '^': return 4;
+    case '&': return 5;
+    case '==': case '!=': return 6;
+    case '<': case '<=': case '>': case '>=': return 7;
+    case '<<': case '>>': return 8;
+    case '+': case '-': return 9;
+    case '*': case '/': case '%': return 10;
+    default: return -1;
+  }
+}
