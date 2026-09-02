@@ -15,6 +15,7 @@ export * from './ir';
 export * from './lower';
 export * from './codegen';
 export * from './registers';
+export * from '../runtime/runtimeCatalog';
 
 export interface CompileFileOptions extends CompileOptions {
     preprocess?: CPreprocessOptions;
