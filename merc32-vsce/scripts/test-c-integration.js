@@ -4,9 +4,26 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 
-const { compileC, compileCFile, compileCToObject, compileCFileToObject } = require('../out/cCompiler');
+const {
+    compileC,
+    compileCFile,
+    compileCToObject,
+    compileCFileToObject,
+    analyzeTranslationUnit,
+    lowerProgram,
+    parseTranslationUnit,
+    tokenizeC,
+} = require('../out/cCompiler');
 const { linkObjects } = require('../out/linker');
 const { SimpleCPUAssembler } = require('../out/assembler');
+
+function functionAssemblyBody(assembly, functionName) {
+    const body = assembly.match(
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+    )?.[1];
+    assert.ok(body, `missing assembly body for ${functionName}`);
+    return body;
+}
 
 const source = 'int included(void) { return 7; }\nint main(void) { return included(); }\n';
 const legacy = compileC(source, { moduleName: 'legacy_api' });
@@ -92,6 +109,201 @@ assert.doesNotMatch(controlAssembly, /does not support '&&'|does not support '\|
 assert.ok(new SimpleCPUAssembler().assemble(controlAssembly, {
     sourceFileName: 'typed_control_api.asm',
 }).machineCodes.length > 0, 'typed control-flow object assembly must remain assembleable');
+
+const doWhileSource = `
+int typed_do(int limit) {
+    int count = 0;
+    do {
+        count = count + 1;
+        if (count < limit) continue;
+        count = count + 10;
+    } while (count < 3);
+    return count;
+}
+`;
+const doWhileAssembly = linkObjects([
+    compileCToObject(doWhileSource, { moduleName: 'typed_do_while_api' }),
+]).assembly;
+const doWhileBody = functionAssemblyBody(doWhileAssembly, 'typed_do');
+const doBodyLabel = doWhileBody.match(/^(__typed_do_do_body_\d+):$/m)?.[1];
+const doConditionLabel = doWhileBody.match(/^(__typed_do_do_condition_\d+):$/m)?.[1];
+assert.ok(doBodyLabel && doConditionLabel, 'typed do/while must emit body and condition labels');
+assert.ok(
+    doWhileBody.indexOf(`${doBodyLabel}:`) < doWhileBody.indexOf(`${doConditionLabel}:`),
+    'typed do/while must enter the body before testing its condition',
+);
+assert.match(
+    doWhileBody,
+    new RegExp(`^\\s*jmp ${doConditionLabel}$`, 'm'),
+    'continue in typed do/while must target the condition',
+);
+assert.match(
+    doWhileBody,
+    new RegExp(`^\\s*bnz r7, r0 \\+ ${doBodyLabel}$`, 'm'),
+    'typed do/while must branch back to the body when its condition is true',
+);
+assert.ok(new SimpleCPUAssembler().assemble(doWhileAssembly, {
+    sourceFileName: 'typed_do_while_api.asm',
+}).machineCodes.length > 0, 'typed do/while object assembly must remain assembleable');
+
+const emptyControlAssembly = linkObjects([compileCToObject(`
+int typed_empty_control(int value) {
+empty_label:
+    ;
+    do ; while (0);
+    switch (value) {
+    case 0:
+        ;
+    default:
+        ;
+    }
+    return value;
+}
+`, { moduleName: 'typed_empty_control_api' })]).assembly;
+assert.ok(new SimpleCPUAssembler().assemble(emptyControlAssembly, {
+    sourceFileName: 'typed_empty_control_api.asm',
+}).machineCodes.length > 0, 'typed labels and control flow must accept empty statements');
+
+const switchSource = `
+int typed_switch_loop(int value) {
+    int result = 0;
+    while (value < 3) {
+        switch (value) {
+        case 0:
+            result = result + 1;
+        case 1:
+            value = value + 1;
+            continue;
+        default:
+            result = result + 4;
+            break;
+        }
+        result = result + 8;
+        break;
+    }
+    return result;
+}
+`;
+const switchAssembly = linkObjects([
+    compileCToObject(switchSource, { moduleName: 'typed_switch_api' }),
+]).assembly;
+const switchBody = functionAssemblyBody(switchAssembly, 'typed_switch_loop');
+const outerWhileLabel = switchBody.match(/^(__typed_switch_loop_while_\d+):$/m)?.[1];
+const outerWhileEndLabel = switchBody.match(/^(__typed_switch_loop_endwhile_\d+):$/m)?.[1];
+const switchEndLabel = switchBody.match(/^(__typed_switch_loop_switch_end_\d+):$/m)?.[1];
+const switchCaseLabels = [...switchBody.matchAll(/^(__typed_switch_loop_switch_case_\d+):$/gm)]
+    .map((match) => match[1]);
+const switchDefaultLabel = switchBody.match(/^(__typed_switch_loop_switch_default_\d+):$/m)?.[1];
+assert.ok(outerWhileLabel && outerWhileEndLabel && switchEndLabel && switchDefaultLabel);
+assert.strictEqual(switchCaseLabels.length, 2, 'typed switch must emit one target per case');
+assert.doesNotMatch(
+    switchBody.slice(
+        switchBody.indexOf(`${switchCaseLabels[0]}:`),
+        switchBody.indexOf(`${switchCaseLabels[1]}:`),
+    ),
+    /^\s*jmp /m,
+    'typed switch cases must retain source fallthrough',
+);
+assert.ok(
+    (switchBody.match(new RegExp(`^\\s*jmp ${outerWhileLabel}$`, 'gm')) || []).length >= 2,
+    'continue inside typed switch must target the surrounding loop',
+);
+assert.match(
+    switchBody,
+    new RegExp(`^\\s*jmp ${switchEndLabel}$`, 'm'),
+    'break inside typed switch must target the switch end',
+);
+assert.match(
+    switchBody,
+    new RegExp(`^\\s*jmp ${outerWhileEndLabel}$`, 'm'),
+    'break after typed switch must still target the surrounding loop end',
+);
+assert.ok(new SimpleCPUAssembler().assemble(switchAssembly, {
+    sourceFileName: 'typed_switch_api.asm',
+}).machineCodes.length > 0, 'typed switch object assembly must remain assembleable');
+assert.throws(
+    () => compileCToObject('int main(void) { switch (0) { case 1: break; case 1 + 0: break; } return 0; }'),
+    /duplicate case value/,
+    'typed switch must reject duplicate constant case values',
+);
+assert.throws(
+    () => compileCToObject('int main(void) { switch (0) { default: break; default: break; } return 0; }'),
+    /multiple default labels/,
+    'typed switch must reject multiple default labels',
+);
+
+const gotoSource = `
+int typed_goto(int value) {
+    goto forward;
+backward:
+    value = value + 1;
+    goto done;
+forward:
+    value = value + 2;
+    if (value < 3) goto backward;
+done:
+    return value;
+}
+`;
+const gotoAssembly = linkObjects([
+    compileCToObject(gotoSource, { moduleName: 'typed_goto_api' }),
+]).assembly;
+const gotoBody = functionAssemblyBody(gotoAssembly, 'typed_goto');
+const forwardLabel = gotoBody.match(/^(__typed_goto_user_forward):$/m)?.[1];
+const backwardLabel = gotoBody.match(/^(__typed_goto_user_backward):$/m)?.[1];
+const doneLabel = gotoBody.match(/^(__typed_goto_user_done):$/m)?.[1];
+assert.ok(forwardLabel && backwardLabel && doneLabel, 'typed labels must be function-scoped assembly labels');
+const forwardJumpIndex = gotoBody.indexOf(`jmp ${forwardLabel}`);
+const forwardLabelIndex = gotoBody.indexOf(`${forwardLabel}:`);
+assert.ok(
+    forwardJumpIndex >= 0 && forwardJumpIndex < forwardLabelIndex,
+    'typed goto must resolve a forward label',
+);
+const backwardJumpIndex = gotoBody.lastIndexOf(`jmp ${backwardLabel}`);
+const backwardLabelIndex = gotoBody.indexOf(`${backwardLabel}:`);
+assert.ok(
+    backwardJumpIndex > backwardLabelIndex,
+    'typed goto must resolve a backward label',
+);
+assert.ok(new SimpleCPUAssembler().assemble(gotoAssembly, {
+    sourceFileName: 'typed_goto_api.asm',
+}).machineCodes.length > 0, 'typed goto object assembly must remain assembleable');
+assert.throws(
+    () => compileCToObject('int main(void) { goto absent; return 0; }'),
+    /undefined label 'absent'/,
+    'typed goto must reject an undefined function label',
+);
+assert.throws(
+    () => compileCToObject('int main(void) { repeated: return 0; repeated: return 1; }'),
+    /duplicate label 'repeated'/,
+    'typed functions must reject duplicate labels',
+);
+assert.throws(
+    () => compileCToObject('int main(void) { break; return 0; }'),
+    /break used outside loop or switch/,
+    'typed break must be rejected outside a loop or switch',
+);
+assert.throws(
+    () => compileCToObject('int main(void) { continue; return 0; }'),
+    /continue used outside loop/,
+    'typed continue must be rejected outside a loop',
+);
+for (const [statement, pattern] of [
+    ['break;', /break used outside loop or switch/],
+    ['continue;', /continue used outside loop/],
+]) {
+    const unit = parseTranslationUnit(tokenizeC(`int main(void) { ${statement} return 0; }`));
+    assert.throws(
+        () => analyzeTranslationUnit(unit),
+        pattern,
+        'typed semantic analysis must reject an invalid control-flow jump',
+    );
+    assert.throws(
+        () => lowerProgram(unit),
+        pattern,
+        'typed lowering must not silently discard an invalid control-flow jump',
+    );
+}
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-c-integration-'));
 try {

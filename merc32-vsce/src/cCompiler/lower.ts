@@ -1,4 +1,4 @@
-import { AnalyzedProgram } from './sema';
+import { AnalyzedProgram, evaluateIntegerConstantExpression } from './sema';
 import { Expression, Statement, TranslationUnit } from './declarations';
 import { CType } from './types';
 import { IRBlock, IRFunction, IRInstruction, Merc32Module } from './ir';
@@ -36,6 +36,7 @@ class FunctionLowerer {
   private nextLabel = 0;
   private breakLabels: string[] = [];
   private continueLabels: string[] = [];
+  private switchCaseLabels: Map<Extract<Statement, { kind: 'case' }>, string>[] = [];
   constructor(private readonly functionName: string) {}
 
   lowerStatement(statement: Statement): void {
@@ -68,6 +69,40 @@ class FunctionLowerer {
         this.breakLabels.push(end); this.continueLabels.push(start); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
         this.instructions.push({ op:'jump', args:[start] }, { op:'label', args:[end] }); return;
       }
+      case 'do-while': {
+        const body = this.label('do_body'); const condition = this.label('do_condition'); const end = this.label('enddo');
+        this.instructions.push({ op:'label', args:[body] });
+        this.breakLabels.push(end); this.continueLabels.push(condition); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
+        this.instructions.push({ op:'label', args:[condition] }); const test = this.lowerExpression(statement.test); this.instructions.push({ op:'branch-nonzero', args:[test, body] }, { op:'label', args:[end] }); return;
+      }
+      case 'switch': {
+        const end = this.label('switch_end');
+        const entries = this.collectSwitchCases(statement.body);
+        const labels = new Map(entries.map(entry => [entry.statement, entry.label]));
+        const defaultEntry = entries.find(entry => entry.statement.value === undefined);
+        const test = this.lowerExpression(statement.test);
+        for (const entry of entries) {
+          if (entry.statement.value === undefined) continue;
+          const value = this.constant(evaluateIntegerConstantExpression(entry.statement.value), entry.statement.location);
+          const matches = this.allocateValue();
+          this.instructions.push({ op:'binary', args:['==', test, value], dest:matches, location:entry.statement.location });
+          this.instructions.push({ op:'branch-nonzero', args:[matches, entry.label], location:entry.statement.location });
+        }
+        this.instructions.push({ op:'jump', args:[defaultEntry?.label ?? end] });
+        this.breakLabels.push(end); this.switchCaseLabels.push(labels); this.lowerStatement(statement.body); this.switchCaseLabels.pop(); this.breakLabels.pop();
+        this.instructions.push({ op:'label', args:[end] }); return;
+      }
+      case 'case': {
+        const label = this.switchCaseLabels[this.switchCaseLabels.length - 1]?.get(statement);
+        if (!label) throw new Error(`${statement.value ? 'case' : 'default'} label used outside switch`);
+        this.instructions.push({ op:'label', args:[label] }); this.lowerStatement(statement.statement); return;
+      }
+      case 'goto':
+        this.instructions.push({ op:'jump', args:[this.userLabel(statement.label)], location:statement.location }); return;
+      case 'label':
+        this.instructions.push({ op:'label', args:[this.userLabel(statement.label)], location:statement.location }); this.lowerStatement(statement.statement); return;
+      case 'empty':
+        return;
       case 'for': {
         if (statement.init) (statement.init as Statement).kind === 'local-declaration' ? this.lowerStatement(statement.init as Statement) : this.lowerExpression(statement.init as Expression);
         const start = this.label('for'); const step = this.label('for_step'); const end = this.label('endfor'); this.instructions.push({ op:'label', args:[start] });
@@ -75,9 +110,37 @@ class FunctionLowerer {
         this.breakLabels.push(end); this.continueLabels.push(step); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
         this.instructions.push({ op:'label', args:[step] }); if (statement.step) this.lowerExpression(statement.step); this.instructions.push({ op:'jump', args:[start] }, { op:'label', args:[end] }); return;
       }
-      case 'break': { const label = this.breakLabels[this.breakLabels.length - 1]; if (label) this.instructions.push({ op:'jump', args:[label] }); return; }
-      case 'continue': { const label = this.continueLabels[this.continueLabels.length - 1]; if (label) this.instructions.push({ op:'jump', args:[label] }); return; }
+      case 'break': {
+        const label = this.breakLabels[this.breakLabels.length - 1];
+        if (!label) throw new Error('break used outside loop or switch');
+        this.instructions.push({ op:'jump', args:[label] }); return;
+      }
+      case 'continue': {
+        const label = this.continueLabels[this.continueLabels.length - 1];
+        if (!label) throw new Error('continue used outside loop');
+        this.instructions.push({ op:'jump', args:[label] }); return;
+      }
     }
+  }
+
+  private collectSwitchCases(statement: Statement): { statement: Extract<Statement, { kind: 'case' }>; label: string }[] {
+    const entries: { statement: Extract<Statement, { kind: 'case' }>; label: string }[] = [];
+    const collect = (current: Statement): void => {
+      switch (current.kind) {
+        case 'compound': current.statements.forEach(collect); return;
+        case 'if': collect(current.thenBranch); if (current.elseBranch) collect(current.elseBranch); return;
+        case 'while': case 'do-while': case 'for': collect(current.body); return;
+        case 'switch': return;
+        case 'label': collect(current.statement); return;
+        case 'case':
+          entries.push({ statement: current, label: this.label(current.value ? 'switch_case' : 'switch_default') });
+          collect(current.statement);
+          return;
+        case 'local-declaration': case 'expression': case 'return': case 'break': case 'continue': case 'goto': case 'empty': return;
+      }
+    };
+    collect(statement);
+    return entries;
   }
 
   private lowerExpression(expression: Expression): number {
@@ -121,6 +184,8 @@ class FunctionLowerer {
   }
 
   private label(prefix: string): string { return `__${this.functionName}_${prefix}_${this.nextLabel++}`; }
+
+  private userLabel(label: string): string { return `__${this.functionName}_user_${label}`; }
 
   constant(value: number, location?: IRInstruction['location']): number {
     const dest = this.allocateValue();

@@ -62,21 +62,29 @@ export function analyzeTranslationUnit(unit: TranslationUnit): AnalyzedProgram {
         if (!parameter.name) throw new Error(`function '${declarator.name ?? '<anonymous>'}' has an unnamed parameter`);
         functionScope.define(parameter.name, parameter.type);
       }
-      analyzeCompoundStatement(declarator.body, functionScope);
+      validateFunctionLabels(declarator.body);
+      analyzeCompoundStatement(declarator.body, functionScope, { loopDepth: 0, switches: [] });
     }
   }
   return { unit, globals, functions, typedefs, constants: new Map() };
 }
 
-function analyzeCompoundStatement(statement: CompoundStatement, scope: Scope): void {
-  const blockScope = scope.child();
-  for (const child of statement.statements) analyzeStatement(child, blockScope);
+interface StatementContext {
+  readonly loopDepth: number;
+  readonly switches: readonly SwitchContext[];
 }
 
-function analyzeStatement(statement: Statement, scope: Scope): void {
+interface SwitchContext { readonly values: Set<number>; hasDefault: boolean; }
+
+function analyzeCompoundStatement(statement: CompoundStatement, scope: Scope, context: StatementContext): void {
+  const blockScope = scope.child();
+  for (const child of statement.statements) analyzeStatement(child, blockScope, context);
+}
+
+function analyzeStatement(statement: Statement, scope: Scope, context: StatementContext): void {
   switch (statement.kind) {
     case 'compound':
-      analyzeCompoundStatement(statement, scope);
+      analyzeCompoundStatement(statement, scope, context);
       return;
     case 'local-declaration':
       if (scope.resolve(statement.name)) throw new Error(`duplicate local '${statement.name}'`);
@@ -90,22 +98,108 @@ function analyzeStatement(statement: Statement, scope: Scope): void {
       if (statement.expression) analyzeExpression(statement.expression, scope);
       return;
     case 'if':
-      analyzeExpression(statement.test, scope); analyzeStatement(statement.thenBranch, scope); if (statement.elseBranch) analyzeStatement(statement.elseBranch, scope); return;
+      analyzeExpression(statement.test, scope); analyzeStatement(statement.thenBranch, scope, context); if (statement.elseBranch) analyzeStatement(statement.elseBranch, scope, context); return;
     case 'while':
-      analyzeExpression(statement.test, scope); analyzeStatement(statement.body, scope); return;
+      analyzeExpression(statement.test, scope); analyzeStatement(statement.body, scope, { ...context, loopDepth: context.loopDepth + 1 }); return;
+    case 'do-while':
+      analyzeStatement(statement.body, scope, { ...context, loopDepth: context.loopDepth + 1 }); analyzeExpression(statement.test, scope); return;
+    case 'switch':
+      {
+        analyzeExpression(statement.test, scope);
+        const switchContext: SwitchContext = { values: new Set(), hasDefault: false };
+        analyzeStatement(statement.body, scope, { ...context, switches: [...context.switches, switchContext] });
+        return;
+      }
+    case 'case': {
+      const switchContext = context.switches[context.switches.length - 1];
+      if (!switchContext) throw new Error(`${statement.value ? 'case' : 'default'} label used outside switch`);
+      if (statement.value) {
+        const value = evaluateIntegerConstantExpression(statement.value);
+        if (switchContext.values.has(value)) throw new Error('duplicate case value in one switch');
+        switchContext.values.add(value);
+      } else {
+        if (switchContext.hasDefault) throw new Error('multiple default labels in one switch');
+        switchContext.hasDefault = true;
+      }
+      analyzeStatement(statement.statement, scope, context);
+      return;
+    }
+    case 'label':
+      analyzeStatement(statement.statement, scope, context);
+      return;
+    case 'goto':
+    case 'empty':
+      return;
     case 'for':
       {
         const loopScope = scope.child();
         if (statement.init) {
-          if ((statement.init as Statement).kind === 'local-declaration') analyzeStatement(statement.init as Statement, loopScope);
+          if ((statement.init as Statement).kind === 'local-declaration') analyzeStatement(statement.init as Statement, loopScope, context);
           else analyzeExpression(statement.init as Expression, loopScope);
         }
         if (statement.test) analyzeExpression(statement.test, loopScope);
         if (statement.step) analyzeExpression(statement.step, loopScope);
-        analyzeStatement(statement.body, loopScope);
+        analyzeStatement(statement.body, loopScope, { ...context, loopDepth: context.loopDepth + 1 });
         return;
       }
-    case 'break': case 'continue': return;
+    case 'break':
+      if (context.loopDepth === 0 && context.switches.length === 0) throw new Error('break used outside loop or switch');
+      return;
+    case 'continue':
+      if (context.loopDepth === 0) throw new Error('continue used outside loop');
+      return;
+  }
+}
+
+function validateFunctionLabels(statement: Statement): void {
+  const labels = new Set<string>();
+  const gotos: Extract<Statement, { kind: 'goto' }>[] = [];
+  const collect = (current: Statement): void => {
+    switch (current.kind) {
+      case 'compound': current.statements.forEach(collect); return;
+      case 'if': collect(current.thenBranch); if (current.elseBranch) collect(current.elseBranch); return;
+      case 'while': case 'do-while': case 'switch': case 'for': collect(current.body); return;
+      case 'case': collect(current.statement); return;
+      case 'label':
+        if (labels.has(current.label)) throw new Error(`duplicate label '${current.label}'`);
+        labels.add(current.label); collect(current.statement); return;
+      case 'goto': gotos.push(current); return;
+      case 'local-declaration': case 'expression': case 'return': case 'break': case 'continue': case 'empty': return;
+    }
+  };
+  collect(statement);
+  for (const jump of gotos) {
+    if (!labels.has(jump.label)) throw new Error(`undefined label '${jump.label}'`);
+  }
+}
+
+export function evaluateIntegerConstantExpression(expression: Expression): number {
+  if (expression.kind === 'integer-literal') return expression.value;
+  if (expression.kind !== 'binary') throw new Error('case value must be an integer constant expression');
+  const left = evaluateIntegerConstantExpression(expression.left);
+  if (expression.operator === '&&' && left === 0) return 0;
+  if (expression.operator === '||' && left !== 0) return 1;
+  const right = evaluateIntegerConstantExpression(expression.right);
+  switch (expression.operator) {
+    case '+': return left + right;
+    case '-': return left - right;
+    case '*': return Math.imul(left, right);
+    case '/': return Math.trunc(left / right);
+    case '%': return left % right;
+    case '&': return left & right;
+    case '|': return left | right;
+    case '^': return left ^ right;
+    case '<<': return left << right;
+    case '>>': return left >> right;
+    case '==': return left === right ? 1 : 0;
+    case '!=': return left !== right ? 1 : 0;
+    case '<': return left < right ? 1 : 0;
+    case '<=': return left <= right ? 1 : 0;
+    case '>': return left > right ? 1 : 0;
+    case '>=': return left >= right ? 1 : 0;
+    case '&&': return right !== 0 ? 1 : 0;
+    case '||': return right !== 0 ? 1 : 0;
+    default: throw new Error('case value must be an integer constant expression');
   }
 }
 

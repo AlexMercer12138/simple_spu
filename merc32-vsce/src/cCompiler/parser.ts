@@ -150,6 +150,14 @@ class Parser {
 
   private parseStatement(): Statement {
     if (this.is('{')) return this.parseCompoundStatement();
+    if (this.is(';')) {
+      const start = this.take();
+      return { kind:'empty', location:{ file:'', line:start.line, column:start.column } };
+    }
+    if (this.peek().kind === 'identifier' && this.peek(1).text === ':') {
+      const start = this.take(); this.take(':');
+      return { kind: 'label', label: start.text, statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
     if (this.is('if')) {
       const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
       const thenBranch = this.parseStatement();
@@ -159,6 +167,24 @@ class Parser {
     if (this.is('while')) {
       const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
       return { kind: 'while', test, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('do')) {
+      const start = this.take();
+      const body = this.parseStatement();
+      this.take('while'); this.take('('); const test = this.parseExpression(); this.take(')'); this.take(';');
+      return { kind: 'do-while', body, test, location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('switch')) {
+      const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
+      return { kind: 'switch', test, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('case')) {
+      const start = this.take(); const value = this.parseExpression(); this.take(':');
+      return { kind: 'case', value, statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('default')) {
+      const start = this.take(); this.take(':');
+      return { kind: 'case', statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
     }
     if (this.is('for')) {
       const start = this.take(); this.take('(');
@@ -171,6 +197,12 @@ class Parser {
     }
     if (this.is('break')) { const start = this.take(); this.take(';'); return { kind:'break', location:{ file:'', line:start.line, column:start.column } }; }
     if (this.is('continue')) { const start = this.take(); this.take(';'); return { kind:'continue', location:{ file:'', line:start.line, column:start.column } }; }
+    if (this.is('goto')) {
+      const start = this.take(); const label = this.peek();
+      if (label.kind !== 'identifier') throw new Error(`expected label identifier at ${label.line}:${label.column}`);
+      this.take(); this.take(';');
+      return { kind:'goto', label:label.text, location:{ file:'', line:start.line, column:start.column } };
+    }
     if (this.is('return')) {
       const start = this.take();
       const expression = this.is(';') ? undefined : this.parseExpression();
