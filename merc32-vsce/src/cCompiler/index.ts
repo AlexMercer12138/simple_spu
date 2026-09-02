@@ -1,11 +1,6 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
 import { compileC, CompilerError, CompileOptions, CompileResult } from './tinyc';
-import { Merc32Object } from '../linker/objectFormat';
-import { tokenizeC } from './lexer';
-import { parseTranslationUnit } from './parser';
-import { analyzeTranslationUnit } from './sema';
-import { lowerProgram } from './lower';
-import { generateObject } from './codegen';
+import { DebugLocation, Merc32Object } from '../linker/objectFormat';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -32,33 +27,46 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
     try {
         return compileC(preprocessed.code, compileOptions);
     } catch (error) {
-        if (!(error instanceof CompilerError) || error.line === undefined) {
-            throw error;
-        }
-        const sourceLocation = preprocessed.lineMap[error.line - 1];
-        if (!sourceLocation) {
-            throw error;
-        }
-        throw new CompilerError(
-            error.detail,
-            sourceLocation.line,
-            error.column,
-            sourceLocation.file,
-        );
+        throw remapPreprocessedError(error, preprocessed.lineMap);
     }
 }
 
-/** Compatibility boundary for the typed frontend; code generation remains the existing compiler. */
+/** Returns a versioned object while preserving the established assembly generator. */
 export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
-    // Keep legacy assembly as the compatibility fallback until expression lowering is complete.
-    try {
-        const program = analyzeTranslationUnit(parseTranslationUnit(tokenizeC(source)));
-        if (program.functions.length > 0) return generateObject(lowerProgram(program));
-    } catch {
-        // Legacy Tiny C remains authoritative for unsupported syntax during migration.
-    }
     const assembly = compileC(source, options).assembly;
-    return { version: 1, target: 'merc32', abi: 'merc32-c-v1', sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }], symbols: [], relocations: [] };
+    return objectFromAssembly(assembly);
+}
+
+export function compileCFileToObject(sourceFile: string, options: CompileFileOptions = {}): Merc32Object {
+    const { preprocess, ...compileOptions } = options;
+    const preprocessed = preprocessCFile(sourceFile, preprocess);
+    try {
+        return objectFromAssembly(
+            compileC(preprocessed.code, compileOptions).assembly,
+            preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
+        );
+    } catch (error) {
+        throw remapPreprocessedError(error, preprocessed.lineMap);
+    }
+}
+
+function objectFromAssembly(assembly: string, debug?: readonly DebugLocation[]): Merc32Object {
+    return {
+        version: 1,
+        target: 'merc32',
+        abi: 'merc32-c-v1',
+        sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }],
+        symbols: [],
+        relocations: [],
+        ...(debug ? { debug } : {}),
+    };
+}
+
+function remapPreprocessedError(error: unknown, lineMap: readonly { file: string; line: number }[]): unknown {
+    if (!(error instanceof CompilerError) || error.line === undefined) return error;
+    const sourceLocation = lineMap[error.line - 1];
+    if (!sourceLocation) return error;
+    return new CompilerError(error.detail, sourceLocation.line, error.column, sourceLocation.file);
 }
 
 export {
