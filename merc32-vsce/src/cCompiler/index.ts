@@ -1,6 +1,11 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
 import { compileC, CompilerError, CompileOptions, CompileResult } from './tinyc';
 import { Merc32Object } from '../linker/objectFormat';
+import { tokenizeC } from './lexer';
+import { parseTranslationUnit } from './parser';
+import { analyzeTranslationUnit } from './sema';
+import { lowerProgram } from './lower';
+import { generateObject } from './codegen';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -45,15 +50,15 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
 
 /** Compatibility boundary for the typed frontend; code generation remains the existing compiler. */
 export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
+    // Keep legacy assembly as the compatibility fallback until expression lowering is complete.
+    try {
+        const program = analyzeTranslationUnit(parseTranslationUnit(tokenizeC(source)));
+        if (program.functions.length > 0) return generateObject(lowerProgram(program));
+    } catch {
+        // Legacy Tiny C remains authoritative for unsupported syntax during migration.
+    }
     const assembly = compileC(source, options).assembly;
-    return {
-        version: 1,
-        target: 'merc32',
-        abi: 'merc32-c-v1',
-        sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }],
-        symbols: [],
-        relocations: [],
-    };
+    return { version: 1, target: 'merc32', abi: 'merc32-c-v1', sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }], symbols: [], relocations: [] };
 }
 
 export {
