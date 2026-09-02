@@ -2,7 +2,7 @@ import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
 import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResult } from './tinyc';
 import { DebugLocation, Merc32Object } from '../linker/objectFormat';
 import { CFrontendError, SourceLocation } from './source';
-import { CType, isIntegerType } from './types';
+import { CType } from './types';
 import { Expression, Statement, TranslationUnit } from './declarations';
 import { tokenizeC } from './lexer';
 import { parseTranslationUnit } from './parser';
@@ -95,7 +95,7 @@ function rejectUnsupportedTypedLiterals(tokens: readonly { readonly kind: string
         if (/[.]/.test(token.text)
             || /[eE][+-]?\d/.test(token.text)
             || /[pP][+-]?\d/.test(token.text)
-            || /[fF]$/.test(token.text)) {
+            || (/[fF]$/.test(token.text) && !/^0[xX]/.test(token.text))) {
             throw new CFrontendError('typed C object backend does not support floating-point function bodies', token.location);
         }
     }
@@ -105,6 +105,7 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
     for (const declaration of unit.declarations) {
         for (const declarator of declaration.declarators) {
             if (!declarator.name) continue;
+            if (declaration.kind === 'typedef') continue;
             if (declarator.type.kind !== 'function') {
                 throw new CFrontendError(
                     'typed C object backend does not support global declarations',
@@ -115,7 +116,7 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
             if (!isSupportedFunctionType(declarator.type.returnType)
                 || declarator.type.parameters.some(parameter => !isSupportedFunctionType(parameter))) {
                 throw new CFrontendError(
-                    'typed C object backend does not support floating-point function bodies',
+                    unsupportedTypeMessage(declarator.type.returnType, declarator.type.parameters),
                     declaration.location ?? fallback,
                 );
             }
@@ -125,7 +126,12 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
 }
 
 function isSupportedFunctionType(type: CType): boolean {
-    return type.kind === 'builtin' && (type.name === 'void' || isIntegerType(type));
+    if (type.kind === 'builtin') {
+        return type.name === 'void'
+            || ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
+    }
+    if (type.kind === 'enum') return true;
+    return type.kind === 'typedef' && type.target !== undefined && isSupportedFunctionType(type.target);
 }
 
 function validateTypedStatements(statements: readonly Statement[], fallback: SourceLocation): void {
@@ -135,7 +141,9 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
             case 'local-declaration':
                 if (!isSupportedFunctionType(statement.type)) {
                     throw new CFrontendError(
-                        'typed C object backend does not support floating-point function bodies',
+                        isFloatingType(statement.type)
+                            ? 'typed C object backend does not support floating-point function bodies'
+                            : 'typed C object backend does not support non-32-bit function types',
                         statement.location ?? fallback,
                     );
                 }
@@ -152,6 +160,17 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
             case 'break': case 'continue': case 'goto': case 'empty': break;
         }
     }
+}
+
+function unsupportedTypeMessage(returnType: CType, parameters: readonly CType[]): string {
+    return [returnType, ...parameters].some(isFloatingType)
+        ? 'typed C object backend does not support floating-point function bodies'
+        : 'typed C object backend does not support non-32-bit function types';
+}
+
+function isFloatingType(type: CType): boolean {
+    if (type.kind === 'builtin') return type.name === 'float' || type.name === 'double' || type.name === 'long double';
+    return type.kind === 'typedef' && type.target !== undefined && isFloatingType(type.target);
 }
 
 function validateTypedStatement(statement: Statement, fallback: SourceLocation): void {

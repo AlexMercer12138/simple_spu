@@ -119,6 +119,17 @@ assert.throws(
     /typed C object backend does not support dataBase or dlbAddrWidth options/,
     'typed object generation must not silently ignore legacy memory-layout options',
 );
+assert.strictEqual(
+    compileCToObject('typedef int word; int main(void) { word value = 3; return value; }').symbols
+        .some((symbol) => symbol.name === 'main' && symbol.defined),
+    true,
+    'typed object generation must retain supported scalar typedefs',
+);
+assert.throws(
+    () => compileCToObject('long long value(void) { return 0; }'),
+    /typed C object backend does not support non-32-bit function types/,
+    'typed object generation must reject 64-bit values until pair lowering is wired',
+);
 
 const controlSource = `
 int control(int value) {
@@ -385,7 +396,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-c-integration-'));
 try {
     const header = path.join(root, 'included.h');
     const entry = path.join(root, 'main.c');
-    fs.writeFileSync(header, 'int included(int left, int right) { int local = left; local = local + right; return local; }\n');
+    fs.writeFileSync(header, 'int helper(void) { return 7; }\nint included(int left, int right) { int local = left; local = local + right; return local + helper(); }\n');
     fs.writeFileSync(entry, '#include "included.h"\nint main(void) { int result = included(3, 4); result = result + 1; return result; }\n');
     const badHeader = path.join(root, 'bad.h');
     const badEntry = path.join(root, 'bad.c');
@@ -398,9 +409,14 @@ try {
     const preprocessedObject = compileCFileToObject(entry, { moduleName: 'preprocessed_object' });
     assert.deepStrictEqual(
         preprocessedObject.symbols.filter((symbol) => symbol.defined).map((symbol) => symbol.name),
-        ['included', 'main'],
+        ['helper', 'included', 'main'],
     );
     assert.ok(preprocessedObject.relocations.some((relocation) => relocation.symbol === 'included'));
+    assert.ok(preprocessedObject.relocations.some((relocation) =>
+        relocation.symbol === 'helper'
+            && relocation.debug?.file === fs.realpathSync(header)
+            && relocation.debug.line === 2,
+    ), 'typed relocation debug locations must retain included-source origins');
     assert.ok(preprocessedObject.debug.some((location) =>
         location.file === fs.realpathSync(header) && location.line === 1 && location.column === 1,
     ), 'object debug locations must retain included-source origins after preprocessing');
