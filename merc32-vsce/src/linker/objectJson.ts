@@ -16,11 +16,14 @@ export function validateObject(object: Merc32Object): void {
     sections.set(section.name, section);
   }
   const symbols = new Set<string>();
+  const definedGlobals = new Set<string>();
   for (const symbol of object.symbols) {
-    if (!symbol || typeof symbol.name !== 'string' || symbols.has(symbol.name)) throw new Error(`duplicate symbol '${symbol?.name ?? ''}'`);
+    if (!symbol || typeof symbol.name !== 'string') throw new Error('invalid symbol');
     if (symbol.binding !== 'local' && symbol.binding !== 'global' || typeof symbol.defined !== 'boolean') throw new Error('invalid symbol');
     if (symbol.defined) {
       if (!symbol.section || !sections.has(symbol.section) || !Number.isInteger(symbol.offset) || symbol.offset < 0 || symbol.offset > sections.get(symbol.section)!.size) throw new Error(`invalid defined symbol '${symbol.name}' section/offset`);
+      if (symbol.binding === 'global' && definedGlobals.has(symbol.name)) throw new Error(`duplicate defined global symbol '${symbol.name}'`);
+      if (symbol.binding === 'global') definedGlobals.add(symbol.name);
     } else if (symbol.section !== undefined || symbol.offset !== undefined) throw new Error(`undefined symbol '${symbol.name}' must not have section/offset`);
     symbols.add(symbol.name);
   }
@@ -28,6 +31,7 @@ export function validateObject(object: Merc32Object): void {
   for (const relocation of object.relocations) {
     if (!names.has(relocation.section) || !sections.has(relocation.section) || !symbols.has(relocation.symbol) || !kinds.has(relocation.kind) || !Number.isInteger(relocation.offset) || relocation.offset < 0 || !Number.isInteger(relocation.addend)) throw new Error('invalid relocation');
     const width = relocation.kind === 'ABS32' || relocation.section === 'text' ? 4 : 2;
+    if (relocation.section === 'text' && relocation.offset % 4 !== 0) throw new Error('text relocation offset must be 4-byte aligned');
     if (relocation.offset + width > sections.get(relocation.section)!.size) throw new Error('relocation offset outside section');
   }
 }

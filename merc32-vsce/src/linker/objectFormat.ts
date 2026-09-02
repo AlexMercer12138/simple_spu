@@ -20,8 +20,9 @@ export function normalizeSectionContent(section: ObjectSection): readonly number
     if (typeof section.content === 'string') {
         if (section.name !== 'text') throw new Error(`section '${section.name}' content must be bytes`);
         const words = section.content.split(/\r?\n/).filter(line => {
-            const stripped = line.replace(/\/\/.*$/, '').trim();
-            return stripped !== '' && !stripped.startsWith('.') && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(stripped);
+            let stripped = line.replace(/\/\/.*$/, '').trim();
+            stripped = stripped.replace(/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*/, '').trim();
+            return stripped !== '' && !stripped.startsWith('.');
         });
         return words.map(() => 0);
     }
