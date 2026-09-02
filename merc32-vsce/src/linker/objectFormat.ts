@@ -7,6 +7,33 @@ export interface ObjectSection {
     readonly size: number;
     readonly content?: readonly number[] | string;
 }
+
+/** Normalize a section's canonical numeric payload; text entries are words. */
+export function normalizeSectionContent(section: ObjectSection): readonly number[] {
+    if (section.name === 'bss') {
+        if (section.content !== undefined) throw new Error('bss section must not have content');
+        return [];
+    }
+    if (section.content === undefined) {
+        throw new Error(`section '${section.name}' requires content`);
+    }
+    if (typeof section.content === 'string') {
+        if (section.name !== 'text') throw new Error(`section '${section.name}' content must be bytes`);
+        const words = section.content.split(/\r?\n/).filter(line => {
+            const stripped = line.replace(/\/\/.*$/, '').trim();
+            return stripped !== '' && !stripped.startsWith('.') && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(stripped);
+        });
+        return words.map(() => 0);
+    }
+    if (!Array.isArray(section.content) || section.content.some(value => !Number.isInteger(value))) {
+        throw new Error(`section '${section.name}' content must be integers`);
+    }
+    const max = section.name === 'text' ? 0xffffffff : 0xff;
+    if (section.content.some(value => value < 0 || value > max)) {
+        throw new Error(`section '${section.name}' content value out of range`);
+    }
+    return section.content;
+}
 export type SymbolBinding = 'local' | 'global';
 export interface ObjectSymbol {
     readonly name: string;

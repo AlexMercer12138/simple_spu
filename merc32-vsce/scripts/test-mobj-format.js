@@ -1,7 +1,16 @@
 const assert = require('assert');
 const { serializeObject, deserializeObject, validateObject } = require('../out/linker/objectJson');
-const object = { version: 1, target: 'merc32', abi: 'merc32-c-v1', sections: [{ name: 'text', alignment: 4, size: 4, content: [1,2,3,4] }, { name: 'bss', alignment: 4, size: 8 }], symbols: [{ name: 'main', binding: 'global', section: 'text', offset: 0, defined: true }, { name: 'ext', binding: 'global', defined: false }], relocations: [{ section: 'text', offset: 0, kind: 'CALL16', symbol: 'ext', addend: 0, debug: { file: 'x.c', line: 1, column: 1 } }] };
+const { normalizeSectionContent } = require('../out/linker/objectFormat');
+const object = { version: 1, target: 'merc32', abi: 'merc32-c-v1', sections: [{ name: 'text', alignment: 4, size: 4, content: [1] }, { name: 'bss', alignment: 4, size: 8 }], symbols: [{ name: 'main', binding: 'global', section: 'text', offset: 0, defined: true }, { name: 'ext', binding: 'global', defined: false }], relocations: [{ section: 'text', offset: 0, kind: 'CALL16', symbol: 'ext', addend: 0, debug: { file: 'x.c', line: 1, column: 1 } }] };
 assert.deepStrictEqual(deserializeObject(serializeObject(object)), object);
+assert.strictEqual(normalizeSectionContent({ name: 'text', alignment: 4, size: 8, content: [1, 2] }).length, 2);
+assert.strictEqual(normalizeSectionContent({ name: 'data', alignment: 1, size: 3, content: [1, 2, 3] }).length, 3);
 assert.throws(() => validateObject({ ...object, version: 2 }));
 assert.throws(() => validateObject({ ...object, sections: [{ name: 'bad', alignment: 1, size: 0 }] }));
+assert.throws(() => validateObject({ ...object, sections: [{ name: 'text', alignment: 4, size: 4, content: [0, 0] }] }), /size|content/);
+assert.throws(() => validateObject({ ...object, sections: [{ name: 'text', alignment: 3, size: 4, content: [0] }] }), /alignment/);
+assert.throws(() => validateObject({ ...object, symbols: [{ name: 'main', binding: 'global', defined: true }] }), /section|offset/);
+assert.throws(() => validateObject({ ...object, symbols: [{ name: 'ext', binding: 'global', defined: false, section: 'text', offset: 0 }] }), /section|offset/);
+assert.throws(() => validateObject({ ...object, symbols: [...object.symbols, { name: 'main', binding: 'local', section: 'text', offset: 0, defined: true }] }), /duplicate|symbol/);
+assert.throws(() => validateObject({ ...object, relocations: [{ section: 'text', offset: 4, kind: 'CALL16', symbol: 'main', addend: 0 }] }), /offset/);
 console.log('mobj format tests passed');
