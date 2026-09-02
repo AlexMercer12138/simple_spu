@@ -434,10 +434,11 @@ function withoutWarnings(diagnostics) {
 }
 
 // Removing any generated schema constraint, changing catalog-derived choices, or
-// producing nondeterministic key order must break this byte comparison.
+// producing nondeterministic key order must break this canonical byte comparison.
 const generatedSchemaText = `${JSON.stringify(generateSocSchema(catalog), null, 2)}\n`;
 const committedSchemaText = fs.readFileSync(
-    path.resolve(__dirname, '..', 'resources', 'schema', 'merc32.schema.json'), 'utf8');
+    path.resolve(__dirname, '..', 'resources', 'schema', 'merc32.schema.json'), 'utf8')
+    .replace(/\r\n/gu, '\n');
 assert.strictEqual(generatedSchemaText, committedSchemaText);
 assert.deepStrictEqual(generateSocSchema(catalog), generateSocSchema(catalog));
 
