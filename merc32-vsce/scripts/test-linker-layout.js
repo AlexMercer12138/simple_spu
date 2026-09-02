@@ -1,0 +1,10 @@
+const assert = require('assert');
+const { resolveSymbols, layoutSections, LinkerError } = require('../out/linker/resolver');
+const a = { version:1,target:'merc32',abi:'merc32-c-v1',sections:[{name:'text',alignment:4,size:4,content:[0,0,0,0]}],symbols:[{name:'main',binding:'global',section:'text',offset:0,defined:true}],relocations:[] };
+const b = { version:1,target:'merc32',abi:'merc32-c-v1',sections:[{name:'text',alignment:4,size:8,content:[0,0,0,0,0,0,0,0]}],symbols:[{name:'helper',binding:'global',section:'text',offset:4,defined:true}],relocations:[] };
+const resolved = resolveSymbols([a,b]);
+const layout = layoutSections([a,b], { dataBase: 0x1000 });
+assert.strictEqual(resolved.get('main').objectIndex, 0);
+assert.strictEqual(layout.symbols.get('helper'), 8);
+assert.throws(() => resolveSymbols([a, a]), LinkerError);
+console.log('linker layout tests passed');

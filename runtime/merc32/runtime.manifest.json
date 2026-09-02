@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "target": "merc32",
+  "abi": "merc32-c-v1",
+  "objects": ["startup.asm", "mem.asm", "float32.asm"],
+  "symbols": ["startup", "memcpy", "memset", "memcmp", "strlen", "strcmp", "__addsf3", "__subsf3", "__mulsf3", "__divsf3", "__eqsf2", "__ltsf2", "__lesf2", "__floatsisf", "__fixsfsi"]
+}
