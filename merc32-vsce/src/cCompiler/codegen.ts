@@ -100,6 +100,10 @@ function emitFunction(
     if (block.label !== `${func.name}.entry`) lines.push(`${block.label}:`);
     for (const instruction of block.instructions) {
       switch (instruction.op) {
+        case 'label': lines.push(`${String(instruction.args[0])}:`); break;
+        case 'jump': emit(`jmp ${String(instruction.args[0])}`); break;
+        case 'branch-zero': readValue(Number(instruction.args[0]), 'r7'); emit(`bz r7, r0 + ${String(instruction.args[1])}`); break;
+        case 'branch-nonzero': readValue(Number(instruction.args[0]), 'r7'); emit(`bnz r7, r0 + ${String(instruction.args[1])}`); break;
         case 'constant':
           emit(`mov ${valueRegister(instruction.dest ?? 0)}, ${String(instruction.args[0])}`);
           spillValue(instruction.dest ?? 0);

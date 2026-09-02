@@ -89,6 +89,23 @@ function analyzeStatement(statement: Statement, scope: Scope): void {
     case 'return':
       if (statement.expression) analyzeExpression(statement.expression, scope);
       return;
+    case 'if':
+      analyzeExpression(statement.test, scope); analyzeStatement(statement.thenBranch, scope); if (statement.elseBranch) analyzeStatement(statement.elseBranch, scope); return;
+    case 'while':
+      analyzeExpression(statement.test, scope); analyzeStatement(statement.body, scope); return;
+    case 'for':
+      {
+        const loopScope = scope.child();
+        if (statement.init) {
+          if ((statement.init as Statement).kind === 'local-declaration') analyzeStatement(statement.init as Statement, loopScope);
+          else analyzeExpression(statement.init as Expression, loopScope);
+        }
+        if (statement.test) analyzeExpression(statement.test, loopScope);
+        if (statement.step) analyzeExpression(statement.step, loopScope);
+        analyzeStatement(statement.body, loopScope);
+        return;
+      }
+    case 'break': case 'continue': return;
   }
 }
 

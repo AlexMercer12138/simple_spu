@@ -150,6 +150,27 @@ class Parser {
 
   private parseStatement(): Statement {
     if (this.is('{')) return this.parseCompoundStatement();
+    if (this.is('if')) {
+      const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
+      const thenBranch = this.parseStatement();
+      const elseBranch = this.is('else') ? (this.take(), this.parseStatement()) : undefined;
+      return { kind: 'if', test, thenBranch, elseBranch, location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('while')) {
+      const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
+      return { kind: 'while', test, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('for')) {
+      const start = this.take(); this.take('(');
+      let init: Statement | Expression | undefined;
+      if (!this.is(';')) init = this.startsDeclaration() ? this.parseLocalDeclaration() : this.parseExpression();
+      if (this.is(';')) this.take();
+      const test = this.is(';') ? undefined : this.parseExpression(); this.take(';');
+      const step = this.is(')') ? undefined : this.parseExpression(); this.take(')');
+      return { kind: 'for', init, test, step, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+    }
+    if (this.is('break')) { const start = this.take(); this.take(';'); return { kind:'break', location:{ file:'', line:start.line, column:start.column } }; }
+    if (this.is('continue')) { const start = this.take(); this.take(';'); return { kind:'continue', location:{ file:'', line:start.line, column:start.column } }; }
     if (this.is('return')) {
       const start = this.take();
       const expression = this.is(';') ? undefined : this.parseExpression();

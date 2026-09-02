@@ -64,6 +64,35 @@ assert.ok(new SimpleCPUAssembler().assemble(scalarAssembly, {
     sourceFileName: 'typed_scalar_api.asm',
 }).machineCodes.length > 0, 'typed scalar object assembly must remain assembleable');
 
+const controlSource = `
+int control(int value) {
+    int total = 0;
+    if (value && value > 1) {
+        total = value;
+    } else {
+        total = 1;
+    }
+    while (total < 4) {
+        total = total + 1;
+        if (total == 3) continue;
+        if (total == 4) break;
+    }
+    for (int i = 0; i < 1; i = i + 1) {
+        total = total || i;
+    }
+    return total;
+}
+`;
+const controlObject = compileCToObject(controlSource, { moduleName: 'typed_control_api' });
+const controlAssembly = linkObjects([controlObject]).assembly;
+assert.match(controlAssembly, /__control_else_|__control_while_|__control_for_/,
+    'typed control-flow lowering must emit branch labels');
+assert.doesNotMatch(controlAssembly, /does not support '&&'|does not support '\|\|'/,
+    'typed logical operators must lower without unsupported-operator errors');
+assert.ok(new SimpleCPUAssembler().assemble(controlAssembly, {
+    sourceFileName: 'typed_control_api.asm',
+}).machineCodes.length > 0, 'typed control-flow object assembly must remain assembleable');
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-c-integration-'));
 try {
     const header = path.join(root, 'included.h');
