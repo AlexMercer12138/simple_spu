@@ -249,10 +249,10 @@ const gotoAssembly = linkObjects([
     compileCToObject(gotoSource, { moduleName: 'typed_goto_api' }),
 ]).assembly;
 const gotoBody = functionAssemblyBody(gotoAssembly, 'typed_goto');
-const forwardLabel = gotoBody.match(/^(__typed_goto_user_forward):$/m)?.[1];
-const backwardLabel = gotoBody.match(/^(__typed_goto_user_backward):$/m)?.[1];
-const doneLabel = gotoBody.match(/^(__typed_goto_user_done):$/m)?.[1];
-assert.ok(forwardLabel && backwardLabel && doneLabel, 'typed labels must be function-scoped assembly labels');
+const gotoUserLabels = [...gotoBody.matchAll(/^(__[A-Za-z0-9_]*_user_[A-Za-z0-9_]+):$/gm)]
+    .map((match) => match[1]);
+assert.strictEqual(gotoUserLabels.length, 3, 'typed labels must be function-scoped assembly labels');
+const [backwardLabel, forwardLabel, doneLabel] = gotoUserLabels;
 const forwardJumpIndex = gotoBody.indexOf(`jmp ${forwardLabel}`);
 const forwardLabelIndex = gotoBody.indexOf(`${forwardLabel}:`);
 assert.ok(
@@ -268,6 +268,23 @@ assert.ok(
 assert.ok(new SimpleCPUAssembler().assemble(gotoAssembly, {
     sourceFileName: 'typed_goto_api.asm',
 }).machineCodes.length > 0, 'typed goto object assembly must remain assembleable');
+
+const crossFunctionLabelsAssembly = linkObjects([compileCToObject(`
+int a(void) {
+    goto b_user_x;
+b_user_x:
+    return 1;
+}
+int a_user_b(void) {
+    goto x;
+x:
+    return 2;
+}
+`, { moduleName: 'typed_cross_function_labels_api' })]).assembly;
+assert.ok(new SimpleCPUAssembler().assemble(crossFunctionLabelsAssembly, {
+    sourceFileName: 'typed_cross_function_labels_api.asm',
+}).machineCodes.length > 0, 'typed labels from different functions must remain independently assembleable');
+
 assert.throws(
     () => compileCToObject('int main(void) { goto absent; return 0; }'),
     /undefined label 'absent'/,

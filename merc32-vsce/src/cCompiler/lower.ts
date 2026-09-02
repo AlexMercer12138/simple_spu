@@ -185,7 +185,7 @@ class FunctionLowerer {
 
   private label(prefix: string): string { return `__${this.functionName}_${prefix}_${this.nextLabel++}`; }
 
-  private userLabel(label: string): string { return `__${this.functionName}_user_${label}`; }
+  private userLabel(label: string): string { return `__${this.functionName.length}_${this.functionName}_user_${label.length}_${label}`; }
 
   constant(value: number, location?: IRInstruction['location']): number {
     const dest = this.allocateValue();
