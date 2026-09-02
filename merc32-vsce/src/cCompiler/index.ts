@@ -1,6 +1,11 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
-import { compileC, CompilerError, CompileOptions, CompileResult } from './tinyc';
+import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResult } from './tinyc';
 import { DebugLocation, Merc32Object } from '../linker/objectFormat';
+import { tokenizeC } from './lexer';
+import { parseTranslationUnit } from './parser';
+import { analyzeTranslationUnit } from './sema';
+import { lowerProgram } from './lower';
+import { generateObject } from './codegen';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -25,41 +30,32 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
     const { preprocess, ...compileOptions } = options;
     const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
-        return compileC(preprocessed.code, compileOptions);
+        return compileLegacyC(preprocessed.code, compileOptions);
     } catch (error) {
         throw remapPreprocessedError(error, preprocessed.lineMap);
     }
 }
 
-/** Returns a versioned object while preserving the established assembly generator. */
-export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
-    const assembly = compileC(source, options).assembly;
-    return objectFromAssembly(assembly);
+/** Compile through the typed lexer, parser, semantic analysis, IR, and object backend. */
+export function compileCToObject(source: string, _options: CompileOptions = {}): Merc32Object {
+    const tokens = tokenizeC(source);
+    const unit = parseTranslationUnit(tokens);
+    const program = analyzeTranslationUnit(unit);
+    return generateObject(lowerProgram(program));
 }
 
 export function compileCFileToObject(sourceFile: string, options: CompileFileOptions = {}): Merc32Object {
     const { preprocess, ...compileOptions } = options;
     const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
-        return objectFromAssembly(
-            compileC(preprocessed.code, compileOptions).assembly,
-            preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
-        );
+        const object = compileCToObject(preprocessed.code, compileOptions);
+        return {
+            ...object,
+            debug: preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
+        };
     } catch (error) {
         throw remapPreprocessedError(error, preprocessed.lineMap);
     }
-}
-
-function objectFromAssembly(assembly: string, debug?: readonly DebugLocation[]): Merc32Object {
-    return {
-        version: 1,
-        target: 'merc32',
-        abi: 'merc32-c-v1',
-        sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }],
-        symbols: [],
-        relocations: [],
-        ...(debug ? { debug } : {}),
-    };
 }
 
 function remapPreprocessedError(error: unknown, lineMap: readonly { file: string; line: number }[]): unknown {
@@ -69,8 +65,8 @@ function remapPreprocessedError(error: unknown, lineMap: readonly { file: string
     return new CompilerError(error.detail, sourceLocation.line, error.column, sourceLocation.file);
 }
 
+export { compileLegacyC as compileC };
 export {
-    compileC,
     CompilerError,
     type CompileOptions,
     type CompileResult,
