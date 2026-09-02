@@ -29,6 +29,12 @@ function emitModule(module: Merc32Module): EmittedModule {
   const symbols: ObjectSymbol[] = [];
   const relocations: Relocation[] = [];
   const defined = new Set(module.functions.map(func => func.name));
+  const occupiedLabels = new Set(defined);
+  for (const func of module.functions) {
+    for (const instruction of func.blocks.flatMap(block => block.instructions)) {
+      if (instruction.op === 'label') occupiedLabels.add(String(instruction.args[0]));
+    }
+  }
   const referenced = new Set<string>();
   let offset = 0;
   const emitInstruction = (instruction: string) => { lines.push(`  ${instruction}`); offset += 4; };
@@ -36,7 +42,8 @@ function emitModule(module: Merc32Module): EmittedModule {
   for (const func of module.functions) {
     symbols.push({ name: func.name, binding: 'global', section: 'text', offset, defined: true });
     lines.push(`${func.name}:`);
-    emitFunction(func, emitInstruction, (symbol, instruction) => {
+    const returnLabel = allocateLabel(func.returnLabel ?? `__${func.name}_return`, occupiedLabels);
+    emitFunction(func, returnLabel, emitInstruction, (symbol, instruction) => {
       referenced.add(symbol);
       relocations.push({ section: 'text', offset, kind: 'CALL16', symbol, addend: 0,
         ...(instruction.location ? { debug: instruction.location } : {}) });
@@ -51,11 +58,11 @@ function emitModule(module: Merc32Module): EmittedModule {
 
 function emitFunction(
   func: IRFunction,
+  returnLabel: string,
   emit: (instruction: string) => void,
   reference: (symbol: string, instruction: IRInstruction) => void,
   lines: string[],
 ): void {
-  const returnLabel = func.returnLabel ?? `__${func.name}_return`;
   const argumentRegisters = ['r4', 'r5', 'r6', 'r7'];
   const parameterNames = func.parameterNames ?? [];
   const localNames = func.localNames ?? [];
@@ -189,4 +196,14 @@ function emitBinary(
     default:
       throw new Error(`typed code generation does not support '${String(operator)}'`);
   }
+}
+
+function allocateLabel(preferred: string, occupiedLabels: Set<string>): string {
+  let label = preferred;
+  let serial = 0;
+  while (occupiedLabels.has(label)) {
+    label = `${preferred}_generated_${serial++}`;
+  }
+  occupiedLabels.add(label);
+  return label;
 }
