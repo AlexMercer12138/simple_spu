@@ -3,3 +3,5 @@ export * from './objectJson';
 export * from './resolver';
 export * from './linker';
 export * from './assembleObject';
+export * from './relocations';
+export * from './relaxation';

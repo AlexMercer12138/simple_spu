@@ -17,7 +17,7 @@ export function resolveSymbols(objects: readonly Merc32Object[]): ResolvedSymbol
   return table;
 }
 
-export interface LayoutResult { readonly sections: ReadonlyMap<string, number>; readonly symbols: ReadonlyMap<string, number>; }
+export interface LayoutResult { readonly sections: ReadonlyMap<string, number>; readonly symbols: ReadonlyMap<string, number>; readonly objects?: readonly Merc32Object[]; }
 export function layoutSections(objects: readonly Merc32Object[], options: { dataBase?: number } = {}): LayoutResult {
   const sectionBases = new Map<string, number>();
   const symbols = new Map<string, number>();
@@ -31,5 +31,5 @@ export function layoutSections(objects: readonly Merc32Object[], options: { data
       for (const symbol of object.symbols) if (symbol.defined && symbol.section === section.name) symbols.set(symbol.name, base + (symbol.offset ?? 0));
     }
   }
-  return { sections: sectionBases, symbols };
+  return { sections: sectionBases, symbols, objects };
 }
