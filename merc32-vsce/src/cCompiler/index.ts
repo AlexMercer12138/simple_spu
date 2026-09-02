@@ -1,6 +1,9 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
-import { compileC, CompilerError, CompileOptions, CompileResult } from './tinyc';
-import { Merc32Object } from '../linker/objectFormat';
+import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResult } from './tinyc';
+import { DebugLocation, Merc32Object } from '../linker/objectFormat';
+import { CFrontendError, SourceLocation } from './source';
+import { CType } from './types';
+import { Expression, Statement, TranslationUnit } from './declarations';
 import { tokenizeC } from './lexer';
 import { parseTranslationUnit } from './parser';
 import { analyzeTranslationUnit } from './sema';
@@ -30,39 +33,169 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
     const { preprocess, ...compileOptions } = options;
     const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
-        return compileC(preprocessed.code, compileOptions);
+        return compileLegacyC(preprocessed.code, compileOptions);
     } catch (error) {
-        if (!(error instanceof CompilerError) || error.line === undefined) {
-            throw error;
-        }
-        const sourceLocation = preprocessed.lineMap[error.line - 1];
-        if (!sourceLocation) {
-            throw error;
-        }
-        throw new CompilerError(
-            error.detail,
-            sourceLocation.line,
-            error.column,
-            sourceLocation.file,
+        throw remapPreprocessedError(error, preprocessed.lineMap);
+    }
+}
+
+/** Compile through the typed lexer, parser, semantic analysis, IR, and object backend. */
+export function compileCToObject(source: string, _options: CompileOptions = {}): Merc32Object {
+    const options = _options;
+    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
+        throw new CFrontendError(
+            'typed C object backend does not support dataBase or dlbAddrWidth options',
+            { file: '', line: 1, column: 1 },
         );
     }
+    const tokens = tokenizeC(source);
+    rejectUnsupportedTypedLiterals(tokens);
+    const unit = parseTranslationUnit(tokens);
+    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
+    const program = analyzeTranslationUnit(unit);
+    return generateObject(lowerProgram(program));
 }
 
-/** Compatibility boundary for the typed frontend; code generation remains the existing compiler. */
-export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
-    // Keep legacy assembly as the compatibility fallback until expression lowering is complete.
+export function compileCFileToObject(sourceFile: string, options: CompileFileOptions = {}): Merc32Object {
+    const { preprocess, ...compileOptions } = options;
+    const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
-        const program = analyzeTranslationUnit(parseTranslationUnit(tokenizeC(source)));
-        if (program.functions.length > 0) return generateObject(lowerProgram(program));
-    } catch {
-        // Legacy Tiny C remains authoritative for unsupported syntax during migration.
+        const object = compileCToObjectWithSourceMap(preprocessed.code, compileOptions, preprocessed.lineMap);
+        return {
+            ...object,
+            debug: preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
+        };
+    } catch (error) {
+        throw remapPreprocessedError(error, preprocessed.lineMap);
     }
-    const assembly = compileC(source, options).assembly;
-    return { version: 1, target: 'merc32', abi: 'merc32-c-v1', sections: [{ name: 'text', alignment: 4, size: assembly.length, content: assembly }], symbols: [], relocations: [] };
 }
 
+function compileCToObjectWithSourceMap(
+    source: string,
+    options: CompileOptions,
+    sourceMap: readonly { readonly file: string; readonly line: number }[],
+): Merc32Object {
+    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
+        throw new CFrontendError(
+            'typed C object backend does not support dataBase or dlbAddrWidth options',
+            { file: sourceMap[0]?.file ?? '', line: sourceMap[0]?.line ?? 1, column: 1 },
+        );
+    }
+    const tokens = tokenizeC(source, sourceMap);
+    rejectUnsupportedTypedLiterals(tokens);
+    const unit = parseTranslationUnit(tokens);
+    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
+    const program = analyzeTranslationUnit(unit);
+    return generateObject(lowerProgram(program));
+}
+
+function rejectUnsupportedTypedLiterals(tokens: readonly { readonly kind: string; readonly text: string; readonly location: SourceLocation }[]): void {
+    for (const token of tokens) {
+        if (token.kind !== 'number') continue;
+        if (/[.]/.test(token.text)
+            || /[eE][+-]?\d/.test(token.text)
+            || /[pP][+-]?\d/.test(token.text)
+            || (/[fF]$/.test(token.text) && !/^0[xX]/.test(token.text))) {
+            throw new CFrontendError('typed C object backend does not support floating-point function bodies', token.location);
+        }
+    }
+}
+
+function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocation): void {
+    for (const declaration of unit.declarations) {
+        for (const declarator of declaration.declarators) {
+            if (!declarator.name) continue;
+            if (declaration.kind === 'typedef') continue;
+            if (declarator.type.kind !== 'function') {
+                throw new CFrontendError(
+                    'typed C object backend does not support global declarations',
+                    declaration.location ?? fallback,
+                );
+            }
+            if (!declarator.body) continue;
+            if (!isSupportedFunctionType(declarator.type.returnType)
+                || declarator.type.parameters.some(parameter => !isSupportedFunctionType(parameter))) {
+                throw new CFrontendError(
+                    unsupportedTypeMessage(declarator.type.returnType, declarator.type.parameters),
+                    declaration.location ?? fallback,
+                );
+            }
+            validateTypedStatements(declarator.body.statements, fallback);
+        }
+    }
+}
+
+function isSupportedFunctionType(type: CType): boolean {
+    if (type.kind === 'builtin') {
+        return type.name === 'void'
+            || ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
+    }
+    if (type.kind === 'enum') return true;
+    return type.kind === 'typedef' && type.target !== undefined && isSupportedFunctionType(type.target);
+}
+
+function validateTypedStatements(statements: readonly Statement[], fallback: SourceLocation): void {
+    for (const statement of statements) {
+        switch (statement.kind) {
+            case 'compound': validateTypedStatements(statement.statements, statement.location ?? fallback); break;
+            case 'local-declaration':
+                if (!isSupportedFunctionType(statement.type)) {
+                    throw new CFrontendError(
+                        isFloatingType(statement.type)
+                            ? 'typed C object backend does not support floating-point function bodies'
+                            : 'typed C object backend does not support non-32-bit function types',
+                        statement.location ?? fallback,
+                    );
+                }
+                break;
+            case 'if': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.thenBranch, fallback); if (statement.elseBranch) validateTypedStatement(statement.elseBranch, fallback); break;
+            case 'while': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'do-while': validateTypedStatement(statement.body, fallback); validateTypedExpression(statement.test, fallback); break;
+            case 'switch': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'case': if (statement.value) validateTypedExpression(statement.value, fallback); validateTypedStatement(statement.statement, fallback); break;
+            case 'for': if (statement.init && 'kind' in statement.init && typeof statement.init.kind === 'string') { if (statement.init.kind === 'local-declaration') validateTypedStatement(statement.init as Statement, fallback); else validateTypedExpression(statement.init as Expression, fallback); } if (statement.test) validateTypedExpression(statement.test, fallback); if (statement.step) validateTypedExpression(statement.step, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'return': if (statement.expression) validateTypedExpression(statement.expression, fallback); break;
+            case 'expression': validateTypedExpression(statement.expression, fallback); break;
+            case 'label': validateTypedStatement(statement.statement, fallback); break;
+            case 'break': case 'continue': case 'goto': case 'empty': break;
+        }
+    }
+}
+
+function unsupportedTypeMessage(returnType: CType, parameters: readonly CType[]): string {
+    return [returnType, ...parameters].some(isFloatingType)
+        ? 'typed C object backend does not support floating-point function bodies'
+        : 'typed C object backend does not support non-32-bit function types';
+}
+
+function isFloatingType(type: CType): boolean {
+    if (type.kind === 'builtin') return type.name === 'float' || type.name === 'double' || type.name === 'long double';
+    return type.kind === 'typedef' && type.target !== undefined && isFloatingType(type.target);
+}
+
+function validateTypedStatement(statement: Statement, fallback: SourceLocation): void {
+    if (statement.kind === 'compound') validateTypedStatements(statement.statements, statement.location ?? fallback);
+    else validateTypedStatements([statement], fallback);
+}
+
+function validateTypedExpression(expression: Expression, fallback: SourceLocation): void {
+    switch (expression.kind) {
+        case 'integer-literal': case 'identifier': break;
+        case 'call': expression.arguments.forEach(argument => validateTypedExpression(argument, fallback)); break;
+        case 'binary': validateTypedExpression(expression.left, fallback); validateTypedExpression(expression.right, fallback); break;
+        case 'assignment': validateTypedExpression(expression.value, fallback); break;
+    }
+}
+
+function remapPreprocessedError(error: unknown, lineMap: readonly { file: string; line: number }[]): unknown {
+    if (!(error instanceof CompilerError) || error.line === undefined) return error;
+    const sourceLocation = lineMap[error.line - 1];
+    if (!sourceLocation) return error;
+    return new CompilerError(error.detail, sourceLocation.line, error.column, sourceLocation.file);
+}
+
+export { compileLegacyC as compileC };
 export {
-    compileC,
     CompilerError,
     type CompileOptions,
     type CompileResult,
