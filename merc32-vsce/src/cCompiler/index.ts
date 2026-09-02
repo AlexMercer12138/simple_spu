@@ -1,6 +1,9 @@
 import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
 import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResult } from './tinyc';
 import { DebugLocation, Merc32Object } from '../linker/objectFormat';
+import { CFrontendError, SourceLocation } from './source';
+import { CType, isIntegerType } from './types';
+import { Expression, Statement, TranslationUnit } from './declarations';
 import { tokenizeC } from './lexer';
 import { parseTranslationUnit } from './parser';
 import { analyzeTranslationUnit } from './sema';
@@ -38,8 +41,17 @@ export function compileCFile(sourceFile: string, options: CompileFileOptions = {
 
 /** Compile through the typed lexer, parser, semantic analysis, IR, and object backend. */
 export function compileCToObject(source: string, _options: CompileOptions = {}): Merc32Object {
+    const options = _options;
+    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
+        throw new CFrontendError(
+            'typed C object backend does not support dataBase or dlbAddrWidth options',
+            { file: '', line: 1, column: 1 },
+        );
+    }
     const tokens = tokenizeC(source);
+    rejectUnsupportedTypedLiterals(tokens);
     const unit = parseTranslationUnit(tokens);
+    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
     const program = analyzeTranslationUnit(unit);
     return generateObject(lowerProgram(program));
 }
@@ -48,13 +60,111 @@ export function compileCFileToObject(sourceFile: string, options: CompileFileOpt
     const { preprocess, ...compileOptions } = options;
     const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
-        const object = compileCToObject(preprocessed.code, compileOptions);
+        const object = compileCToObjectWithSourceMap(preprocessed.code, compileOptions, preprocessed.lineMap);
         return {
             ...object,
             debug: preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
         };
     } catch (error) {
         throw remapPreprocessedError(error, preprocessed.lineMap);
+    }
+}
+
+function compileCToObjectWithSourceMap(
+    source: string,
+    options: CompileOptions,
+    sourceMap: readonly { readonly file: string; readonly line: number }[],
+): Merc32Object {
+    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
+        throw new CFrontendError(
+            'typed C object backend does not support dataBase or dlbAddrWidth options',
+            { file: sourceMap[0]?.file ?? '', line: sourceMap[0]?.line ?? 1, column: 1 },
+        );
+    }
+    const tokens = tokenizeC(source, sourceMap);
+    rejectUnsupportedTypedLiterals(tokens);
+    const unit = parseTranslationUnit(tokens);
+    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
+    const program = analyzeTranslationUnit(unit);
+    return generateObject(lowerProgram(program));
+}
+
+function rejectUnsupportedTypedLiterals(tokens: readonly { readonly kind: string; readonly text: string; readonly location: SourceLocation }[]): void {
+    for (const token of tokens) {
+        if (token.kind !== 'number') continue;
+        if (/[.]/.test(token.text)
+            || /[eE][+-]?\d/.test(token.text)
+            || /[pP][+-]?\d/.test(token.text)
+            || /[fF]$/.test(token.text)) {
+            throw new CFrontendError('typed C object backend does not support floating-point function bodies', token.location);
+        }
+    }
+}
+
+function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocation): void {
+    for (const declaration of unit.declarations) {
+        for (const declarator of declaration.declarators) {
+            if (!declarator.name) continue;
+            if (declarator.type.kind !== 'function') {
+                throw new CFrontendError(
+                    'typed C object backend does not support global declarations',
+                    declaration.location ?? fallback,
+                );
+            }
+            if (!declarator.body) continue;
+            if (!isSupportedFunctionType(declarator.type.returnType)
+                || declarator.type.parameters.some(parameter => !isSupportedFunctionType(parameter))) {
+                throw new CFrontendError(
+                    'typed C object backend does not support floating-point function bodies',
+                    declaration.location ?? fallback,
+                );
+            }
+            validateTypedStatements(declarator.body.statements, fallback);
+        }
+    }
+}
+
+function isSupportedFunctionType(type: CType): boolean {
+    return type.kind === 'builtin' && (type.name === 'void' || isIntegerType(type));
+}
+
+function validateTypedStatements(statements: readonly Statement[], fallback: SourceLocation): void {
+    for (const statement of statements) {
+        switch (statement.kind) {
+            case 'compound': validateTypedStatements(statement.statements, statement.location ?? fallback); break;
+            case 'local-declaration':
+                if (!isSupportedFunctionType(statement.type)) {
+                    throw new CFrontendError(
+                        'typed C object backend does not support floating-point function bodies',
+                        statement.location ?? fallback,
+                    );
+                }
+                break;
+            case 'if': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.thenBranch, fallback); if (statement.elseBranch) validateTypedStatement(statement.elseBranch, fallback); break;
+            case 'while': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'do-while': validateTypedStatement(statement.body, fallback); validateTypedExpression(statement.test, fallback); break;
+            case 'switch': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'case': if (statement.value) validateTypedExpression(statement.value, fallback); validateTypedStatement(statement.statement, fallback); break;
+            case 'for': if (statement.init && 'kind' in statement.init && typeof statement.init.kind === 'string') { if (statement.init.kind === 'local-declaration') validateTypedStatement(statement.init as Statement, fallback); else validateTypedExpression(statement.init as Expression, fallback); } if (statement.test) validateTypedExpression(statement.test, fallback); if (statement.step) validateTypedExpression(statement.step, fallback); validateTypedStatement(statement.body, fallback); break;
+            case 'return': if (statement.expression) validateTypedExpression(statement.expression, fallback); break;
+            case 'expression': validateTypedExpression(statement.expression, fallback); break;
+            case 'label': validateTypedStatement(statement.statement, fallback); break;
+            case 'break': case 'continue': case 'goto': case 'empty': break;
+        }
+    }
+}
+
+function validateTypedStatement(statement: Statement, fallback: SourceLocation): void {
+    if (statement.kind === 'compound') validateTypedStatements(statement.statements, statement.location ?? fallback);
+    else validateTypedStatements([statement], fallback);
+}
+
+function validateTypedExpression(expression: Expression, fallback: SourceLocation): void {
+    switch (expression.kind) {
+        case 'integer-literal': case 'identifier': break;
+        case 'call': expression.arguments.forEach(argument => validateTypedExpression(argument, fallback)); break;
+        case 'binary': validateTypedExpression(expression.left, fallback); validateTypedExpression(expression.right, fallback); break;
+        case 'assignment': validateTypedExpression(expression.value, fallback); break;
     }
 }
 

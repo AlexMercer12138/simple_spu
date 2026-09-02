@@ -55,6 +55,7 @@ function emitFunction(
   reference: (symbol: string, instruction: IRInstruction) => void,
   lines: string[],
 ): void {
+  const returnLabel = func.returnLabel ?? `__${func.name}_return`;
   const argumentRegisters = ['r4', 'r5', 'r6', 'r7'];
   const parameterNames = func.parameterNames ?? [];
   const localNames = func.localNames ?? [];
@@ -63,14 +64,10 @@ function emitFunction(
     if (name) slots.set(name, 8 + index * 4);
   });
   const instructionList = func.blocks.flatMap(block => block.instructions);
-  const outgoingArgumentSlots = Math.max(0, ...instructionList
-    .filter(instruction => instruction.op === 'call' || instruction.op === 'runtime-call')
-    .map(instruction => Math.max(0, instruction.args.length - 1 - argumentRegisters.length)));
   const valueSlots = Math.max(0, ...instructionList
     .filter(instruction => instruction.dest !== undefined)
     .map(instruction => (instruction.dest ?? -1) + 1));
-  const outgoingBase = 8 + slots.size * 4;
-  const valueBase = outgoingBase + outgoingArgumentSlots * 4;
+  const valueBase = 8 + slots.size * 4;
   const frameSize = valueBase + valueSlots * 4;
   const valueRegister = (value: number) => `r${4 + value % 8}`;
   const valueOffset = (value: number) => valueBase + value * 4;
@@ -123,16 +120,21 @@ function emitFunction(
         case 'call':
         case 'runtime-call': {
           const symbol = String(instruction.args[0]);
-          reference(symbol, instruction);
-          instruction.args.slice(1).forEach((argument, index) => {
+          const argumentsList = instruction.args.slice(1);
+          const extraBytes = Math.max(0, argumentsList.length - argumentRegisters.length) * 4;
+          if (extraBytes > 0) emit(`mov r13, r13 - ${extraBytes}`);
+          argumentsList.slice(argumentRegisters.length).forEach((argument, index) => {
+            readValue(Number(argument), 'r7');
+            emit(`sw [r13 + ${index * 4}], r7`);
+          });
+          argumentsList.slice(0, argumentRegisters.length).forEach((argument, index) => {
             if (index < argumentRegisters.length) {
               readValue(Number(argument), argumentRegisters[index]);
-            } else {
-              readValue(Number(argument), 'r7');
-              emit(`sw [r12 + ${outgoingBase + (index - argumentRegisters.length) * 4}], r7`);
             }
           });
+          reference(symbol, instruction);
           emit(`jmp ${symbol}, r14`);
+          if (extraBytes > 0) emit(`mov r13, r13 + ${extraBytes}`);
           if (instruction.dest !== undefined && valueRegister(instruction.dest) !== 'r4') {
             emit(`mov ${valueRegister(instruction.dest)}, r4`);
           }
@@ -143,12 +145,12 @@ function emitFunction(
           if (instruction.args.length > 0) {
             readValue(Number(instruction.args[0]), 'r4');
           }
-          emit(`jmp __${func.name}_return`);
+          emit(`jmp ${returnLabel}`);
           break;
       }
     }
   }
-  lines.push(`__${func.name}_return:`);
+  lines.push(`${returnLabel}:`);
   emit('mov r14, [r12 + 0]');
   emit('mov r8, [r12 + 4]');
   emit(`mov r13, r12 + ${frameSize}`);

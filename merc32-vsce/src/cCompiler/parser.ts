@@ -1,4 +1,5 @@
 import { Token } from './lexer';
+import { CFrontendError } from './source';
 import { arrayType, builtinType, CType, functionType, pointerType, structType, unionType, typedefType } from './types';
 import { CompoundStatement, Declaration, Declarator, Expression, Statement, TranslationUnit } from './declarations';
 
@@ -8,19 +9,19 @@ class Parser {
   private i = 0; private typedefs = new Map<string, CType>();
   constructor(private readonly tokens: Token[]) {}
   private peek(n=0) { return this.tokens[this.i+n]; }
-  private take(text?: string) { const t = this.peek(); if (text && t.text !== text) throw new Error(`expected '${text}' at ${t.line}:${t.column}`); this.i++; return t; }
+  private take(text?: string) { const t = this.peek(); if (text && t.text !== text) throw new CFrontendError(`expected '${text}'`, t.location); this.i++; return t; }
   private is(text: string) { return this.peek().text === text; }
   parse(): TranslationUnit { const declarations: Declaration[] = []; while (this.peek().kind !== 'eof') declarations.push(...this.parseDeclaration()); return { kind: 'translation-unit', declarations }; }
   private parseDeclaration(): Declaration[] {
     const first = this.peek(); const isTypedef = this.is('typedef'); if (isTypedef) this.take();
     const base = this.parseBaseType();
-    if (this.is(';')) { this.take(); return [{ kind: base.kind === 'struct' ? 'struct-declaration' : 'declaration', type: base, declarators: [], location: { file:'', line:first.line, column:first.column } }]; }
+    if (this.is(';')) { this.take(); return [{ kind: base.kind === 'struct' ? 'struct-declaration' : 'declaration', type: base, declarators: [], location: first.location }]; }
     const result: Declaration[] = []; const ds: Declarator[] = [];
     do {
       const declarator = this.parseDeclarator(base);
       if (!isTypedef && declarator.type.kind === 'function' && this.is('{')) {
         ds.push({ ...declarator, body: this.parseCompoundStatement() });
-        return [{ kind: 'declaration', type: base, declarators: ds, location: { file: '', line: first.line, column: first.column } }];
+        return [{ kind: 'declaration', type: base, declarators: ds, location: first.location }];
       }
       ds.push(declarator);
       this.consumeInitializer();
@@ -88,7 +89,7 @@ class Parser {
           const parameter = this.parseDeclaratorNode();
           let parameterCType = this.applyDeclarator(parameterType, parameter);
           if (parameterCType.kind === 'array') parameterCType = pointerType(parameterCType.element);
-          params.push({ name: parameter.name, type: parameterCType, location: { file: '', line: this.peek(-1).line, column: this.peek(-1).column } });
+          params.push({ name: parameter.name, type: parameterCType, location: this.peek(-1).location });
           if (!this.is(',')) break;
           this.take();
         }
@@ -145,46 +146,46 @@ class Parser {
     const statements: Statement[] = [];
     while (!this.is('}') && this.peek().kind !== 'eof') statements.push(this.parseStatement());
     this.take('}');
-    return { kind: 'compound', statements, location: { file: '', line: start.line, column: start.column } };
+    return { kind: 'compound', statements, location: start.location };
   }
 
   private parseStatement(): Statement {
     if (this.is('{')) return this.parseCompoundStatement();
     if (this.is(';')) {
       const start = this.take();
-      return { kind:'empty', location:{ file:'', line:start.line, column:start.column } };
+      return { kind:'empty', location: start.location };
     }
     if (this.peek().kind === 'identifier' && this.peek(1).text === ':') {
       const start = this.take(); this.take(':');
-      return { kind: 'label', label: start.text, statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'label', label: start.text, statement: this.parseStatement(), location: start.location };
     }
     if (this.is('if')) {
       const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
       const thenBranch = this.parseStatement();
       const elseBranch = this.is('else') ? (this.take(), this.parseStatement()) : undefined;
-      return { kind: 'if', test, thenBranch, elseBranch, location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'if', test, thenBranch, elseBranch, location: start.location };
     }
     if (this.is('while')) {
       const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
-      return { kind: 'while', test, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'while', test, body: this.parseStatement(), location: start.location };
     }
     if (this.is('do')) {
       const start = this.take();
       const body = this.parseStatement();
       this.take('while'); this.take('('); const test = this.parseExpression(); this.take(')'); this.take(';');
-      return { kind: 'do-while', body, test, location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'do-while', body, test, location: start.location };
     }
     if (this.is('switch')) {
       const start = this.take(); this.take('('); const test = this.parseExpression(); this.take(')');
-      return { kind: 'switch', test, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'switch', test, body: this.parseStatement(), location: start.location };
     }
     if (this.is('case')) {
       const start = this.take(); const value = this.parseExpression(); this.take(':');
-      return { kind: 'case', value, statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'case', value, statement: this.parseStatement(), location: start.location };
     }
     if (this.is('default')) {
       const start = this.take(); this.take(':');
-      return { kind: 'case', statement: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'case', statement: this.parseStatement(), location: start.location };
     }
     if (this.is('for')) {
       const start = this.take(); this.take('(');
@@ -193,21 +194,21 @@ class Parser {
       if (this.is(';')) this.take();
       const test = this.is(';') ? undefined : this.parseExpression(); this.take(';');
       const step = this.is(')') ? undefined : this.parseExpression(); this.take(')');
-      return { kind: 'for', init, test, step, body: this.parseStatement(), location: { file:'', line:start.line, column:start.column } };
+      return { kind: 'for', init, test, step, body: this.parseStatement(), location: start.location };
     }
-    if (this.is('break')) { const start = this.take(); this.take(';'); return { kind:'break', location:{ file:'', line:start.line, column:start.column } }; }
-    if (this.is('continue')) { const start = this.take(); this.take(';'); return { kind:'continue', location:{ file:'', line:start.line, column:start.column } }; }
+    if (this.is('break')) { const start = this.take(); this.take(';'); return { kind:'break', location: start.location }; }
+    if (this.is('continue')) { const start = this.take(); this.take(';'); return { kind:'continue', location: start.location }; }
     if (this.is('goto')) {
       const start = this.take(); const label = this.peek();
-      if (label.kind !== 'identifier') throw new Error(`expected label identifier at ${label.line}:${label.column}`);
+      if (label.kind !== 'identifier') throw new CFrontendError('expected label identifier', label.location);
       this.take(); this.take(';');
-      return { kind:'goto', label:label.text, location:{ file:'', line:start.line, column:start.column } };
+      return { kind:'goto', label:label.text, location: start.location };
     }
     if (this.is('return')) {
       const start = this.take();
       const expression = this.is(';') ? undefined : this.parseExpression();
       this.take(';');
-      return { kind: 'return', expression, location: { file: '', line: start.line, column: start.column } };
+      return { kind: 'return', expression, location: start.location };
     }
     if (this.startsDeclaration()) return this.parseLocalDeclaration();
     const expression = this.parseExpression();
@@ -224,11 +225,11 @@ class Parser {
     const start = this.peek();
     const type = this.parseBaseType();
     const declarator = this.parseDeclarator(type);
-    if (!declarator.name) throw new Error(`local declaration requires a name at ${start.line}:${start.column}`);
+    if (!declarator.name) throw new CFrontendError('local declaration requires a name', start.location);
     const initializer = this.is('=') ? (this.take(), this.parseExpression()) : undefined;
     this.take(';');
     return { kind: 'local-declaration', name: declarator.name, type: declarator.type, initializer,
-      location: { file: '', line: start.line, column: start.column } };
+      location: start.location };
   }
 
   private parseExpression(): Expression {
@@ -238,7 +239,7 @@ class Parser {
   private parseAssignmentExpression(): Expression {
     const left = this.parseBinaryExpression(0);
     if (!this.is('=')) return left;
-    if (left.kind !== 'identifier') throw new Error(`assignment target must be an identifier at ${this.peek().line}:${this.peek().column}`);
+    if (left.kind !== 'identifier') throw new CFrontendError('assignment target must be an identifier', this.peek().location);
     this.take();
     return { kind: 'assignment', target: left, value: this.parseAssignmentExpression(), location: left.location };
   }
@@ -260,12 +261,12 @@ class Parser {
     if (token.kind === 'number') {
       this.take();
       const value = token.value ?? Number.parseInt(token.text, 0);
-      if (!Number.isFinite(value)) throw new Error(`invalid integer literal '${token.text}' at ${token.line}:${token.column}`);
-      return { kind: 'integer-literal', value, location: { file: '', line: token.line, column: token.column } };
+      if (!Number.isFinite(value)) throw new CFrontendError(`invalid integer literal '${token.text}'`, token.location);
+      return { kind: 'integer-literal', value, location: token.location };
     }
     if (token.kind === 'identifier') {
       this.take();
-      const identifier = { kind: 'identifier' as const, name: token.text, location: { file: '', line: token.line, column: token.column } };
+      const identifier = { kind: 'identifier' as const, name: token.text, location: token.location };
       if (!this.is('(')) return identifier;
       this.take();
       const args: Expression[] = [];
@@ -283,7 +284,7 @@ class Parser {
       this.take(')');
       return expression;
     }
-    throw new Error(`expected expression at ${token.line}:${token.column}`);
+    throw new CFrontendError('expected expression', token.location);
   }
 }
 

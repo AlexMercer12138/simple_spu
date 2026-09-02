@@ -1,11 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileCFileToObject } from './cCompiler';
+import { compileCFile } from './cCompiler';
 import { assembleFile } from './assemblyService';
 import { getAssemblerSettings } from './configuration';
 import { CompileMode, FileAssemblyResult, ToolchainArtifact } from './types';
-import { getDefaultRuntimeObjects } from './runtime/runtimeCatalog';
-import { linkObjects } from './linker';
 
 export interface CCompileResult {
     assembly: string;
@@ -21,20 +19,20 @@ export function compileCFileToAssembly(sourceFile: string): CCompileResult {
     const settings = getAssemblerSettings(sourceFile);
     const baseName = path.basename(sourceFile, path.extname(sourceFile));
     const assemblyFile = path.join(settings.outputDir, `${baseName}.asm`);
-    const image = linkObjects([compileCFileToObject(sourceFile, {
+    const result = compileCFile(sourceFile, {
         dataBase: settings.cDataBase,
         dlbAddrWidth: settings.cDlbAddrWidth,
         moduleName: baseName,
-    }), ...getDefaultRuntimeObjects()]);
+    });
 
     fs.mkdirSync(settings.outputDir, { recursive: true });
-    fs.writeFileSync(assemblyFile, image.assembly, 'utf-8');
+    fs.writeFileSync(assemblyFile, result.assembly, 'utf-8');
 
     return {
-        assembly: image.assembly,
+        assembly: result.assembly,
         assemblyFile,
         artifacts: [
-            { label: `${baseName}.asm`, file: assemblyFile, description: 'Linked assembly' },
+            { label: `${baseName}.asm`, file: assemblyFile, description: 'Generated assembly' },
         ],
     };
 }

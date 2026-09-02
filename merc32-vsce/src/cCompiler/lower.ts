@@ -5,11 +5,18 @@ import { IRBlock, IRFunction, IRInstruction, Merc32Module } from './ir';
 
 export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32Module {
   const unit = 'unit' in program ? program.unit : program;
+  const occupiedSymbols = new Set<string>();
+  for (const declaration of unit.declarations) {
+    for (const declarator of declaration.declarators) {
+      if (declarator.name) occupiedSymbols.add(declarator.name);
+    }
+  }
+  const occupiedLabels = new Set(occupiedSymbols);
   const functions: IRFunction[] = [];
   for (const declaration of unit.declarations) {
     for (const declarator of declaration.declarators) {
       if (!declarator.name || declarator.type.kind !== 'function' || !declarator.body) continue;
-      const lowerer = new FunctionLowerer(declarator.name);
+      const lowerer = new FunctionLowerer(declarator.name, occupiedLabels);
       declarator.body.statements.forEach(statement => lowerer.lowerStatement(statement));
       if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') {
         const zero = lowerer.constant(0);
@@ -22,6 +29,7 @@ export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32
         parameters: declarator.type.parameters,
         parameterNames: (declarator.parameters ?? []).map(parameter => parameter.name ?? ''),
         localNames: lowerer.localNames,
+        returnLabel: lowerer.returnLabel(),
         blocks: [block],
       });
     }
@@ -37,7 +45,8 @@ class FunctionLowerer {
   private breakLabels: string[] = [];
   private continueLabels: string[] = [];
   private switchCaseLabels: Map<Extract<Statement, { kind: 'case' }>, string>[] = [];
-  constructor(private readonly functionName: string) {}
+  private readonly userLabels = new Map<string, string>();
+  constructor(private readonly functionName: string, private readonly occupiedLabels: Set<string>) {}
 
   lowerStatement(statement: Statement): void {
     switch (statement.kind) {
@@ -183,9 +192,31 @@ class FunctionLowerer {
     return result;
   }
 
-  private label(prefix: string): string { return `__${this.functionName}_${prefix}_${this.nextLabel++}`; }
+  returnLabel(): string { return this.generatedLabel('return'); }
 
-  private userLabel(label: string): string { return `__${this.functionName.length}_${this.functionName}_user_${label.length}_${label}`; }
+  private label(prefix: string): string { return this.generatedLabel(`${prefix}_${this.nextLabel++}`); }
+
+  private userLabel(label: string): string {
+    const existing = this.userLabels.get(label);
+    if (existing) return existing;
+    const generated = this.allocateLabel(`__${this.functionName.length}_${this.functionName}_user_${label.length}_${label}`);
+    this.userLabels.set(label, generated);
+    return generated;
+  }
+
+  private generatedLabel(suffix: string): string {
+    return this.allocateLabel(`__${this.functionName}_${suffix}`);
+  }
+
+  private allocateLabel(base: string): string {
+    let candidate = base;
+    let serial = 0;
+    while (this.occupiedLabels.has(candidate)) {
+      candidate = `${base}_generated_${serial++}`;
+    }
+    this.occupiedLabels.add(candidate);
+    return candidate;
+  }
 
   constant(value: number, location?: IRInstruction['location']): number {
     const dest = this.allocateValue();

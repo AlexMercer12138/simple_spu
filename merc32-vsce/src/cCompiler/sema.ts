@@ -1,5 +1,6 @@
 import { CompoundStatement, Expression, Statement, TranslationUnit } from './declarations';
 import { AggregateLayout, CType, StructType, UnionType, isCompleteType, structLayout, unionLayout } from './types';
+import { CFrontendError, SourceLocation } from './source';
 
 export interface SymbolEntry { readonly name: string; readonly type: CType; }
 
@@ -59,7 +60,7 @@ export function analyzeTranslationUnit(unit: TranslationUnit): AnalyzedProgram {
       if (declarator.type.kind !== 'function' || !declarator.body) continue;
       const functionScope = scope.child();
       for (const parameter of declarator.parameters ?? []) {
-        if (!parameter.name) throw new Error(`function '${declarator.name ?? '<anonymous>'}' has an unnamed parameter`);
+        if (!parameter.name) throw frontendError(`function '${declarator.name ?? '<anonymous>'}' has an unnamed parameter`, parameter.location);
         functionScope.define(parameter.name, parameter.type);
       }
       validateFunctionLabels(declarator.body);
@@ -87,7 +88,7 @@ function analyzeStatement(statement: Statement, scope: Scope, context: Statement
       analyzeCompoundStatement(statement, scope, context);
       return;
     case 'local-declaration':
-      if (scope.resolve(statement.name)) throw new Error(`duplicate local '${statement.name}'`);
+      if (scope.resolve(statement.name)) throw frontendError(`duplicate local '${statement.name}'`, statement.location);
       if (statement.initializer) analyzeExpression(statement.initializer, scope);
       scope.define(statement.name, statement.type);
       return;
@@ -112,13 +113,13 @@ function analyzeStatement(statement: Statement, scope: Scope, context: Statement
       }
     case 'case': {
       const switchContext = context.switches[context.switches.length - 1];
-      if (!switchContext) throw new Error(`${statement.value ? 'case' : 'default'} label used outside switch`);
+      if (!switchContext) throw frontendError(`${statement.value ? 'case' : 'default'} label used outside switch`, statement.location);
       if (statement.value) {
         const value = evaluateIntegerConstantExpression(statement.value);
-        if (switchContext.values.has(value)) throw new Error('duplicate case value in one switch');
+        if (switchContext.values.has(value)) throw frontendError('duplicate case value in one switch', statement.location);
         switchContext.values.add(value);
       } else {
-        if (switchContext.hasDefault) throw new Error('multiple default labels in one switch');
+        if (switchContext.hasDefault) throw frontendError('multiple default labels in one switch', statement.location);
         switchContext.hasDefault = true;
       }
       analyzeStatement(statement.statement, scope, context);
@@ -143,10 +144,10 @@ function analyzeStatement(statement: Statement, scope: Scope, context: Statement
         return;
       }
     case 'break':
-      if (context.loopDepth === 0 && context.switches.length === 0) throw new Error('break used outside loop or switch');
+      if (context.loopDepth === 0 && context.switches.length === 0) throw frontendError('break used outside loop or switch', statement.location);
       return;
     case 'continue':
-      if (context.loopDepth === 0) throw new Error('continue used outside loop');
+      if (context.loopDepth === 0) throw frontendError('continue used outside loop', statement.location);
       return;
   }
 }
@@ -161,7 +162,7 @@ function validateFunctionLabels(statement: Statement): void {
       case 'while': case 'do-while': case 'switch': case 'for': collect(current.body); return;
       case 'case': collect(current.statement); return;
       case 'label':
-        if (labels.has(current.label)) throw new Error(`duplicate label '${current.label}'`);
+        if (labels.has(current.label)) throw frontendError(`duplicate label '${current.label}'`, current.location);
         labels.add(current.label); collect(current.statement); return;
       case 'goto': gotos.push(current); return;
       case 'local-declaration': case 'expression': case 'return': case 'break': case 'continue': case 'empty': return;
@@ -169,13 +170,13 @@ function validateFunctionLabels(statement: Statement): void {
   };
   collect(statement);
   for (const jump of gotos) {
-    if (!labels.has(jump.label)) throw new Error(`undefined label '${jump.label}'`);
+    if (!labels.has(jump.label)) throw frontendError(`undefined label '${jump.label}'`, jump.location);
   }
 }
 
 export function evaluateIntegerConstantExpression(expression: Expression): number {
   if (expression.kind === 'integer-literal') return expression.value;
-  if (expression.kind !== 'binary') throw new Error('case value must be an integer constant expression');
+  if (expression.kind !== 'binary') throw frontendError('case value must be an integer constant expression', expression.location);
   const left = evaluateIntegerConstantExpression(expression.left);
   if (expression.operator === '&&' && left === 0) return 0;
   if (expression.operator === '||' && left !== 0) return 1;
@@ -199,7 +200,7 @@ export function evaluateIntegerConstantExpression(expression: Expression): numbe
     case '>=': return left >= right ? 1 : 0;
     case '&&': return right !== 0 ? 1 : 0;
     case '||': return right !== 0 ? 1 : 0;
-    default: throw new Error('case value must be an integer constant expression');
+    default: throw frontendError('case value must be an integer constant expression', expression.location);
   }
 }
 
@@ -208,10 +209,10 @@ function analyzeExpression(expression: Expression, scope: Scope): void {
     case 'integer-literal':
       return;
     case 'identifier':
-      if (!scope.resolve(expression.name)) throw new Error(`unknown identifier '${expression.name}'`);
+      if (!scope.resolve(expression.name)) throw frontendError(`unknown identifier '${expression.name}'`, expression.location);
       return;
     case 'call':
-      if (!scope.resolve(expression.callee.name)) throw new Error(`unknown function '${expression.callee.name}'`);
+      if (!scope.resolve(expression.callee.name)) throw frontendError(`unknown function '${expression.callee.name}'`, expression.location);
       expression.arguments.forEach(argument => analyzeExpression(argument, scope));
       return;
     case 'binary':
@@ -219,7 +220,7 @@ function analyzeExpression(expression: Expression, scope: Scope): void {
       analyzeExpression(expression.right, scope);
       return;
     case 'assignment':
-      if (!scope.resolve(expression.target.name)) throw new Error(`unknown identifier '${expression.target.name}'`);
+      if (!scope.resolve(expression.target.name)) throw frontendError(`unknown identifier '${expression.target.name}'`, expression.location);
       analyzeExpression(expression.value, scope);
       return;
   }
@@ -228,6 +229,10 @@ function analyzeExpression(expression: Expression, scope: Scope): void {
 export function layoutAggregate(type: StructType | UnionType): AggregateLayout {
   if (!isCompleteType(type)) throw new Error('incomplete aggregate type');
   return type.kind === 'struct' ? structLayout(type.fields) : unionLayout(type.fields);
+}
+
+function frontendError(message: string, location?: SourceLocation): Error {
+  return location ? new CFrontendError(message, location) : new Error(message);
 }
 
 export function isAssignable(target: CType, source: CType): boolean {

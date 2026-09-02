@@ -28,6 +28,7 @@ function functionAssemblyBody(assembly, functionName) {
 const source = 'int included(void) { return 7; }\nint main(void) { return included(); }\n';
 const legacy = compileC(source, { moduleName: 'legacy_api' });
 assert.strictEqual(typeof legacy.assembly, 'string', 'compileC must continue returning assembly');
+assert.match(legacy.assembly, /\.entry __start/, 'legacy public compile must retain startup entry');
 assert.ok(compileCFile, 'compileCFile must remain available to legacy callers');
 
 const object = compileCToObject(source, { moduleName: 'object_api' });
@@ -80,6 +81,44 @@ assert.match(scalarAssembly, /mov r\d+, r\d+ \+ r\d+/, 'typed lowering must pres
 assert.ok(new SimpleCPUAssembler().assemble(scalarAssembly, {
     sourceFileName: 'typed_scalar_api.asm',
 }).machineCodes.length > 0, 'typed scalar object assembly must remain assembleable');
+
+const manyArgumentObject = compileCToObject(`
+int five(int a, int b, int c, int d, int e) { return a + b + c + d + e; }
+int main(void) { return five(1, 2, 3, 4, 5); }
+`, { moduleName: 'typed_many_argument_api' });
+const manyArgumentAssembly = linkObjects([manyArgumentObject]).assembly;
+const manyArgumentBody = functionAssemblyBody(manyArgumentAssembly, 'main');
+const fourthRegisterIndex = manyArgumentBody.indexOf('mov r7, [r12 +');
+const stackArgumentIndex = manyArgumentBody.indexOf('mov r13, r13 - 4');
+assert.ok(stackArgumentIndex >= 0, 'typed calls with five arguments must allocate caller stack storage');
+assert.ok(fourthRegisterIndex >= 0 && fourthRegisterIndex > stackArgumentIndex,
+    'typed call argument setup must load the fourth register argument after the stack area staging');
+assert.match(manyArgumentBody, /mov r13, r13 - 4\r?\n\s*mov r7, \[r12 \+ \d+\]\r?\n\s*sw \[r13 \+ 0\], r7/,
+    'typed fifth argument must be written through the caller SP argument area');
+const manyArgumentCallOffset = manyArgumentObject.relocations.find((relocation) => relocation.symbol === 'five')?.offset;
+assert.strictEqual(typeof manyArgumentCallOffset, 'number');
+const manyArgumentInstructionOffset = manyArgumentAssembly
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(?:mov|sw|jmp|bz|bnz|cmp|mul|div|rem):?/.test(line))
+    .findIndex((line) => line.trim() === 'jmp five, r14') * 4;
+assert.strictEqual(manyArgumentCallOffset, manyArgumentInstructionOffset,
+    'typed call relocation must identify the call instruction, after argument setup');
+
+assert.throws(
+    () => compileCToObject('int global_value = 3; int main(void) { return global_value; }'),
+    /typed C object backend does not support global declarations/,
+    'typed object generation must reject unsupported globals instead of discarding them',
+);
+assert.throws(
+    () => compileCToObject('float add(float left, float right) { return left + right; }'),
+    /typed C object backend does not support floating-point function bodies/,
+    'typed object generation must reject unsupported floating bodies instead of integer lowering',
+);
+assert.throws(
+    () => compileCToObject('int main(void) { return 0; }', { dataBase: 0x08000100, dlbAddrWidth: 8 }),
+    /typed C object backend does not support dataBase or dlbAddrWidth options/,
+    'typed object generation must not silently ignore legacy memory-layout options',
+);
 
 const controlSource = `
 int control(int value) {
@@ -285,6 +324,26 @@ assert.ok(new SimpleCPUAssembler().assemble(crossFunctionLabelsAssembly, {
     sourceFileName: 'typed_cross_function_labels_api.asm',
 }).machineCodes.length > 0, 'typed labels from different functions must remain independently assembleable');
 
+const rawGeneratedLabelCollisionAssembly = linkObjects([compileCToObject(`
+int __1_a_user_1_x(void) { return 2; }
+int a(void) {
+    goto x;
+x:
+    return 1;
+}
+`, { moduleName: 'typed_raw_generated_label_collision_api' })]).assembly;
+assert.ok(new SimpleCPUAssembler().assemble(rawGeneratedLabelCollisionAssembly, {
+    sourceFileName: 'typed_raw_generated_label_collision_api.asm',
+}).machineCodes.length > 0, 'typed generated user labels must be disjoint from raw function symbols');
+
+const rawReturnLabelCollisionAssembly = linkObjects([compileCToObject(`
+int __main_return(void) { return 2; }
+int main(void) { return 1; }
+`, { moduleName: 'typed_raw_return_label_collision_api' })]).assembly;
+assert.ok(new SimpleCPUAssembler().assemble(rawReturnLabelCollisionAssembly, {
+    sourceFileName: 'typed_raw_return_label_collision_api.asm',
+}).machineCodes.length > 0, 'typed generated return labels must be disjoint from raw function symbols');
+
 assert.throws(
     () => compileCToObject('int main(void) { goto absent; return 0; }'),
     /undefined label 'absent'/,
@@ -328,6 +387,10 @@ try {
     const entry = path.join(root, 'main.c');
     fs.writeFileSync(header, 'int included(int left, int right) { int local = left; local = local + right; return local; }\n');
     fs.writeFileSync(entry, '#include "included.h"\nint main(void) { int result = included(3, 4); result = result + 1; return result; }\n');
+    const badHeader = path.join(root, 'bad.h');
+    const badEntry = path.join(root, 'bad.c');
+    fs.writeFileSync(badHeader, 'float broken(float value) { return value + value; }\n');
+    fs.writeFileSync(badEntry, '#include "bad.h"\nint main(void) { return 0; }\n');
 
     const legacyFile = compileCFile(entry, { moduleName: 'legacy_file_api' });
     assert.strictEqual(typeof legacyFile.assembly, 'string', 'compileCFile must continue returning assembly');
@@ -341,6 +404,12 @@ try {
     assert.ok(preprocessedObject.debug.some((location) =>
         location.file === fs.realpathSync(header) && location.line === 1 && location.column === 1,
     ), 'object debug locations must retain included-source origins after preprocessing');
+    assert.throws(
+        () => compileCFileToObject(badEntry, { moduleName: 'bad_preprocessed_object' }),
+        (error) => error && error.location && error.location.file === fs.realpathSync(badHeader)
+            && error.location.line === 1,
+        'typed diagnostics must preserve included-source locations after preprocessing',
+    );
 
     const originalLoad = Module._load;
     Module._load = function loadVscode(request, parent, isMain) {
@@ -354,7 +423,12 @@ try {
         return originalLoad.call(this, request, parent, isMain);
     };
     try {
-        const { buildCFileToRom } = require('../out/compilerService');
+        const { buildCFileToRom, compileCFileToAssembly } = require('../out/compilerService');
+        const defaultCompile = compileCFileToAssembly(entry);
+        assert.match(defaultCompile.assembly, /\.entry __start/,
+            'the default service build must retain the legacy bootable startup contract');
+        assert.match(defaultCompile.assembly, /mov r13, 0x804\r?\nmov r13, r13 << 16/,
+            'the default service build must initialize the configured legacy stack');
         const result = buildCFileToRom(entry, 'normal');
         assert.deepStrictEqual(result.artifacts.map((artifact) => artifact.label), ['main.asm', 'main.v']);
     } finally {
