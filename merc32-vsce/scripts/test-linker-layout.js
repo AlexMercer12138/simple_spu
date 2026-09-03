@@ -86,4 +86,42 @@ assert.throws(
   /outside section/,
 );
 
+const lastByteLayout = layoutSections([
+  object([section('bss', 1, 1)], []),
+], { textBase: 0xffffffff });
+assert.strictEqual(lastByteLayout.sections.get('bss:0'), 0xffffffff);
+assert.doesNotThrow(() => layoutSections([
+  object([section('bss', 1, 0xffffffff)], []),
+], { textBase: 1 }));
+
+for (const options of [
+  { textBase: 0x100000000 },
+  { dataBase: 0x100000000 },
+  { textBase: Number.MAX_SAFE_INTEGER + 1 },
+]) {
+  assert.throws(() => layoutSections([object([], [])], options), /invalid section base/);
+}
+
+assert.throws(
+  () => layoutSections([object([section('bss', 1, 2)], [])], { textBase: 0xffffffff }),
+  /section layout exceeds 32-bit address space/,
+);
+assert.throws(
+  () => layoutSections([object([section('bss', 4, 0)], [])], { textBase: 0xffffffff }),
+  /section layout exceeds 32-bit address space/,
+);
+assert.throws(
+  () => layoutSections([object([{ name: 'bss', alignment: 1, size: Number.MAX_SAFE_INTEGER + 1 }], [])]),
+  /invalid section size/,
+);
+assert.throws(
+  () => layoutSections([
+    object(
+      [section('bss', 1, 1)],
+      [{ name: 'pastAddressSpace', binding: 'global', section: 'bss', offset: 1, defined: true }],
+    ),
+  ], { textBase: 0xffffffff }),
+  /symbol 'pastAddressSpace' address outside 32-bit address space/,
+);
+
 console.log('linker layout tests passed');

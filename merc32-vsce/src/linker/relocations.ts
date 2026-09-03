@@ -1,5 +1,6 @@
 import { normalizeSectionContent, ObjectSectionName, Relocation } from './objectFormat';
 import { LayoutResult, LinkerError } from './resolver';
+import { maskAssemblyComments } from './sourceText';
 
 export interface LinkedSection {
   readonly objectIndex: number;
@@ -39,8 +40,29 @@ function patchControlFlow(
   relocation: Relocation,
   objectIndex: number,
   value: number,
+  source?: string,
+  hasCanonicalWord = true,
 ): void {
+  if (relocation.section !== 'text') {
+    throw relocationError(`${relocation.kind} relocation '${relocation.symbol}' must patch a text instruction`, relocation, objectIndex);
+  }
   const index = relocation.offset / 4;
+  if (hasCanonicalWord) {
+    const opcode = content[index] & 0xff;
+    const validOpcode = relocation.kind === 'CALL16' ? opcode === 0x2c : opcode === 0x2a || opcode === 0x2b;
+    if (!validOpcode) {
+      const expected = relocation.kind === 'CALL16' ? 'JAL' : 'BZ or BNZ';
+      throw relocationError(`${relocation.kind} relocation '${relocation.symbol}' must patch a ${expected} instruction`, relocation, objectIndex);
+    }
+  }
+  if (source !== undefined) {
+    const mnemonic = sourceMnemonicAtOffset(source, relocation.offset);
+    const validMnemonic = relocation.kind === 'CALL16' ? mnemonic === 'jmp' : mnemonic === 'bz' || mnemonic === 'bnz';
+    if (!validMnemonic) {
+      const expected = relocation.kind === 'CALL16' ? 'jmp' : 'bz or bnz';
+      throw relocationError(`${relocation.kind} relocation '${relocation.symbol}' must patch a source ${expected} instruction`, relocation, objectIndex);
+    }
+  }
   if (((content[index] >>> 12) & 0xf) !== 0) {
     throw relocationError(`${relocation.kind} relocation '${relocation.symbol}' requires r0 base`, relocation, objectIndex);
   }
@@ -53,9 +75,20 @@ function patchControlFlow(
   write16(content, relocation.section, relocation.offset, value);
 }
 
+function sourceMnemonicAtOffset(source: string, relocationOffset: number): string | undefined {
+  let instructionOffset = 0;
+  for (const line of maskAssemblyComments(source)) {
+    const code = line.trim().replace(/^[A-Za-z_][A-Za-z0-9_]*\s*[:\uff1a]\s*/, '').trim();
+    if (!code || code.startsWith('.')) continue;
+    if (instructionOffset === relocationOffset) return code.match(/^[A-Za-z][A-Za-z0-9_.]*/)?.[0].toLowerCase();
+    instructionOffset += 4;
+  }
+  return undefined;
+}
+
 function replaceIdentifier(text: string, name: string, replacement: string): string {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return text.replace(new RegExp(`\\b${escaped}\\b`, 'g'), replacement);
+  return text.replace(/("(?:\\.|[^"\\])*")|\b[A-Za-z_][A-Za-z0-9_]*\b/g,
+    (token, quoted) => quoted || token !== name ? token : replacement);
 }
 
 function patchSource(
@@ -64,13 +97,16 @@ function patchSource(
   localLabels: ReadonlyMap<string, string>,
 ): string {
   let instructionOffset = 0;
-  return source.split(/\r?\n/).map(line => {
-    const labelMatch = line.match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*[:\uff1a]\s*)/);
+  const sourceLines = source.split(/\r?\n/);
+  const maskedLines = maskAssemblyComments(source);
+  return sourceLines.map((line, lineIndex) => {
+    const maskedLine = maskedLines[lineIndex];
+    const labelMatch = maskedLine.match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*[:\uff1a]\s*)/);
     const label = labelMatch?.[0] ?? '';
     const patchedLabel = labelMatch
       ? `${labelMatch[1]}${localLabels.get(labelMatch[2]) ?? labelMatch[2]}${labelMatch[3]}`
       : '';
-    const uncommented = line.replace(/\/\/.*$/, '').trim();
+    const uncommented = maskedLine.trim();
     const code = uncommented.replace(/^[A-Za-z_][A-Za-z0-9_]*\s*[:\uff1a]\s*/, '').trim();
     if (!code || code.startsWith('.')) return labelMatch ? `${patchedLabel}${line.slice(label.length)}` : line;
     const instructionText = line.slice(label.length);
@@ -131,7 +167,9 @@ export function applyRelocations(layout: LayoutResult): LinkedSections {
         }
         write16(linked.content, relocation.section, relocation.offset, value);
       } else {
-        patchControlFlow(linked.content, relocation, objectIndex, value);
+        const patchSection = object.sections.find(section => section.name === relocation.section)!;
+        const source = patchSection.source ?? (typeof patchSection.content === 'string' ? patchSection.content : undefined);
+        patchControlFlow(linked.content, relocation, objectIndex, value, source, Array.isArray(patchSection.content));
       }
       if (relocation.section === 'text') {
         const objectReplacements = sourceReplacements.get(objectIndex) ?? new Map<number, SourceReplacement[]>();

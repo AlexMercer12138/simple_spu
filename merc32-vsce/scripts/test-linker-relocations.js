@@ -5,6 +5,7 @@ const path = require('path');
 const { SimpleCPUAssembler } = require('../out/assembler');
 const {
   applyRelocations,
+  assembleToObject,
   layoutSections,
   linkFiles,
   linkObjects,
@@ -44,6 +45,19 @@ const findSection = (linked, objectIndex, name) => linked.sections.find(
   const linked = applyRelocations(layoutSections([input], { dataBase: 0x12340000 }));
   assert.deepStrictEqual(findSection(linked, 0, 'data').content, [0x04, 0x00, 0x34, 0x12]);
   assert.strictEqual(linked.relocationsApplied, 1);
+}
+
+// BSS has no payload, so relocations cannot materialize or count fabricated content.
+{
+  const input = object(
+    [section('text', [0]), { name: 'bss', alignment: 4, size: 4 }],
+    [{ name: 'target', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'bss', offset: 0, kind: 'ABS32', symbol: 'target', addend: 0 }],
+  );
+  assert.throws(
+    () => linkObjects([input]),
+    /relocation patch section 'bss' is not supported/,
+  );
 }
 
 // HI16 applies the addend before selecting the upper half of the address.
@@ -189,6 +203,54 @@ for (const [kind, word] of [['CALL16', 0x00002e2c], ['BRANCH16', 0x0000242a]]) {
   );
 }
 
+// Control-flow relocations can patch only instructions in text sections.
+for (const kind of ['CALL16', 'BRANCH16']) {
+  const input = object(
+    [section('text', [0x00000e2c]), section('data', [0, 0, 0, 0])],
+    [{ name: 'target', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'data', offset: 0, kind, symbol: 'target', addend: 0 }],
+  );
+  assert.throws(
+    () => linkObjects([input]),
+    error => error instanceof LinkerError &&
+      error.message === `${kind} relocation 'target' must patch a text instruction`,
+  );
+}
+
+// Canonical words must contain the instruction kind declared by the relocation.
+for (const [kind, word, expected] of [
+  ['CALL16', 0x00000501, 'JAL'],
+  ['BRANCH16', 0x00000e2c, 'BZ or BNZ'],
+]) {
+  const input = object(
+    [section('text', [word])],
+    [{ name: 'target', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'text', offset: 0, kind, symbol: 'target', addend: 0 }],
+  );
+  assert.throws(
+    () => linkObjects([input]),
+    error => error instanceof LinkerError &&
+      error.message === `${kind} relocation 'target' must patch a ${expected} instruction`,
+  );
+}
+
+// Source-backed text must describe the same control-flow instruction as its canonical word.
+for (const [kind, word, source, expected] of [
+  ['CALL16', 0x00000e2c, 'target: mov r1, target\n', 'jmp'],
+  ['BRANCH16', 0x0000042a, 'target: jmp target\n', 'bz or bnz'],
+]) {
+  const input = object(
+    [section('text', [word], 4, { source })],
+    [{ name: 'target', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'text', offset: 0, kind, symbol: 'target', addend: 0 }],
+  );
+  assert.throws(
+    () => linkObjects([input]),
+    error => error instanceof LinkerError &&
+      error.message === `${kind} relocation 'target' must patch a source ${expected} instruction`,
+  );
+}
+
 // linkObjects returns a patched image and resolves the requested entry point.
 {
   const caller = object(
@@ -272,6 +334,36 @@ for (const [kind, word] of [['CALL16', 0x00002e2c], ['BRANCH16', 0x0000242a]]) {
   assert.deepStrictEqual(
     new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
     image.machineCodes.map(word => word >>> 0),
+  );
+}
+
+// Local-label rewriting leaves the same spelling inside string literals unchanged.
+{
+  const input = assembleToObject('A:\n  mov r1, "A"\n  jmp A\n');
+  const image = linkObjects([input]);
+  assert.match(image.assembly, /mov r1, "A"/);
+  assert.deepStrictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
+    image.machineCodes.map(word => word >>> 0),
+  );
+}
+
+// Retained multiline comments do not shift source-backed relocation offsets during linking.
+{
+  const caller = assembleToObject([
+    'main:',
+    '  mov r1, 1',
+    '  /* ignored instruction:',
+    '  jmp phantom, r14',
+    '  */',
+    '  jmp external, r14',
+  ].join('\n'), { exports: ['main'] });
+  const callee = assembleToObject('external: jmp r14\n', { exports: ['external'] });
+  const image = linkObjects([caller, callee]);
+  assert.match(image.assembly, /jmp 0x8, r14/);
+  assert.strictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.length,
+    (caller.sections[0].size + callee.sections[0].size) / 4,
   );
 }
 

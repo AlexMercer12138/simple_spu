@@ -38,6 +38,10 @@ function emitModule(module: Merc32Module): EmittedModule {
   const referenced = new Set<string>();
   let offset = 0;
   const emitInstruction = (instruction: string) => { lines.push(`  ${instruction}`); offset += 4; };
+  const emitLocalLabel = (label: string) => {
+    symbols.push({ name: label, binding: 'local', section: 'text', offset, defined: true });
+    lines.push(`${label}:`);
+  };
 
   for (const func of module.functions) {
     symbols.push({ name: func.name, binding: 'global', section: 'text', offset, defined: true });
@@ -47,7 +51,7 @@ function emitModule(module: Merc32Module): EmittedModule {
       referenced.add(symbol);
       relocations.push({ section: 'text', offset, kind: 'CALL16', symbol, addend: 0,
         ...(instruction.location ? { debug: instruction.location } : {}) });
-    }, lines);
+    }, emitLocalLabel);
   }
 
   for (const name of referenced) {
@@ -61,7 +65,7 @@ function emitFunction(
   returnLabel: string,
   emit: (instruction: string) => void,
   reference: (symbol: string, instruction: IRInstruction) => void,
-  lines: string[],
+  emitLabel: (label: string) => void,
 ): void {
   const argumentRegisters = ['r4', 'r5', 'r6', 'r7'];
   const parameterNames = func.parameterNames ?? [];
@@ -101,10 +105,10 @@ function emitFunction(
   });
 
   for (const block of func.blocks) {
-    if (block.label !== `${func.name}.entry`) lines.push(`${block.label}:`);
+    if (block.label !== `${func.name}.entry`) emitLabel(block.label);
     for (const instruction of block.instructions) {
       switch (instruction.op) {
-        case 'label': lines.push(`${String(instruction.args[0])}:`); break;
+        case 'label': emitLabel(String(instruction.args[0])); break;
         case 'jump': emit(`jmp ${String(instruction.args[0])}`); break;
         case 'branch-zero': readValue(Number(instruction.args[0]), 'r7'); emit(`bz r7, r0 + ${String(instruction.args[1])}`); break;
         case 'branch-nonzero': readValue(Number(instruction.args[0]), 'r7'); emit(`bnz r7, r0 + ${String(instruction.args[1])}`); break;
@@ -157,7 +161,7 @@ function emitFunction(
       }
     }
   }
-  lines.push(`${returnLabel}:`);
+  emitLabel(returnLabel);
   emit('mov r14, [r12 + 0]');
   emit('mov r8, [r12 + 4]');
   emit(`mov r13, r12 + ${frameSize}`);

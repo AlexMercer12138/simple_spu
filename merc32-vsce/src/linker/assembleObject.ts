@@ -1,6 +1,7 @@
 import { SimpleCPUAssembler } from '../assembler';
 import { AssemblerPreprocessor } from '../preprocessor';
 import { Merc32Object, ObjectSymbol, Relocation, RelocationKind } from './objectFormat';
+import { maskAssemblyComments } from './sourceText';
 
 const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
 type SymbolicOperand = { name: string; kind: RelocationKind; column: number };
@@ -51,12 +52,12 @@ function replaceSymbols(code: string, symbols: Set<string>): string {
 export function assembleToObject(sourceCode: string, options: { abi?: string; exports?: readonly string[] } = {}): Merc32Object {
   const preprocessed = new AssemblerPreprocessor().preprocess(sourceCode);
   const assembler = new SimpleCPUAssembler();
-  const lines = preprocessed.sourceCode.split(/\r?\n/);
+  const lines = maskAssemblyComments(preprocessed.sourceCode).map(line => line.trim());
   const labels = new Map<string, number>();
   const instructions: Array<{ code: string; line: number; offset: number }> = [];
   let offset = 0;
   for (let index = 0; index < lines.length; index++) {
-    const line = assembler.removeComments(lines[index]);
+    const line = lines[index];
     if (!line) continue;
     const [label, code] = splitLabel(line);
     if (label) {

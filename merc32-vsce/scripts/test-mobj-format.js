@@ -19,4 +19,8 @@ assert.doesNotThrow(() => validateObject({ ...object, symbols: [...object.symbol
 assert.doesNotThrow(() => validateObject({ ...object, symbols: [...object.symbols, { name: 'ext', binding: 'global', defined: false }] }));
 assert.throws(() => validateObject({ ...object, relocations: [{ section: 'text', offset: 4, kind: 'CALL16', symbol: 'main', addend: 0 }] }), /offset/);
 assert.throws(() => validateObject({ ...object, relocations: [{ section: 'text', offset: 1, kind: 'CALL16', symbol: 'main', addend: 0 }] }), /alignment|offset/);
+assert.throws(
+  () => validateObject({ ...object, relocations: [{ section: 'bss', offset: 0, kind: 'ABS32', symbol: 'main', addend: 0 }] }),
+  /relocation patch section 'bss' is not supported/,
+);
 console.log('mobj format tests passed');

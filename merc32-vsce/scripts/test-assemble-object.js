@@ -21,6 +21,24 @@ assert.strictEqual(entry.symbols.find(symbol => symbol.name === 'start').offset,
 assert.strictEqual(entry.relocations.length, 0);
 const comments = assembleToObject('// comment\nmain: jmp r14 // trailing\n');
 assert.strictEqual(comments.sections[0].size, 4);
+const inlineBlockComment = assembleToObject('main: /* call the helper */ jmp external, r14\n');
+assert.strictEqual(inlineBlockComment.sections[0].size, 4);
+assert.strictEqual(inlineBlockComment.relocations[0].offset, 0);
+assert.strictEqual(inlineBlockComment.relocations[0].debug.line, 1);
+assert.strictEqual(inlineBlockComment.relocations[0].debug.column, 5);
+const multilineBlockComment = assembleToObject([
+  'main:',
+  '  mov r1, 1',
+  '  /* ignored instruction:',
+  '  jmp phantom, r14',
+  '  */',
+  '  jmp external, r14',
+].join('\n'));
+assert.strictEqual(multilineBlockComment.sections[0].size, 8);
+assert.deepStrictEqual(multilineBlockComment.relocations.map(relocation => relocation.symbol), ['external']);
+assert.strictEqual(multilineBlockComment.relocations[0].offset, 4);
+assert.strictEqual(multilineBlockComment.relocations[0].debug.line, 6);
+assert.strictEqual(multilineBlockComment.relocations[0].debug.column, 5);
 const literal = assembleToObject('main:\n  mov r1, "A"\n');
 const numeric = assembleToObject('main:\n  mov r1, 65\n');
 assert.strictEqual(literal.sections[0].content[0], numeric.sections[0].content[0]);

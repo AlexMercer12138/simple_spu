@@ -19,7 +19,7 @@ const { SimpleCPUAssembler } = require('../out/assembler');
 
 function functionAssemblyBody(assembly, functionName) {
     const body = assembly.match(
-        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^__${functionName}_return:`, 'm'),
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^(?:__mobj_\\d+_)?__${functionName}_return:`, 'm'),
     )?.[1];
     assert.ok(body, `missing assembly body for ${functionName}`);
     return body;
@@ -37,7 +37,7 @@ assert.strictEqual(object.target, 'merc32');
 assert.strictEqual(object.abi, 'merc32-c-v1');
 assert.strictEqual(typeof object.sections[0].content, 'string');
 assert.deepStrictEqual(
-    object.symbols.filter((symbol) => symbol.defined).map((symbol) => symbol.name),
+    object.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
     ['included', 'main'],
     'typed object generation must publish each function definition',
 );
@@ -68,7 +68,7 @@ int main(void) {
 const scalarObject = compileCToObject(scalarSource, { moduleName: 'typed_scalar_api' });
 const scalarAssembly = linkObjects([scalarObject]).assembly;
 assert.deepStrictEqual(
-    scalarObject.symbols.filter((symbol) => symbol.defined).map((symbol) => symbol.name),
+    scalarObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
     ['scale', 'main'],
     'typed objects must define scalar functions with parameters and locals',
 );
@@ -176,8 +176,8 @@ const doWhileAssembly = linkObjects([
     compileCToObject(doWhileSource, { moduleName: 'typed_do_while_api' }),
 ]).assembly;
 const doWhileBody = functionAssemblyBody(doWhileAssembly, 'typed_do');
-const doBodyLabel = doWhileBody.match(/^(__typed_do_do_body_\d+):$/m)?.[1];
-const doConditionLabel = doWhileBody.match(/^(__typed_do_do_condition_\d+):$/m)?.[1];
+const doBodyLabel = doWhileBody.match(/^((?:__mobj_\d+_)?__typed_do_do_body_\d+):$/m)?.[1];
+const doConditionLabel = doWhileBody.match(/^((?:__mobj_\d+_)?__typed_do_do_condition_\d+):$/m)?.[1];
 assert.ok(doBodyLabel && doConditionLabel, 'typed do/while must emit body and condition labels');
 assert.ok(
     doWhileBody.indexOf(`${doBodyLabel}:`) < doWhileBody.indexOf(`${doConditionLabel}:`),
@@ -239,12 +239,12 @@ const switchAssembly = linkObjects([
     compileCToObject(switchSource, { moduleName: 'typed_switch_api' }),
 ]).assembly;
 const switchBody = functionAssemblyBody(switchAssembly, 'typed_switch_loop');
-const outerWhileLabel = switchBody.match(/^(__typed_switch_loop_while_\d+):$/m)?.[1];
-const outerWhileEndLabel = switchBody.match(/^(__typed_switch_loop_endwhile_\d+):$/m)?.[1];
-const switchEndLabel = switchBody.match(/^(__typed_switch_loop_switch_end_\d+):$/m)?.[1];
-const switchCaseLabels = [...switchBody.matchAll(/^(__typed_switch_loop_switch_case_\d+):$/gm)]
+const outerWhileLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_while_\d+):$/m)?.[1];
+const outerWhileEndLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_endwhile_\d+):$/m)?.[1];
+const switchEndLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_end_\d+):$/m)?.[1];
+const switchCaseLabels = [...switchBody.matchAll(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_case_\d+):$/gm)]
     .map((match) => match[1]);
-const switchDefaultLabel = switchBody.match(/^(__typed_switch_loop_switch_default_\d+):$/m)?.[1];
+const switchDefaultLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_default_\d+):$/m)?.[1];
 assert.ok(outerWhileLabel && outerWhileEndLabel && switchEndLabel && switchDefaultLabel);
 assert.strictEqual(switchCaseLabels.length, 2, 'typed switch must emit one target per case');
 assert.doesNotMatch(
@@ -300,7 +300,7 @@ const gotoAssembly = linkObjects([
     compileCToObject(gotoSource, { moduleName: 'typed_goto_api' }),
 ]).assembly;
 const gotoBody = functionAssemblyBody(gotoAssembly, 'typed_goto');
-const gotoUserLabels = [...gotoBody.matchAll(/^(__[A-Za-z0-9_]*_user_[A-Za-z0-9_]+):$/gm)]
+const gotoUserLabels = [...gotoBody.matchAll(/^((?:__mobj_\d+_)?__[A-Za-z0-9_]*_user_[A-Za-z0-9_]+):$/gm)]
     .map((match) => match[1]);
 assert.strictEqual(gotoUserLabels.length, 3, 'typed labels must be function-scoped assembly labels');
 const [backwardLabel, forwardLabel, doneLabel] = gotoUserLabels;
@@ -409,7 +409,7 @@ try {
 
     const preprocessedObject = compileCFileToObject(entry, { moduleName: 'preprocessed_object' });
     assert.deepStrictEqual(
-        preprocessedObject.symbols.filter((symbol) => symbol.defined).map((symbol) => symbol.name),
+        preprocessedObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
         ['helper', 'included', 'main'],
     );
     assert.ok(preprocessedObject.relocations.some((relocation) => relocation.symbol === 'included'));

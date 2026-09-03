@@ -19,9 +19,16 @@ export interface ResolvedSymbol { readonly symbol: ObjectSymbol; readonly object
 export type ResolvedSymbolTable = ReadonlyMap<string, ResolvedSymbol>;
 
 const sectionOrder: readonly ObjectSectionName[] = ['text', 'rodata', 'data', 'bss'];
+const maxAddress = 0xffffffff;
+const addressSpaceSize = 0x100000000;
 
 function align(address: number, alignment: number): number {
-  return Math.ceil(address / alignment) * alignment;
+  const remainder = address % alignment;
+  return remainder === 0 ? address : address + alignment - remainder;
+}
+
+function isAddress(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maxAddress;
 }
 
 function sectionsFor(object: Merc32Object): ReadonlyMap<ObjectSectionName, ObjectSection> {
@@ -120,7 +127,7 @@ export function layoutSections(objects: readonly Merc32Object[], options: Layout
   const objectSections = validateObjects(objects);
   const resolved = resolveValidatedSymbols(objects);
   const textBase = options.textBase ?? 0;
-  if (!Number.isInteger(textBase) || textBase < 0 || (options.dataBase !== undefined && (!Number.isInteger(options.dataBase) || options.dataBase < 0))) {
+  if (!isAddress(textBase) || (options.dataBase !== undefined && !isAddress(options.dataBase))) {
     throw new LinkerError('invalid section base');
   }
 
@@ -140,15 +147,32 @@ export function layoutSections(objects: readonly Merc32Object[], options: Layout
       const section = objectSections[objectIndex].get(category);
       if (!section) continue;
       const base = align(cursor, section.alignment);
-      if (section.size > 0 && occupied.some(range => base < range.end && range.start < base + section.size)) {
+      if (!isAddress(base)) {
+        throw new LinkerError('section layout exceeds 32-bit address space', undefined, objectIndex, category, base);
+      }
+      const end = base + section.size;
+      if (!Number.isSafeInteger(end) || end > addressSpaceSize) {
+        throw new LinkerError('section layout exceeds 32-bit address space', undefined, objectIndex, category, base);
+      }
+      if (section.size > 0 && occupied.some(range => base < range.end && range.start < end)) {
         throw new LinkerError('section layout overlap', undefined, objectIndex, category, base);
       }
       sections.set(`${category}:${sections.size}`, base);
       sectionAddresses.set(`${objectIndex}:${category}`, base);
-      if (section.size > 0) occupied.push({ start: base, end: base + section.size });
-      cursor = base + section.size;
+      if (section.size > 0) occupied.push({ start: base, end });
+      cursor = end;
     }
     if (category === 'data') dataCursor = cursor;
+  }
+
+  for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
+    for (const symbol of objects[objectIndex].symbols) {
+      if (!symbol.defined) continue;
+      const address = sectionAddresses.get(`${objectIndex}:${symbol.section!}`)! + symbol.offset!;
+      if (!isAddress(address)) {
+        throw new LinkerError(`symbol '${symbol.name}' address outside 32-bit address space`, symbol.name, objectIndex, symbol.section, symbol.offset);
+      }
+    }
   }
 
   const symbols = new Map<string, number>();
