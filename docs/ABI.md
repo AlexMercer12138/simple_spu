@@ -60,18 +60,22 @@ __halt:
 
 ### 3.0 链接重定位与控制流目标
 
-链接器的地址和节大小均以字节计。输入对象按对象输入顺序布局；在每个对象内，节按
-`text`、`rodata`、`data`、`bss` 顺序布局。每个节都从当前节基址向上对齐到自己的
-`alignment`，符号地址为：
+链接器的地址、节大小和符号偏移均以字节计。布局以分类优先的顺序进行：先处理所有
+对象的 `text`，再处理所有对象的 `rodata`、`data`、`bss`；每个分类内的对象节按输入
+对象顺序处理。对每个存在的对象节：
 
 ```text
-section_base = align_up(previous_section_end, section.alignment)
+section_base = align_up(cursor, section.alignment)
+cursor = section_base + section.size
 symbol_address = section_base + symbol.offset
 ```
 
-`text` 节从 `textBase`（默认 0）开始；`rodata`、`data` 和 `bss` 从 `dataBase`
-开始，并沿用上述顺序和对齐规则。重定位记录中的加数为字节加数，因此其最终目标为
-`S + A`，其中 `S` 是已布局符号的绝对字节地址，`A` 是 relocation addend。
+初始 `cursor` 为 `textBase`（默认 0）。`rodata` 分类沿用所有 `text` 分类处理后的
+cursor。进入 `data` 分类时，若调用方提供 `dataBase`，cursor 重置为 `dataBase`；否则
+沿用 `rodata` 结束后的 cursor。`bss` 分类始终沿用所有 `data` 分类处理后的 cursor；
+即使没有 `data` 节，也沿用进入 `data` 分类时的 cursor。任何已布局节的地址范围重叠
+都会被拒绝。重定位记录中的加数为字节加数，因此其最终目标为 `S + A`，其中 `S` 是
+已布局符号的绝对字节地址，`A` 是 relocation addend。
 
 JAL、BZ 和 BNZ 的控制流目的地址统一为：
 
