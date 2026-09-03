@@ -76,6 +76,7 @@ module merc32_core_tb #(
     wire [31:0] plb_wdata;
     reg  [31:0] plb_rdata = 32'd0;
     reg         plb_ack = 1'b0;
+    reg  [31:0] plb_read_value = 32'd0;
 
     reg  [31:0] program_rom [0:MEMORY_WORDS-1];
     reg  [31:0] dlb_ram [0:255];
@@ -169,7 +170,7 @@ module merc32_core_tb #(
             end
             if (dlb_rden)
                 dlb_rdata <= dlb_ram[dlb_addr[7:0]];
-            plb_rdata <= 32'd0;
+            plb_rdata <= plb_rden ? plb_read_value : 32'd0;
             plb_ack <= plb_rden | plb_wren;
         end
     end
@@ -258,12 +259,31 @@ module merc32_core_tb #(
         begin
             rst_n <= 1'b0;
             interrupt <= 1'b0;
+            plb_read_value = 32'd0;
             for (index = 0; index < 256; index = index + 1) begin
                 program_rom[index] = enc_imm(OP_IALU, FUNC_SET, 4'd0, 4'd0, 16'd0);
                 dlb_ram[index] = 32'd0;
             end
             repeat (4) @(posedge clk);
             #1 rst_n <= 1'b1;
+        end
+    endtask
+
+    task test_plb_load_writeback;
+        reg reached;
+        begin
+            prepare_case;
+            plb_read_value = 32'h5a5a_a55a;
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h1000);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd5, 4'd5, 16'd16);
+            program_rom[2] = enc_imm(OP_IMCU, FUNC_LW, 4'd4, 4'd5, 16'd0);
+
+            wait_for_pc(32'd12, reached);
+            check_reached("PLB load retires", reached);
+            if (reached) begin
+                check_value("PLB load data survives until writeback",
+                            merc32_core_inst.regi_int[4], 32'h5a5a_a55a);
+            end
         end
     endtask
 
@@ -1026,6 +1046,7 @@ module merc32_core_tb #(
             test_shift_boundaries;
             test_memory_addressing;
             test_ilb_data_access_and_execution;
+            test_plb_load_writeback;
             test_jmp_r3;
             test_interrupt_after_branch;
             test_interrupt_after_jump;

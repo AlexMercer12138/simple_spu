@@ -648,11 +648,11 @@ module merc32_core #(
                 {OPT_ALU, FUNC_REM} : alu_data <= div_rem;
                 {OPT_ALU, FUNC_REU} : alu_data <= div_rem;
                 {OPT_PCU, FUNC_JAL} : alu_data <= prog_addr + 4;
-                {OPT_MCU, FUNC_LW}  : alu_data <= load_result;
-                {OPT_MCU, FUNC_LH}  : alu_data <= load_result;
-                {OPT_MCU, FUNC_LHU} : alu_data <= load_result;
-                {OPT_MCU, FUNC_LB}  : alu_data <= load_result;
-                {OPT_MCU, FUNC_LBU} : alu_data <= load_result;
+                {OPT_MCU, FUNC_LW}  : alu_data <= cpu_ack ? load_result : alu_data;
+                {OPT_MCU, FUNC_LH}  : alu_data <= cpu_ack ? load_result : alu_data;
+                {OPT_MCU, FUNC_LHU} : alu_data <= cpu_ack ? load_result : alu_data;
+                {OPT_MCU, FUNC_LB}  : alu_data <= cpu_ack ? load_result : alu_data;
+                {OPT_MCU, FUNC_LBU} : alu_data <= cpu_ack ? load_result : alu_data;
                 default             : alu_data <= alu_data;
                 endcase
             end
