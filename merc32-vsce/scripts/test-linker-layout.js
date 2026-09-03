@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { linkObjects } = require('../out/linker');
-const { resolveSymbols, layoutSections } = require('../out/linker/resolver');
+const { resolveSymbols, layoutSections, LinkerError } = require('../out/linker/resolver');
 
 const object = (sections, symbols, relocations = [], header = {}) => ({
   version: 1,
@@ -55,6 +55,21 @@ assert.strictEqual(layout.symbols.get('aBss'), 0x110);
 assert.strictEqual(layout.symbols.get('bBss'), 0x114);
 assert.strictEqual(layout.symbols.has('private'), false, 'local names must remain object-private');
 assert.throws(() => layoutSections([a], { textBase: 0x20, dataBase: 0x20 }), /overlap/);
+
+const malformedContent = object([{ name: 'text', alignment: 4, size: 4, content: [0, 0] }], []);
+const malformedObjectError = error => error instanceof LinkerError && error.objectIndex === 0 && /size\/content/.test(error.message);
+assert.throws(() => resolveSymbols([malformedContent]), malformedObjectError);
+assert.throws(() => layoutSections([malformedContent]), malformedObjectError);
+
+const malformedRelocation = object(
+  [section('text', 4, 4)],
+  [{ name: 'target', binding: 'global', section: 'text', offset: 0, defined: true }],
+  [{ section: 'text', offset: 4, kind: 'CALL16', symbol: 'target', addend: 0, debug: { file: 'layout.masm', line: 3, column: 1 } }],
+);
+assert.throws(
+  () => resolveSymbols([malformedRelocation]),
+  error => error instanceof LinkerError && error.symbol === 'target' && error.objectIndex === 0 && error.section === 'text' && error.offset === 4 && error.debug.file === 'layout.masm',
+);
 
 const callerOnly = object(
   [section('text', 4, 4)],

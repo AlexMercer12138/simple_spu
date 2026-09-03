@@ -33,3 +33,18 @@ The complete Task 3 linker check set is GREEN:
 ## Scope and concerns
 
 Only `resolver.ts`, `test-linker-layout.js`, and the stale canonical-object integration fixture changed for Task 3. Relocation patching, linked-image assembly behavior, runtime loading, packaging, and versioning remain later work.
+
+## Review Fix Round 1
+
+RED was reproduced through the exported public API: `layoutSections` accepted a text section with `size: 4` and two numeric text words, even though the canonical object contract requires one word for four bytes.
+
+Both `resolveSymbols` and `layoutSections` now validate each object through the shared `validateObject` contract. Validation failures are wrapped in `LinkerError` with the owning object index. Focused checks cover both malformed canonical content and a relocation bounds error with symbol, section, offset, and debug metadata. Failure-only diagnostic extraction retains those linker diagnostics, and layout uses the already-validated resolution path without validating the same objects twice.
+
+GREEN verification passed:
+
+- `npm run compile`
+- `node scripts/test-linker-layout.js`
+- `node scripts/test-linker-integration.js`
+- `node scripts/test-linker-relocations.js`
+- `node scripts/test-mobj-format.js`
+- `node scripts/test-assemble-object.js`

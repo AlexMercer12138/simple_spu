@@ -1,4 +1,5 @@
-import { DebugLocation, Merc32Object, ObjectSection, ObjectSectionName, ObjectSymbol, Relocation } from './objectFormat';
+import { DebugLocation, Merc32Object, ObjectSection, ObjectSectionName, ObjectSymbol } from './objectFormat';
+import { validateObject } from './objectJson';
 
 export class LinkerError extends Error {
   constructor(
@@ -23,49 +24,57 @@ function align(address: number, alignment: number): number {
   return Math.ceil(address / alignment) * alignment;
 }
 
-function relocationWidth(relocation: Relocation): number {
-  return relocation.kind === 'ABS32' || relocation.section === 'text' ? 4 : 2;
-}
-
-function sectionsFor(object: Merc32Object, objectIndex: number): ReadonlyMap<ObjectSectionName, ObjectSection> {
+function sectionsFor(object: Merc32Object): ReadonlyMap<ObjectSectionName, ObjectSection> {
   const sections = new Map<ObjectSectionName, ObjectSection>();
   for (const section of object.sections) {
-    if (!sectionOrder.includes(section.name) || sections.has(section.name)) {
-      throw new LinkerError(`invalid section '${section.name}'`, undefined, objectIndex, section.name);
-    }
-    if (!Number.isInteger(section.size) || section.size < 0 || !Number.isInteger(section.alignment) ||
-        section.alignment <= 0 || (section.alignment & (section.alignment - 1)) !== 0) {
-      throw new LinkerError(`invalid section '${section.name}'`, undefined, objectIndex, section.name);
-    }
     sections.set(section.name, section);
   }
   return sections;
 }
 
-function validateHeadersAndBounds(objects: readonly Merc32Object[]): readonly ReadonlyMap<ObjectSectionName, ObjectSection>[] {
+function validationError(object: Merc32Object, objectIndex: number, error: unknown): LinkerError {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    if (Array.isArray(object.sections) && Array.isArray(object.symbols)) {
+      const sections = new Map(object.sections.map(section => [section.name, section]));
+      const symbol = object.symbols.find(candidate => candidate.defined &&
+        (!candidate.section || !sections.has(candidate.section) || !Number.isInteger(candidate.offset) ||
+         candidate.offset! < 0 || candidate.offset! > sections.get(candidate.section)!.size));
+      if (symbol) {
+        return new LinkerError(`symbol '${symbol.name}' offset outside section`, symbol.name, objectIndex, symbol.section, symbol.offset);
+      }
+      if (Array.isArray(object.relocations)) {
+        const relocation = object.relocations.find(candidate => {
+          const section = sections.get(candidate.section);
+          const width = candidate.kind === 'ABS32' || candidate.section === 'text' ? 4 : 2;
+          return !section || !Number.isInteger(candidate.offset) || candidate.offset < 0 || candidate.offset + width > section.size;
+        });
+        if (relocation) {
+          return new LinkerError(`relocation '${relocation.symbol}' offset outside section`, relocation.symbol, objectIndex, relocation.section, relocation.offset, relocation.debug);
+        }
+      }
+    }
+  } catch {
+    // The original validation error is the only reliable diagnostic for malformed table shapes.
+  }
+  return new LinkerError(message, undefined, objectIndex);
+}
+
+function validateObjects(objects: readonly Merc32Object[]): readonly ReadonlyMap<ObjectSectionName, ObjectSection>[] {
   const objectSections: ReadonlyMap<ObjectSectionName, ObjectSection>[] = [];
   const abi = objects[0]?.abi;
   for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
     const object = objects[objectIndex];
+    if (!object) throw new LinkerError('invalid MERC32 object', undefined, objectIndex);
     if (object.version !== 1) throw new LinkerError('version mismatch', undefined, objectIndex);
     if (object.target !== 'merc32') throw new LinkerError('target mismatch', undefined, objectIndex);
     if (typeof object.abi !== 'string' || object.abi !== abi) throw new LinkerError('abi mismatch', undefined, objectIndex);
-
-    const sections = sectionsFor(object, objectIndex);
-    objectSections.push(sections);
-    for (const symbol of object.symbols) {
-      if (!symbol.defined) continue;
-      const section = symbol.section === undefined ? undefined : sections.get(symbol.section);
-      if (!section || !Number.isInteger(symbol.offset) || symbol.offset! < 0 || symbol.offset! > section.size) {
-        throw new LinkerError(`symbol '${symbol.name}' offset outside section`, symbol.name, objectIndex, symbol.section, symbol.offset);
-      }
+    try {
+      validateObject(object);
+    } catch (error) {
+      throw validationError(object, objectIndex, error);
     }
-    for (const relocation of object.relocations) {
-      const section = sections.get(relocation.section);
-      if (!section || !Number.isInteger(relocation.offset) || relocation.offset < 0 || relocation.offset + relocationWidth(relocation) > section.size) {
-        throw new LinkerError(`relocation '${relocation.symbol}' offset outside section`, relocation.symbol, objectIndex, relocation.section, relocation.offset, relocation.debug);
-      }
-    }
+    objectSections.push(sectionsFor(object));
   }
   return objectSections;
 }
@@ -74,8 +83,7 @@ function localDefinition(object: Merc32Object, name: string): ObjectSymbol | und
   return object.symbols.find(symbol => symbol.name === name && symbol.binding === 'local' && symbol.defined);
 }
 
-export function resolveSymbols(objects: readonly Merc32Object[]): ResolvedSymbolTable {
-  validateHeadersAndBounds(objects);
+function resolveValidatedSymbols(objects: readonly Merc32Object[]): ResolvedSymbolTable {
   const table = new Map<string, ResolvedSymbol>();
   for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
     for (const symbol of objects[objectIndex].symbols) {
@@ -95,6 +103,11 @@ export function resolveSymbols(objects: readonly Merc32Object[]): ResolvedSymbol
   return table;
 }
 
+export function resolveSymbols(objects: readonly Merc32Object[]): ResolvedSymbolTable {
+  validateObjects(objects);
+  return resolveValidatedSymbols(objects);
+}
+
 export interface LayoutResult {
   readonly sections: ReadonlyMap<string, number>;
   readonly symbols: ReadonlyMap<string, number>;
@@ -104,8 +117,8 @@ export interface LayoutResult {
 export interface LayoutOptions { readonly textBase?: number; readonly dataBase?: number; }
 
 export function layoutSections(objects: readonly Merc32Object[], options: LayoutOptions = {}): LayoutResult {
-  const objectSections = validateHeadersAndBounds(objects);
-  const resolved = resolveSymbols(objects);
+  const objectSections = validateObjects(objects);
+  const resolved = resolveValidatedSymbols(objects);
   const textBase = options.textBase ?? 0;
   if (!Number.isInteger(textBase) || textBase < 0 || (options.dataBase !== undefined && (!Number.isInteger(options.dataBase) || options.dataBase < 0))) {
     throw new LinkerError('invalid section base');
