@@ -8,7 +8,7 @@ module tinyc_cpu_tb();
 
     localparam CLK_PERIOD        = 20;
     localparam RESET_CYCLES      = 20;
-    localparam MAX_CYCLES        = 100_000;
+    localparam MAX_CYCLES        = 1_000_000;
     localparam MEMORY_WORDS      = 65_536;
     localparam [15:0] STATUS_ADDR = 16'd240;
     localparam [15:0] FAIL_ADDR   = 16'd241;

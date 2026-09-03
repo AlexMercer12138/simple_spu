@@ -11,7 +11,7 @@ const hardwareTests = [
     {
         name: 'merc32_core',
         top: 'merc32_core_tb',
-        marker: 'TEST PASS: merc32_core checks=358',
+        marker: 'TEST PASS: merc32_core checks=362',
         rtlFiles: [
             ['rtl', 'misc', 'mul.v'],
             ['rtl', 'misc', 'div.v'],

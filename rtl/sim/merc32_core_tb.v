@@ -18,6 +18,7 @@ module merc32_core_tb #(
     localparam [3:0] OP_RMCU             = 4'h5;
 
     localparam [3:0] FUNC_SET            = 4'h0;
+    localparam [3:0] FUNC_ADD            = 4'h1;
     localparam [3:0] FUNC_SUB            = 4'h2;
     localparam [3:0] FUNC_SLL            = 4'h6;
     localparam [3:0] FUNC_SRL            = 4'h7;
@@ -731,7 +732,14 @@ module merc32_core_tb #(
             program_rom[4] = enc_imm(OP_IALU, FUNC_SLL, 4'd8, 4'd4, 16'd31);
             program_rom[5] = enc_reg(OP_RALU, FUNC_SRL, 4'd9, 4'd8, 4'd5);
             program_rom[6] = enc_reg(OP_RALU, FUNC_SRA, 4'd10, 4'd8, 4'd5);
-            wait_for_pc(32'd28, reached);
+            program_rom[7] = enc_imm(OP_IALU, FUNC_ADD, 4'd8, 4'd8, 16'd1);
+            program_rom[8] = enc_imm(OP_IALU, FUNC_SRA, 4'd13, 4'd8, 16'd1);
+            program_rom[9] = enc_imm(OP_IALU, FUNC_SRA, 4'd14, 4'd8, 16'd31);
+            program_rom[10] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'd1);
+            program_rom[11] = enc_reg(OP_RALU, FUNC_SRA, 4'd11, 4'd8, 4'd5);
+            program_rom[12] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'd31);
+            program_rom[13] = enc_reg(OP_RALU, FUNC_SRA, 4'd12, 4'd8, 4'd5);
+            wait_for_pc(32'd56, reached);
             check_reached("large shift cases retire", reached);
             if (reached) begin
                 check_value("immediate left shift by 32 returns zero",
@@ -742,6 +750,14 @@ module merc32_core_tb #(
                             merc32_core_inst.regi_int[9], 32'd0);
                 check_value("register arithmetic right shift by 32 sign fills",
                             merc32_core_inst.regi_int[10], 32'hffff_ffff);
+                check_value("immediate arithmetic right shift by 1 sign fills",
+                            merc32_core_inst.regi_int[13], 32'hc000_0000);
+                check_value("immediate arithmetic right shift by 31 sign fills",
+                            merc32_core_inst.regi_int[14], 32'hffff_ffff);
+                check_value("register arithmetic right shift by 1 sign fills",
+                            merc32_core_inst.regi_int[11], 32'hc000_0000);
+                check_value("register arithmetic right shift by 31 sign fills",
+                            merc32_core_inst.regi_int[12], 32'hffff_ffff);
             end
         end
     endtask

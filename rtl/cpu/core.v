@@ -269,6 +269,7 @@ module merc32_core #(
     wire    signed  [31:0]              add_result;
     wire            [32:0]              subtract_wide;
     wire    signed  [31:0]              subtract_result;
+    wire    signed  [31:0]              arithmetic_shift_result;
     wire                                compare_equal;
     wire                                compare_signed_less;
     wire                                compare_unsigned_less;
@@ -437,6 +438,7 @@ module merc32_core #(
     assign  add_result = operand_a + operand_b;
     assign  subtract_wide = {1'b0, operand_a} - {1'b0, operand_b};
     assign  subtract_result = subtract_wide[31:0];
+    assign  arithmetic_shift_result = operand_a >>> operand_b[4:0];
     assign  compare_equal = operand_a == operand_b;
     assign  compare_signed_less = (operand_a[31] != operand_b[31])
                                 ? operand_a[31] : subtract_result[31];
@@ -633,7 +635,7 @@ module merc32_core #(
                                                  : operand_a >> operand_b[4:0];
                 {OPT_ALU, FUNC_SRA} : alu_data <= shift_out_of_range
                                                  ? {32{operand_a[31]}}
-                                                 : operand_a >>> operand_b[4:0];
+                                                 : arithmetic_shift_result;
                 {OPT_ALU, FUNC_MUL} : alu_data <= mul_res[31:0];
                 {OPT_ALU, FUNC_DIV} : alu_data <= div_quo;
                 {OPT_ALU, FUNC_DIU} : alu_data <= div_quo;
