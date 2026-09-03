@@ -373,3 +373,101 @@ Files changed in this wave:
 - this report
 
 No other deferred finding was changed. Concerns: none.
+
+## Third Fix Cycle
+
+This explicitly authorized follow-up fixes only the UTF-16 indexing defect in
+the comment masker introduced by `ff24108`. The scanner indexed the source by
+UTF-16 code units (`line.length` and `line[index]`) but built its mutable mask
+with code-point slots (`[...line]`). A non-BMP character before a comment
+delimiter shifted mask writes and could leave a slash in otherwise masked
+source.
+
+### TDD evidence
+
+Focused coverage was added to
+`merc32-vsce/scripts/test-assemble-object.js`:
+
+- The lexical line `mov r1, "😀" // trailing` must retain the exact input
+  UTF-16 length and prefix through the original `//` column, then contain only
+  spaces through the end of the masked suffix.
+- A CRLF object uses the supported escaped two-byte immediate `"\\\"/"`, then
+  `/* 😀 */ // trailing`, followed by `jmp external, r14`. Every masked
+  line must retain its exact UTF-16 length; the object must contain eight text
+  bytes and one `CALL16` relocation at offset 4 with debug line 3, column 5.
+
+The emoji-quoted form is asserted at the lexical-mask boundary because MERC32
+quoted immediates encode only one or two byte-valued characters. The real
+assembly regression therefore uses a supported two-byte quoted immediate while
+placing the non-BMP character before the line-comment delimiter in a block
+comment.
+
+RED:
+
+```text
+npm run compile; node scripts/test-assemble-object.js
+exit 1
+AssertionError: Expected values to be strictly equal:
+actual:   '/          '
+expected: '           '
+test-assemble-object.js:40
+```
+
+The production correction is limited to constructing the mutable mask with
+`line.split('')`, whose slots correspond to the UTF-16 code units used by the
+existing scanner indices. Token precedence, quote/escape states, cross-line
+block state, and space masking are unchanged.
+
+Focused GREEN:
+
+```text
+npm run compile
+exit 0
+node scripts/test-assemble-object.js
+exit 0: assemble object tests passed
+node scripts/test-linker-relocations.js
+exit 0: linker relocation tests passed
+node scripts/test-linker-integration.js
+exit 0: linker integration tests passed
+```
+
+These focused runs include the existing escaped-quote, `// /*`, quoted marker,
+inline/multiline block comment, relocation offset, CRLF, and debug-column
+coverage.
+
+### Complete Task 6 verification
+
+The following commands were rerun from `merc32-vsce`; all 17 exited 0:
+
+```text
+npm test
+npm run test:c
+npm run test:c:preprocessor
+npm run test:c:rtl
+node scripts/test-c-integration.js
+node scripts/test-c-typed-rtl.js
+node scripts/test-mobj-format.js
+node scripts/test-assemble-object.js
+node scripts/test-linker-integration.js
+node scripts/test-linker-layout.js
+node scripts/test-linker-relocations.js
+node scripts/test-runtime-packaging.js
+node scripts/test-linker-runtime-execution.js
+node scripts/test-runtime-startup.js
+node scripts/test-runtime-integer.js
+node scripts/test-runtime-float32.js
+node scripts/test-runtime-float64-abi.js
+```
+
+Fresh results include 6/6 legacy C RTL simulations, typed C RTL execution,
+cross-object linker runtime execution, and all runtime packaging/reference/ABI
+suites. Repository-root `git diff --check` exited 0 before staging.
+
+Files changed in this cycle:
+
+- `merc32-vsce/src/linker/sourceText.ts`
+- `merc32-vsce/scripts/test-assemble-object.js`
+- this report
+
+The older `assemble()` multiline scanner and all other deferred items remain
+untouched. Concerns: none.

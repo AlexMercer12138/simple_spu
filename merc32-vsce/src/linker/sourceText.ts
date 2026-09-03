@@ -2,7 +2,7 @@ export function maskAssemblyComments(source: string): string[] {
   const maskedLines: string[] = [];
   let inBlockComment = false;
   for (const line of source.split(/\r?\n/)) {
-    const masked = [...line];
+    const masked = line.split('');
     let inQuote = false;
     let escaped = false;
     for (let index = 0; index < line.length; index++) {
