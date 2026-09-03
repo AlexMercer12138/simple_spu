@@ -132,14 +132,14 @@ The first implementation supports these kinds:
 
 | Kind | Use | Required behavior |
 |---|---|---|
-| `CALL16` | near `jmp symbol, r14` | Encode the signed/unsigned ISA target field from the final byte address; reject only when the near form is not representable and no far form is available. |
-| `BRANCH16` | `bz`/`bnz` symbolic target | Encode PC-relative branch displacement with range checking. |
+| `CALL16` | near `jmp symbol, r14` with `r0` as the base | Encode the final absolute byte address plus addend as an unsigned 16-bit target. Reject unaligned or out-of-range targets. |
+| `BRANCH16` | `bz`/`bnz` symbolic target with `r0` as the base | Encode the final absolute byte address plus addend as an unsigned 16-bit target. Reject unaligned or out-of-range targets. |
 | `ABS32` | full data/function address | Write the resolved 32-bit address plus addend. |
 | `HI16` | high half of an address | Write bits 31..16 of the resolved value plus addend according to the documented split rule. |
 | `LO16` | low half of an address | Write bits 15..0 of the resolved value plus addend according to the documented split rule. |
 | `IMM16` | symbolic immediate field | Patch the immediate field and diagnose overflow. |
 
-Near/far lowering is correctness-first. If a direct 16-bit form cannot represent the target, the linker emits or selects an ABI-approved scratch-register sequence for a far call or far branch. Scratch registers may not be `r0-r3`, `r12`, `r13`, `r14`, or any register carrying a live ABI value. The exact instruction transformation and range equations are covered by golden tests before implementation is considered complete.
+MERC32 `JAL`, `BZ`, and `BNZ` compute their destination as `R[rs2] + zero_extend(imm16)`; they are not PC-relative. This foundation emits only the fixed-width direct form whose object producer selected. It reports a deterministic `LinkerError` when an absolute target does not fit in 16 bits rather than inserting words after layout has frozen offsets. Far control flow is a follow-up feature: the object producer must emit a fixed-size long-form template using `HI16`/`LO16`, after the ABI explicitly reserves a scratch register and the compiler stops allocating live values to it. No scratch register is implicitly claimed in this phase.
 
 `applyRelocations(layout)` returns patched canonical content and the number of applied records. It must not merely concatenate source text or count records.
 

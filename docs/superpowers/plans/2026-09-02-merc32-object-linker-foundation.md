@@ -166,7 +166,7 @@ git commit -m "feat: resolve symbols and lay out MERC32 sections"
 
 - [ ] **Step 1: Write failing relocation tests**
 
-Build synthetic objects containing one instruction/data field for each relocation kind. Assert the patched machine word/data value, addend handling, out-of-range diagnostics, and `relocationsApplied === records.length`. Add near and far target cases with exact expected instruction sequences.
+Build synthetic objects containing one instruction/data field for each relocation kind. Assert the patched machine word/data value, addend handling, out-of-range diagnostics, and `relocationsApplied === records.length`. Add near absolute control-flow targets and far targets with exact overflow diagnostics.
 
 ```js
 const image = linkObjects([caller, callee], { entrySymbol: 'start' });
@@ -181,7 +181,7 @@ Expected: FAIL because `applyRelocations` currently concatenates source text and
 
 - [ ] **Step 3: Implement relocation application**
 
-Patch complete 32-bit words or byte fields at section-relative offsets. Compute branch displacement from the documented PC convention, encode near calls/branches when representable, and emit the documented far sequence using an approved scratch register when not. Implement `ABS32`, `HI16`, `LO16`, `IMM16`, `CALL16`, and `BRANCH16`; preserve debug locations in `LinkerError` messages.
+Patch complete 32-bit words or byte fields at section-relative offsets. Encode `CALL16` and `BRANCH16` as the ISA's absolute unsigned 16-bit byte target when the instruction uses `r0` as its base; reject unaligned or out-of-range targets without changing section length. Implement `ABS32`, `HI16`, `LO16`, `IMM16`, `CALL16`, and `BRANCH16`; preserve debug locations in `LinkerError` messages. Fixed-size far templates and scratch-register reservation are explicitly deferred.
 
 - [ ] **Step 4: Implement linked image assembly and machine words**
 
@@ -264,7 +264,7 @@ Expected: FAIL because current linker leaves symbolic calls unresolved in emitte
 
 - [ ] **Step 3: Implement only test-facing glue/documentation**
 
-Use the public linker API, avoid changing RTL, and document the exact PC-relative displacement and section-base equations in `docs/ABI.md` so future backend/runtime work emits compatible relocation records.
+Use the public linker API, avoid changing RTL, and document the exact absolute target equation (`R[r0] + zero_extend(imm16)`) and section-base equations in `docs/ABI.md` so future backend/runtime work emits compatible relocation records.
 
 - [ ] **Step 4: Run the complete foundation matrix**
 
