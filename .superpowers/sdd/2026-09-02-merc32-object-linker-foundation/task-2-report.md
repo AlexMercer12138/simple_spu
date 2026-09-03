@@ -23,3 +23,19 @@ GREEN and regression checks passed:
 ## Scope and concerns
 
 Only `assembleObject.ts` and `test-assemble-object.js` were changed for the implementation. Canonical text words are now stored numerically as required by the object contract; linked assembly text preservation and relocation application remain later linker work.
+
+## Review fix round 1
+
+Added `ObjectSection.source` and `entryLabel` metadata so normalized numeric content remains authoritative while preprocessed assembly and entry information remain inspectable. Assembly normalization now runs `AssemblerPreprocessor`, preserving `.equ`, macros, and related preprocessing behavior without injecting an entry reset instruction.
+
+Symbol scanning and replacement are quote-aware, symbolic address expressions such as `jmp r2 + target, r14` emit `CALL16`, and relocation debug columns identify the actual operand. Labels default to local binding; callers can explicitly export names with `options.exports` (the `.entry` label is also exported).
+
+RED was observed after adding the fix-round assertions: register operands were initially replaced as symbols and address-form relocation metadata/contract fields were absent.
+
+GREEN and regression checks passed:
+
+- `npm run compile`
+- `node scripts/test-assemble-object.js`
+- `node scripts/test-mobj-format.js`
+- `npm test`
+- `npm run test:c`

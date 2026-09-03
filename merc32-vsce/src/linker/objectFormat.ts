@@ -6,6 +6,8 @@ export interface ObjectSection {
     readonly alignment: number;
     readonly size: number;
     readonly content?: readonly number[] | string;
+    readonly source?: string;
+    readonly entryLabel?: string;
 }
 
 /** Normalize a section's canonical numeric payload; text entries are words. */
