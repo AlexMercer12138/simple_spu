@@ -1,16 +1,51 @@
+import { readFileSync } from 'fs';
 import { Merc32Object } from './objectFormat';
-import { validateObject } from './objectJson';
-import { layoutSections, resolveSymbols } from './resolver';
+import { deserializeObject, validateObject } from './objectJson';
+import { applyRelocations } from './relocations';
+import { LayoutOptions, layoutSections, LinkerError, resolveSymbols } from './resolver';
 
-export interface LinkedImage { readonly assembly: string; readonly symbols: ReadonlyMap<string, number>; }
-
-export function linkObjects(objects: readonly Merc32Object[]): LinkedImage {
-  objects.forEach(validateObject);
-  resolveSymbols(objects);
-  const layout = layoutSections(objects);
-  const chunks: string[] = [];
-  for (const object of objects) for (const section of object.sections) if (section.name === 'text' && typeof section.content === 'string') chunks.push(section.content);
-  return { assembly: chunks.join('\n'), symbols: layout.symbols };
+export interface LinkOptions extends LayoutOptions { readonly entrySymbol?: string; }
+export interface LinkedImage {
+  readonly assembly: string;
+  readonly machineCodes?: readonly number[];
+  readonly symbols: ReadonlyMap<string, number>;
+  readonly entryAddress?: number;
 }
 
-export function linkFiles(objects: readonly Merc32Object[]): LinkedImage { return linkObjects(objects); }
+export function linkObjects(objects: readonly Merc32Object[], options: LinkOptions = {}): LinkedImage {
+  objects.forEach(validateObject);
+  resolveSymbols(objects);
+  const layout = layoutSections(objects, options);
+  const linked = applyRelocations(layout);
+  const textSections = linked.sections.filter(section => section.name === 'text');
+  const encodable = objects.every(object => object.sections
+    .filter(section => section.name === 'text')
+    .every(section => Array.isArray(section.content)));
+  let machineCodes: number[] | undefined;
+  if (encodable && textSections.length > 0) {
+    machineCodes = [];
+    let address = textSections[0].address;
+    for (const section of textSections) {
+      while (address < section.address) {
+        machineCodes.push(0);
+        address += 4;
+      }
+      machineCodes.push(...section.content.map(word => word >>> 0));
+      address += section.content.length * 4;
+    }
+  }
+  const entryAddress = options.entrySymbol === undefined ? undefined : layout.symbols.get(options.entrySymbol);
+  if (options.entrySymbol !== undefined && entryAddress === undefined) {
+    throw new LinkerError(`entry symbol '${options.entrySymbol}' not found`, options.entrySymbol);
+  }
+  return {
+    assembly: linked.assembly,
+    ...(machineCodes ? { machineCodes } : {}),
+    symbols: layout.symbols,
+    ...(entryAddress !== undefined ? { entryAddress } : {}),
+  };
+}
+
+export function linkFiles(files: readonly string[], options?: LinkOptions): LinkedImage {
+  return linkObjects(files.map(file => deserializeObject(readFileSync(file, 'utf8'))), options);
+}
