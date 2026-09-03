@@ -45,13 +45,58 @@ function withRuntimeManifest(value, run) {
   }
 }
 
-withRuntimeManifest({ abi: manifest.abi, objects: [{ file: 'startup.asm', exports: ['missing'] }], symbols: ['missing'] }, tempRoot => {
+withRuntimeManifest({ ...manifest, version: 2 }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /invalid runtime manifest version/);
+});
+withRuntimeManifest({ ...manifest, target: 'other-target' }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /invalid runtime manifest target/);
+});
+withRuntimeManifest({ ...manifest, abi: '' }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /invalid runtime manifest ABI/);
+});
+withRuntimeManifest({ ...manifest, symbols: manifest.symbols.slice(1) }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /runtime manifest symbols must match object exports/);
+});
+withRuntimeManifest({ ...manifest, symbols: [...manifest.symbols.slice(1), manifest.symbols[1]] }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /runtime manifest symbols must match object exports/);
+});
+withRuntimeManifest({ ...manifest, symbols: [...manifest.symbols, 'extra'] }, tempRoot => {
+  assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /runtime manifest symbols must match object exports/);
+});
+withRuntimeManifest({ ...manifest, objects: [{ file: '../outside.asm', exports: ['startup'] }], symbols: ['startup'] }, tempRoot => {
+  assert.throws(
+    () => loadRuntimeObjects({ root: tempRoot }),
+    error => error instanceof Error && error.message === "invalid runtime object file '../outside.asm'",
+  );
+});
+withRuntimeManifest({ ...manifest, objects: [{ file: 'missing.asm', exports: ['startup'] }], symbols: ['startup'] }, tempRoot => {
+  assert.throws(
+    () => loadRuntimeObjects({ root: tempRoot }),
+    error => error instanceof Error && error.message === "invalid runtime object file 'missing.asm'",
+  );
+});
+withRuntimeManifest({ ...manifest, objects: [{ file: 'directory.asm', exports: ['startup'] }], symbols: ['startup'] }, tempRoot => {
+  fs.mkdirSync(path.join(tempRoot, 'directory.asm'));
+  assert.throws(
+    () => loadRuntimeObjects({ root: tempRoot }),
+    error => error instanceof Error && error.message === "invalid runtime object file 'directory.asm'",
+  );
+});
+withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.txt', exports: ['startup'] }], symbols: ['startup'] }, tempRoot => {
+  fs.copyFileSync(path.join(tempRoot, 'startup.asm'), path.join(tempRoot, 'startup.txt'));
+  assert.throws(
+    () => loadRuntimeObjects({ root: tempRoot }),
+    error => error instanceof Error && error.message === "invalid runtime object file 'startup.txt'",
+  );
+});
+
+withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.asm', exports: ['missing'] }], symbols: ['missing'] }, tempRoot => {
   assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /runtime export 'missing' is not defined by 'startup.asm'/);
 });
-withRuntimeManifest({ abi: manifest.abi, objects: [{ file: 'startup.asm', exports: ['startup', 'startup'] }], symbols: ['startup'] }, tempRoot => {
+withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.asm', exports: ['startup', 'startup'] }], symbols: ['startup'] }, tempRoot => {
   assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /duplicate runtime export 'startup'/);
 });
-withRuntimeManifest({ abi: manifest.abi, objects: [{ file: 'startup.asm' }], symbols: [] }, tempRoot => {
+withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.asm' }], symbols: [] }, tempRoot => {
   assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /invalid runtime object exports for 'startup.asm'/);
 });
 
