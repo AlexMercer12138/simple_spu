@@ -31,10 +31,10 @@
 - Consumes: existing ILB local-bus request and acknowledgement ports
 - Produces: ordinary `lw/lh/lhu/lb/lbu/sw/sh/sb` transactions targeting ILB
 
-- [ ] Add an RTL test program that stores an encoded instruction to ILB, reads it back, jumps to it, and checks the executed result.
-- [ ] Run `npm run test:hardware` and verify the new check fails because CPU data transactions to ILB never assert `ilb_wren` or complete.
-- [ ] Add fetch/data/debug request-origin state, permit CPU data requests to target ILB, route acknowledgement by origin, and capture instructions only for fetch responses.
-- [ ] Run `npm run test:hardware` and verify all hardware tests pass with the updated core check count.
+- [x] Add an RTL test program that stores an encoded instruction to ILB, reads it back, jumps to it, and checks the executed result.
+- [x] Run `npm run test:hardware` and verify the new check fails because CPU data transactions to ILB never assert `ilb_wren` or complete.
+- [x] Add fetch/data/debug request-origin state, permit CPU data requests to target ILB, route acknowledgement by origin, and capture instructions only for fetch responses.
+- [x] Run `npm run test:hardware` and verify all hardware tests pass with the updated core check count.
 - [ ] Commit the RTL and test changes.
 
 ### Task 2: Relocatable Assembly And Dynamic Jump
@@ -118,4 +118,3 @@
 - [ ] Run `git diff --check` and inspect `git status --short`.
 - [ ] Record that VKS tools were unavailable and whether the fallback simulator exposed any new VKS-related issue.
 - [ ] Request a focused code review, resolve all critical and important findings, and rerun the affected suites.
-

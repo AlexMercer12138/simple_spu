@@ -190,6 +190,11 @@ module merc32_core #(
     localparam  BUS_DLB                 = 2'd2;
     localparam  BUS_PLB                 = 2'd3;
 
+    localparam  REQ_NONE                = 2'd0;
+    localparam  REQ_FETCH               = 2'd1;
+    localparam  REQ_DATA                = 2'd2;
+    localparam  REQ_DEBUG               = 2'd3;
+
     initial begin
         if ((ILB_ADDR_WIDTH < 1) || (ILB_ADDR_WIDTH > 25)) begin
             $display("CONFIG ERROR: ILB_ADDR_WIDTH must be in range 1..25");
@@ -260,7 +265,7 @@ module merc32_core #(
     reg                                 bus_req_rden;
     reg                                 bus_req_wren;
     reg     [1:0]                       bus_req_target;
-    reg                                 bus_req_debug;
+    reg     [1:0]                       bus_req_origin;
     reg     [31:0]                      bus_req_addr;
     reg     [3:0]                       bus_req_strb;
     reg     [31:0]                      bus_req_wdata;
@@ -504,7 +509,7 @@ module merc32_core #(
     // Register the instruction response before any decode or register-file
     // selection so BRAM clock-to-output delay ends at this pipeline stage.
     always @(posedge clk) begin
-        if(ilb_ack) begin
+        if((bus_req_origin == REQ_FETCH) && ilb_ack) begin
             instruction <= ilb_rdata;
         end
     end
@@ -784,14 +789,14 @@ module merc32_core #(
             bus_req_rden <= 1'b0;
             bus_req_wren <= 1'b0;
             bus_req_target <= BUS_NONE;
-            bus_req_debug <= 1'b0;
+            bus_req_origin <= REQ_NONE;
         end else begin
             bus_req_rden <= 1'b0;
             bus_req_wren <= 1'b0;
 
             if(dbg_halted && (dbg_rden || dbg_wren)) begin
                 bus_req_target <= decode_bus_target(dbg_addr);
-                bus_req_debug <= 1'b1;
+                bus_req_origin <= REQ_DEBUG;
                 bus_req_addr <= dbg_addr;
                 bus_req_strb <= dbg_strb;
                 bus_req_wdata <= dbg_wdata;
@@ -803,19 +808,18 @@ module merc32_core #(
                 bus_req_rden <= 1'b1;
                 bus_req_wren <= 1'b0;
                 bus_req_target <= BUS_ILB;
-                bus_req_debug <= 1'b0;
+                bus_req_origin <= REQ_FETCH;
                 bus_req_addr <= prog_addr;
                 bus_req_strb <= 4'b1111;
                 bus_req_wdata <= 32'h0;
             end else if(!dbg_halted && (cpu_rden || cpu_wren)) begin
                 bus_req_target <= decode_bus_target(exec_baddr);
-                bus_req_debug <= 1'b0;
+                bus_req_origin <= REQ_DATA;
                 bus_req_addr <= exec_baddr;
                 bus_req_strb <= store_strobe(fun, exec_baddr[1:0]);
                 bus_req_wdata <= format_store_data(fun, exec_baddr[1:0],
                                                    operand_d);
-                if((decode_bus_target(exec_baddr) == BUS_DLB) ||
-                   (decode_bus_target(exec_baddr) == BUS_PLB)) begin
+                if(decode_bus_target(exec_baddr) != BUS_NONE) begin
                     bus_req_rden <= cpu_rden;
                     bus_req_wren <= cpu_wren;
                 end
@@ -830,10 +834,9 @@ module merc32_core #(
             dbg_ack <= 1'b0;
             dbg_rdata <= 32'h0;
         end else begin
-            cpu_ack <= !bus_req_debug && bus_ack &&
-                       (bus_req_target != BUS_ILB);
+            cpu_ack <= (bus_req_origin == REQ_DATA) && bus_ack;
             cpu_rdata <= bus_rdata;
-            dbg_ack <= bus_req_debug && bus_ack;
+            dbg_ack <= (bus_req_origin == REQ_DEBUG) && bus_ack;
             dbg_rdata <= bus_rdata;
         end
     end

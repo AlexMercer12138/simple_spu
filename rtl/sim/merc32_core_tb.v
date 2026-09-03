@@ -20,12 +20,14 @@ module merc32_core_tb #(
     localparam [3:0] FUNC_SET            = 4'h0;
     localparam [3:0] FUNC_ADD            = 4'h1;
     localparam [3:0] FUNC_SUB            = 4'h2;
+    localparam [3:0] FUNC_OR             = 4'h4;
     localparam [3:0] FUNC_SLL            = 4'h6;
     localparam [3:0] FUNC_SRL            = 4'h7;
     localparam [3:0] FUNC_SRA            = 4'h8;
     localparam [3:0] FUNC_BEZ            = 4'ha;
     localparam [3:0] FUNC_BNZ            = 4'hb;
     localparam [3:0] FUNC_JAL            = 4'hc;
+    localparam [3:0] FUNC_LW             = 4'h0;
     localparam [3:0] FUNC_SW             = 4'h5;
 
     localparam [3:0] CMP_EQ              = 4'd0;
@@ -148,6 +150,12 @@ module merc32_core_tb #(
             plb_ack <= 1'b0;
         end else begin
             ilb_ack <= ilb_rden | ilb_wren;
+            if (ilb_wren) begin
+                if (ilb_strb[0]) program_rom[ilb_addr][7:0] <= ilb_wdata[7:0];
+                if (ilb_strb[1]) program_rom[ilb_addr][15:8] <= ilb_wdata[15:8];
+                if (ilb_strb[2]) program_rom[ilb_addr][23:16] <= ilb_wdata[23:16];
+                if (ilb_strb[3]) program_rom[ilb_addr][31:24] <= ilb_wdata[31:24];
+            end
             if (ilb_rden)
                 ilb_rdata <= program_rom[ilb_addr];
             dlb_ack <= dlb_rden | dlb_wren;
@@ -254,6 +262,31 @@ module merc32_core_tb #(
             end
             repeat (4) @(posedge clk);
             #1 rst_n <= 1'b1;
+        end
+    endtask
+
+    task test_ilb_data_access_and_execution;
+        reg reached;
+        begin
+            prepare_case;
+            program_rom[0] = enc_imm(OP_IALU, FUNC_SET, 4'd4, 4'd0, 16'h002a);
+            program_rom[1] = enc_imm(OP_IALU, FUNC_SLL, 4'd4, 4'd4, 16'd16);
+            program_rom[2] = enc_imm(OP_IALU, FUNC_OR, 4'd4, 4'd4, 16'h0a00);
+            program_rom[3] = enc_imm(OP_IALU, FUNC_SET, 4'd5, 4'd0, 16'h0100);
+            program_rom[4] = enc_imm(OP_IMCU, FUNC_SW, 4'd4, 4'd5, 16'd0);
+            program_rom[5] = enc_imm(OP_IMCU, FUNC_LW, 4'd6, 4'd5, 16'd0);
+            program_rom[6] = enc_reg(OP_RPCU, FUNC_JAL, 4'd0, 4'd0, 4'd5);
+
+            wait_for_pc(32'h0000_0104, reached);
+            check_reached("ILB-written instruction executes", reached);
+            if (reached) begin
+                check_value("ILB store writes instruction memory",
+                            program_rom[64], 32'h002a_0a00);
+                check_value("ILB load returns stored instruction",
+                            merc32_core_inst.regi_int[6], 32'h002a_0a00);
+                check_value("jump executes stored ILB instruction",
+                            merc32_core_inst.regi_int[10], 32'h0000_002a);
+            end
         end
     endtask
 
@@ -953,6 +986,7 @@ module merc32_core_tb #(
             test_register_writes;
             test_shift_boundaries;
             test_memory_addressing;
+            test_ilb_data_access_and_execution;
             test_jmp_r3;
             test_interrupt_after_branch;
             test_interrupt_after_jump;
