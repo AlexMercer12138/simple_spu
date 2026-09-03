@@ -96,12 +96,12 @@
 - Consumes: `apb_qspi` register interface, writable ILB, `.org`, `__jump`, and the flash image header
 - Produces: buildable bootloader source resident at ILB address zero
 
-- [ ] Add a build test that compiles and assembles the reference bootloader and asserts its origin, entry, QSPI read command, status writes, CRC polynomial, and final indirect jump.
-- [ ] Run the bootloader test and verify it fails because the reference source is absent.
-- [ ] Implement bounded QSPI polling, header validation, chunked payload reads, big-endian word assembly, ILB stores, CRC32 verification, success/failure status, and final `__jump`.
-- [ ] Run the bootloader test and verify it passes.
-- [ ] Document bootloader constants, flash programming workflow, and application `codeBase=0x1000` requirement.
-- [ ] Commit the bootloader and documentation changes.
+- [x] Add a build test that compiles and assembles the reference bootloader and asserts its origin, entry, QSPI read command, status writes, CRC polynomial, and final indirect jump.
+- [x] Run the bootloader test and verify it fails because the reference source is absent.
+- [x] Implement bounded QSPI polling, header validation, chunked payload reads, big-endian word assembly, ILB stores, CRC32 verification, success/failure status, and final `__jump`.
+- [x] Run the bootloader test and verify it passes.
+- [x] Document bootloader constants, flash programming workflow, and application `codeBase=0x1000` requirement.
+- [x] Commit the bootloader and documentation changes.
 
 ### Task 5: Integration Verification
 
@@ -112,9 +112,9 @@
 - Consumes: all prior task outputs
 - Produces: fresh end-to-end verification evidence
 
-- [ ] Run `npm test`.
-- [ ] Run `npm run test:hardware`.
-- [ ] Run `npm run test:flash-image` and `npm run test:bootloader`.
-- [ ] Run `git diff --check` and inspect `git status --short`.
-- [ ] Record that VKS tools were unavailable and whether the fallback simulator exposed any new VKS-related issue.
-- [ ] Request a focused code review, resolve all critical and important findings, and rerun the affected suites.
+- [x] Run `npm test`.
+- [x] Run `npm run test:hardware`.
+- [x] Run `npm run test:flash-image` and `npm run test:bootloader`.
+- [x] Run `git diff --check` and inspect `git status --short`.
+- [x] Record that VKS tools were unavailable and whether the fallback simulator exposed any new VKS-related issue.
+- [x] Request a focused code review, resolve all critical and important findings, and rerun the affected suites.
