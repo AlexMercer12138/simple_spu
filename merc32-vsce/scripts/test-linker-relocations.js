@@ -229,6 +229,52 @@ for (const [kind, word] of [['CALL16', 0x00002e2c], ['BRANCH16', 0x0000242a]]) {
   );
 }
 
+// Text alignment gaps remain present when the linked assembly is reassembled.
+{
+  const first = object(
+    [section('text', [0x000e003c], 4, { source: 'first:\n  jmp r14\n' })],
+    [{ name: 'first', binding: 'global', section: 'text', offset: 0, defined: true }],
+  );
+  const aligned = object(
+    [section('text', [0x000e003c], 16, { source: 'aligned:\n  jmp r14\n' })],
+    [{ name: 'aligned', binding: 'global', section: 'text', offset: 0, defined: true }],
+  );
+  const image = linkObjects([first, aligned]);
+  assert.deepStrictEqual(image.machineCodes.map(word => word >>> 0), [0x000e003c, 0, 0, 0, 0x000e003c]);
+  assert.deepStrictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
+    image.machineCodes.map(word => word >>> 0),
+  );
+}
+
+// Relocation patching changes a self-reference operand without rewriting its label.
+{
+  const self = object(
+    [section('text', [0x0000002c], 4, { source: 'loop: jmp loop\n' })],
+    [{ name: 'loop', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'text', offset: 0, kind: 'CALL16', symbol: 'loop', addend: 0 }],
+  );
+  const image = linkObjects([self]);
+  assert.match(image.assembly, /^__mobj_0_loop: jmp 0x0$/m);
+  assert.deepStrictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
+    image.machineCodes.map(word => word >>> 0),
+  );
+}
+
+// Object-local labels do not collide when multiple object sources are concatenated.
+{
+  const localObject = () => object(
+    [section('text', [0x000e003c], 4, { source: 'loop:\n  jmp r14\n' })],
+    [{ name: 'loop', binding: 'local', section: 'text', offset: 0, defined: true }],
+  );
+  const image = linkObjects([localObject(), localObject()]);
+  assert.deepStrictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
+    image.machineCodes.map(word => word >>> 0),
+  );
+}
+
 // linkFiles consumes serialized object paths and forwards link options.
 {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-linker-'));

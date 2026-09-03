@@ -94,3 +94,47 @@ all six programs and ended with `MERC32 Tiny C RTL suite passed (6 tests)`.
   remain explicitly deferred by the revised specification.
 - `machineCodes` represents linked text from its first laid-out text section;
   callers using a nonzero `textBase` must load it at that base.
+
+## Fix Round 1: Assembly Layout and Local Labels
+
+### RED / GREEN Evidence
+
+Each review finding was reproduced in `scripts/test-linker-relocations.js` and
+run with `npm run compile; node scripts/test-linker-relocations.js` before the
+corresponding production edit.
+
+| Behavior | RED evidence | GREEN evidence |
+|---|---|---|
+| Text alignment gaps | Reassembly produced two words while `machineCodes` contained `[0x000e003c, 0, 0, 0, 0x000e003c]` | Assembly now emits three `mov r0, 0` fillers and reassembles byte-for-byte |
+| Self-referencing label | `loop: jmp loop` became invalid `0x0: jmp loop` | Label is namespaced as `__mobj_0_loop` and only the operand becomes `0x0` |
+| Duplicate local labels | Reassembly failed with `duplicate label: loop` on the second object | Object-local labels receive deterministic object-index namespaces and reassembly matches `machineCodes` |
+
+The first namespacing GREEN attempt still failed on label-only lines because
+they returned before rewriting. Moving optional-label handling ahead of the
+instruction/directive early return made the duplicate-label test pass.
+
+### Verification
+
+The final fix-round verification passed:
+
+```text
+npm run compile
+node scripts/test-linker-relocations.js
+node scripts/test-linker-integration.js
+node scripts/test-linker-layout.js
+node scripts/test-assemble-object.js
+node scripts/test-pseudo-instructions.js
+```
+
+### Self-Review
+
+- Assembly gap filling follows the same laid-out section addresses and zero-word
+  policy as `machineCodes`; it does not prepend words for a nonzero `textBase`.
+- Symbol relocation replacement is restricted to instruction text after an
+  optional label and before a trailing comment.
+- Global label names remain unchanged; only defined object-local text symbols
+  receive `__mobj_<objectIndex>_<name>` names.
+- Local names in unrelocated instruction operands are namespaced as well, while
+  relocated operands remain their final hexadecimal value.
+- Label-only lines are namespaced without consuming an instruction offset.
+- No BSS behavior, RTL, compiler path, package metadata, or version metadata was changed.

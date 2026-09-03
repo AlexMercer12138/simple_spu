@@ -53,19 +53,36 @@ function patchControlFlow(
   write16(content, relocation.section, relocation.offset, value);
 }
 
-function patchSource(source: string, replacements: ReadonlyMap<number, readonly SourceReplacement[]>): string {
+function replaceIdentifier(text: string, name: string, replacement: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`\\b${escaped}\\b`, 'g'), replacement);
+}
+
+function patchSource(
+  source: string,
+  replacements: ReadonlyMap<number, readonly SourceReplacement[]>,
+  localLabels: ReadonlyMap<string, string>,
+): string {
   let instructionOffset = 0;
   return source.split(/\r?\n/).map(line => {
+    const labelMatch = line.match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*[:\uff1a]\s*)/);
+    const label = labelMatch?.[0] ?? '';
+    const patchedLabel = labelMatch
+      ? `${labelMatch[1]}${localLabels.get(labelMatch[2]) ?? labelMatch[2]}${labelMatch[3]}`
+      : '';
     const uncommented = line.replace(/\/\/.*$/, '').trim();
     const code = uncommented.replace(/^[A-Za-z_][A-Za-z0-9_]*\s*[:\uff1a]\s*/, '').trim();
-    if (!code || code.startsWith('.')) return line;
-    let patched = line;
+    if (!code || code.startsWith('.')) return labelMatch ? `${patchedLabel}${line.slice(label.length)}` : line;
+    const operandText = line.slice(label.length);
+    const commentIndex = operandText.indexOf('//');
+    let patched = commentIndex < 0 ? operandText : operandText.slice(0, commentIndex);
+    const comment = commentIndex < 0 ? '' : operandText.slice(commentIndex);
     for (const replacement of replacements.get(instructionOffset) ?? []) {
-      const escaped = replacement.symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      patched = patched.replace(new RegExp(`\\b${escaped}\\b`), formatImmediate(replacement.value));
+      patched = replaceIdentifier(patched, replacement.symbol, formatImmediate(replacement.value));
     }
+    for (const [name, namespaced] of localLabels) patched = replaceIdentifier(patched, name, namespaced);
     instructionOffset += 4;
-    return patched;
+    return `${patchedLabel}${patched}${comment}`;
   }).join('\n');
 }
 
@@ -126,13 +143,21 @@ export function applyRelocations(layout: LayoutResult): LinkedSections {
     }
   }
 
-  const assembly = objects.flatMap((object, objectIndex) => {
-      const section = object.sections.find(candidate => candidate.name === 'text');
-      if (!section) return [];
-      const source = section.source ?? (typeof section.content === 'string' ? section.content : '');
-      return [patchSource(source, sourceReplacements.get(objectIndex) ?? new Map())];
-    })
-    .filter(Boolean)
-    .join('\n');
+  const assemblyChunks: string[] = [];
+  let previousTextEnd: number | undefined;
+  for (const linked of sections.filter(section => section.name === 'text')) {
+    if (previousTextEnd !== undefined) {
+      for (let address = previousTextEnd; address < linked.address; address += 4) assemblyChunks.push('mov r0, 0');
+    }
+    const section = objects[linked.objectIndex].sections.find(candidate => candidate.name === 'text')!;
+    const source = section.source ?? (typeof section.content === 'string' ? section.content : '');
+    const localLabels = new Map(objects[linked.objectIndex].symbols
+      .filter(symbol => symbol.binding === 'local' && symbol.defined && symbol.section === 'text')
+      .map(symbol => [symbol.name, `__mobj_${linked.objectIndex}_${symbol.name}`]));
+    const patched = patchSource(source, sourceReplacements.get(linked.objectIndex) ?? new Map(), localLabels);
+    if (patched) assemblyChunks.push(patched);
+    previousTextEnd = linked.address + section.size;
+  }
+  const assembly = assemblyChunks.join('\n');
   return { assembly, sections, relocationsApplied };
 }
