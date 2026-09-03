@@ -14,12 +14,13 @@ MERC32 汇编 (.asm)
 ROM 初始化文件 / Verilog ROM / HEX / BIN 等
 ```
 
-Tiny C 编译器只生成 MERC32 汇编，不直接生成机器码。后续由汇编器继续处理 `.prog`、`.entry`、标签、宏和指令编码。
+Tiny C 编译器只生成 MERC32 汇编，不直接生成机器码。后续由汇编器继续处理 `.prog`、`.org`、`.entry`、标签、宏和指令编码。
 
 编译器生成的汇编入口形式如下：
 
 ```asm
 .prog <moduleName>
+.org <codeBase>        // codeBase 非零时生成
 .entry __start
 
 __start:
@@ -30,7 +31,9 @@ __halt:
     jmp __halt
 ```
 
-因此 C 程序必须提供 `main` 函数。`main` 返回后会落入 `__halt` 死循环。
+因此 C 程序必须提供 `main` 函数。`main` 返回后会落入 `__halt` 死循环。`codeBase`
+默认为 0；加载到非零 ILB 地址的程序必须使用实际加载地址编译，允许范围为
+`0x00000000..0x07FFFFFF` 且必须 4 字节对齐。
 
 ## 2. 寄存器约定
 
@@ -354,6 +357,7 @@ volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
 ```c
 unsigned int __load32(unsigned int addr);
 unsigned int __store32(unsigned int addr, unsigned int value);
+void __jump(unsigned int addr);
 void __irq_enable(void);
 void __irq_enable_level(void);
 void __irq_disable(void);
@@ -364,9 +368,12 @@ void __irq_disable(void);
 ```c
 __load32(addr)          // 读取 *(uint32_t *)addr
 __store32(addr, value)  // 写入 *(uint32_t *)addr = value，并返回 value
+__jump(addr)             // 不返回，使用寄存器间接跳转到字节地址 addr
 ```
 
 普通指针已经可以完成同类操作，内建函数主要作为低层测试和显式 MMIO 访问入口。
+`__jump` 只接受一个整数地址，不能用于需要返回值的表达式；它用于 bootloader 等
+必须在运行时选择入口地址的底层程序。
 
 `__irq_enable()`、`__irq_enable_level()` 和 `__irq_disable()` 分别写入
 `r1=1`、`r1=5` 和 `r1=0`。三者只允许在程序定义了有效
@@ -415,14 +422,16 @@ void __irq_handler(void)
 
 编译器会验证该保留函数的定义必须返回 `void` 且参数列表为空；签名无效时不能生成中断入口。`__irq_enable()`、`__irq_enable_level()` 和 `__irq_disable()` 也只允许在程序具有有效 `__irq_handler` 时使用。
 
-汇编器的 `.entry __start` 只在字节地址 `0` 注入一条复位跳转 `jmp __start`，不负责设置中断向量。编译器把下面这一条且仅一条向量指令放在字节地址 `4`：
+汇编器的 `.entry __start` 在当前 `codeBase` 注入一条入口跳转 `jmp __start`，不负责
+设置中断向量。编译器把下面这一条且仅一条向量指令放在 `codeBase + 4`：
 
 ```asm
 __irq_vector:
 jmp __irq_handler
 ```
 
-`__start` 完成全局变量初始化后，仅在程序具有有效中断处理函数时将 `r2` 设置为字节地址 `4`。
+`__start` 完成全局变量初始化后，仅在程序具有有效中断处理函数时将 `r2` 设置为
+字节地址 `codeBase + 4`。
 
 零参数内建函数 `__irq_enable()` 写入 `r1=1`，即使能中断并选择 CPU
 上升沿触发模式；`__irq_enable_level()` 写入 `r1=5`，即使能中断并选择

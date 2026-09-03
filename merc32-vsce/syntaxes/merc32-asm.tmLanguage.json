@@ -63,7 +63,7 @@
       "patterns": [
         {
           "name": "keyword.control.directive.merc32-asm",
-          "match": "\\.(equ|prog|entry|ifdef|elsif|else|endif|macro|endm|include|rept|endr)\\b"
+          "match": "\\.(equ|prog|entry|org|ifdef|elsif|else|endif|macro|endm|include|rept|endr)\\b"
         },
         {
           "name": "keyword.control.instruction.merc32-asm",

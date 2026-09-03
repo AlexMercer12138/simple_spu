@@ -1,6 +1,7 @@
 export interface CompileOptions {
     dataBase?: number;
     dlbAddrWidth?: number;
+    codeBase?: number;
     moduleName?: string;
     tempSlots?: number;
 }
@@ -1399,6 +1400,7 @@ const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
 const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
+const ILB_EXCLUSIVE_LIMIT = 0x0800_0000;
 const DLB_BASE_ADDRESS = 0x0800_0000;
 const DLB_EXCLUSIVE_LIMIT = 0x1000_0000;
 const MIN_DLB_ADDR_WIDTH = 1;
@@ -1427,6 +1429,7 @@ class CodeGenerator {
     private readonly occupiedAssemblyLabels = new Set<string>();
     private readonly dataBase: number;
     private readonly dataLimit: number;
+    private readonly codeBase: number;
     private readonly moduleName: string;
     private readonly tempSlots: number;
     private nextGlobalAddress: number;
@@ -1455,8 +1458,20 @@ class CodeGenerator {
             throw new CompilerError('DLB data range exceeds exclusive limit 0x10000000');
         }
 
+        const codeBase = options.codeBase ?? 0;
+        if (!Number.isSafeInteger(codeBase)) {
+            throw new CompilerError('codeBase must be an integer');
+        }
+        if (codeBase < 0 || codeBase >= ILB_EXCLUSIVE_LIMIT) {
+            throw new CompilerError('codeBase must be within ILB 0x00000000..0x07FFFFFF');
+        }
+        if ((codeBase & 3) !== 0) {
+            throw new CompilerError('codeBase must be 4-byte aligned');
+        }
+
         this.dataBase = dataBase;
         this.dataLimit = dataLimit;
+        this.codeBase = codeBase;
         this.moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
         this.tempSlots = options.tempSlots ?? 32;
         this.nextGlobalAddress = this.dataBase;
@@ -1475,6 +1490,9 @@ class CodeGenerator {
             : undefined;
 
         this.emit(`.prog ${this.moduleName}`);
+        if (this.codeBase !== 0) {
+            this.emit(`.org 0x${this.codeBase.toString(16)}`);
+        }
         this.emit(`.entry ${startLabel}`);
         this.emit('');
         if (this.interruptHandler && interruptVectorLabel) {
@@ -1485,7 +1503,7 @@ class CodeGenerator {
         this.loadImm('r13', this.dataLimit === 0x1_0000_0000 ? 0 : this.dataLimit);
         this.emitGlobalInitializers();
         if (this.interruptHandler) {
-            this.loadImm('r2', IRQ_VECTOR_ADDRESS);
+            this.loadImm('r2', this.codeBase + IRQ_VECTOR_ADDRESS);
         }
         this.emit('jmp main, r14');
         this.emit(`${haltLabel}:`);
@@ -2944,6 +2962,16 @@ class CodeGenerator {
             }
             return uintType();
         }
+        if (expr.name === '__jump') {
+            if (expr.args.length !== 1) throw new CompilerError('__jump expects 1 argument');
+            if (valueRequired) throw new CompilerError('__jump does not produce a value');
+            if (!isIntegerType(this.exprType(expr.args[0]))) {
+                throw new CompilerError('__jump address must have integer type');
+            }
+            this.emitExpr(expr.args[0], 'r7');
+            this.emit('jmp r7');
+            return voidType();
+        }
 
         const fn = this.functionMap.get(expr.name);
         if (!fn) {
@@ -3172,6 +3200,7 @@ class CodeGenerator {
                 return this.binaryResultType(expr.op, this.exprType(expr.left), this.exprType(expr.right));
             case 'call':
                 if (interruptControlValue(expr.name) !== undefined) return voidType();
+                if (expr.name === '__jump') return voidType();
                 if (expr.name === '__load32' || expr.name === '__store32') return uintType();
                 return this.functionMap.get(expr.name)?.returnType || intType();
             case 'cast':

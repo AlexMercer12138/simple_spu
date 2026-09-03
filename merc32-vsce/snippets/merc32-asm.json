@@ -125,6 +125,16 @@
     ],
     "description": "program entry label"
   },
+  ".org": {
+    "prefix": [
+      ".org",
+      "org"
+    ],
+    "body": [
+      ".org ${1:0x1000}"
+    ],
+    "description": "program link origin"
+  },
   ".equ": {
     "prefix": [
       ".equ",

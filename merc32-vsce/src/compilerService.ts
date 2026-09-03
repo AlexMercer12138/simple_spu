@@ -22,6 +22,7 @@ export function compileCFileToAssembly(sourceFile: string): CCompileResult {
     const result = compileCFile(sourceFile, {
         dataBase: settings.cDataBase,
         dlbAddrWidth: settings.cDlbAddrWidth,
+        codeBase: settings.cCodeBase,
         moduleName: baseName,
     });
 

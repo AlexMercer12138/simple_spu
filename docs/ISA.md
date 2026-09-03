@@ -237,6 +237,7 @@ CPU 接受中断时只执行：
 - `.equ` 常量或定义符号
 - `.prog` 输出名
 - `.entry` 复位入口
+- `.org` 程序链接起始字节地址
 - `.ifdef/.elsif/.else/.endif` 条件编译
 - `.macro/.endm` 参数宏
 - `.include` 文件引用
@@ -244,6 +245,7 @@ CPU 接受中断时只执行：
 
 ```asm
 .prog demo
+.org 0x1000
 .entry main
 .equ count 4
 
@@ -256,8 +258,10 @@ main:
     jmp main
 ```
 
-汇编器强制一行一条语句，支持 `//` 和 `/* ... */` 注释。标签是字节地址，
-`.entry label` 会在地址 0 插入一条 `jmp label`。
+汇编器强制一行一条语句，支持 `//` 和 `/* ... */` 注释。标签是字节地址。
+`.org address` 只能出现一次，地址必须是 4 字节对齐的 32 位无符号常量；它只
+改变标签和调试地址，不在机器码输出前补零。`.entry label` 会在当前 `.org`
+地址插入一条 `jmp label`；没有 `.org` 时起始地址为 0。
 
 ## 8. 相关文档
 

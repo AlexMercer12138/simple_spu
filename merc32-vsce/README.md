@@ -120,11 +120,13 @@ VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装�
 | `merc32-asm.c.keepAssembly` | 构建 C 时是否保留中间生成的 `.asm` 文件 | `true` |
 | `merc32-asm.c.dataBase` | C 编译器使用的 DLB 数据基址 | `0x08000000` |
 | `merc32-asm.c.dlbAddrWidth` | DLB 字地址位宽（`1..25`），用于初始化 C 栈指针 | `16` |
+| `merc32-asm.c.codeBase` | C 编译器使用的 4 字节对齐 ILB 代码基址 | `0x00000000` |
 
 `dataBase` 与 `dlbAddrWidth` 支持 `0x` / `0b` 前缀的字面量。
 Tiny C 只接受 `0x08000000..0x0FFFFFFF` 内的 `dataBase`；计算得到的
 `dataBase + (1 << (dlbAddrWidth + 2))` 是独占上界，且不得超过
-`0x10000000`。
+`0x10000000`。`codeBase` 必须位于 `0x00000000..0x07FFFFFF`；从 bootloader
+加载的应用必须把它设置为实际 ILB 加载地址。
 
 ## 汇编语法参考
 
@@ -254,10 +256,11 @@ loop:
 
 ### 伪指令
 
-预编译阶段支持 `.equ` 常量/符号、`.prog` 输出名、`.entry` 入口标签、`.ifdef` / `.else` / `.elsif` / `.endif` 条件编译、`.macro` / `.endm` 代码段宏、`.include` 文件引用和 `.rept` / `.endr` 重复展开：
+预编译阶段支持 `.equ` 常量/符号、`.prog` 输出名、`.org` 链接地址、`.entry` 入口标签、`.ifdef` / `.else` / `.elsif` / `.endif` 条件编译、`.macro` / `.endm` 代码段宏、`.include` 文件引用和 `.rept` / `.endr` 重复展开：
 
 ```asm
 .prog demo
+.org 0x1000
 .entry main
 .equ count 4
 .equ value 0b1000
@@ -276,7 +279,8 @@ main:
     mov r1, value
 ```
 
-- `.entry label` 在地址 0 处插入 `jmp label` 作为复位向量；省略时从首条指令开始执行
+- `.org address` 设置 4 字节对齐的链接地址，只重定位标签而不填充机器码；省略时为 0
+- `.entry label` 在当前链接地址插入 `jmp label`；省略时从首条指令开始执行
 - `.include "file.asm"` 会把引用文件按声明顺序追加到主文件之后一起汇编
 - `.macro` 不允许递归调用，参数数量必须匹配
 

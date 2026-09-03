@@ -312,6 +312,11 @@
           "minimum": 1,
           "maximum": 25,
           "description": "DLB word address width (1..25) used to initialize the C stack pointer"
+        },
+        "merc32-asm.c.codeBase": {
+          "type": "string",
+          "default": "0x00000000",
+          "description": "ILB byte address used to link generated Tiny C code"
         }
       }
     }

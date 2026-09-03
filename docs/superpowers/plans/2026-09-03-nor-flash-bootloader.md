@@ -35,7 +35,7 @@
 - [x] Run `npm run test:hardware` and verify the new check fails because CPU data transactions to ILB never assert `ilb_wren` or complete.
 - [x] Add fetch/data/debug request-origin state, permit CPU data requests to target ILB, route acknowledgement by origin, and capture instructions only for fetch responses.
 - [x] Run `npm run test:hardware` and verify all hardware tests pass with the updated core check count.
-- [ ] Commit the RTL and test changes.
+- [x] Commit the RTL and test changes.
 
 ### Task 2: Relocatable Assembly And Dynamic Jump
 
@@ -54,15 +54,15 @@
 **Interfaces:**
 - Produces: `PreprocessResult.origin`, `CompileOptions.codeBase`, `.org <u32>`, and `void __jump(unsigned int address)`
 
-- [ ] Add assembler tests showing `.org 0x1000` relocates `.entry` and labels without output padding and rejects duplicate, unaligned, negative, and greater-than-u32 origins.
-- [ ] Run `npm run test:pseudo` and verify failure because `.org` is unsupported.
-- [ ] Parse and propagate one origin, then initialize all assembler byte/debug PCs from it while leaving machine-code array indices at zero.
-- [ ] Run `npm run test:pseudo` and verify all pseudo-instruction tests pass.
-- [ ] Add Tiny C tests for `codeBase` and `__jump`, including invalid code bases, arity, pointer/integer requirements, and value-context rejection.
-- [ ] Run `npm run test:c` and verify the tests fail because these APIs do not exist.
-- [ ] Emit `.org` for nonzero `codeBase`; implement `__jump` as an integer-only, non-returning intrinsic that evaluates once and emits `jmp r7`.
-- [ ] Expose `merc32-asm.c.codeBase` through extension settings and compiler service, and document both additions.
-- [ ] Run `npm test` and verify toolchain tests pass.
+- [x] Add assembler tests showing `.org 0x1000` relocates `.entry` and labels without output padding and rejects duplicate, unaligned, negative, and greater-than-u32 origins.
+- [x] Run `npm run test:pseudo` and verify failure because `.org` is unsupported.
+- [x] Parse and propagate one origin, then initialize all assembler byte/debug PCs from it while leaving machine-code array indices at zero.
+- [x] Run `npm run test:pseudo` and verify all pseudo-instruction tests pass.
+- [x] Add Tiny C tests for `codeBase` and `__jump`, including invalid code bases, arity, pointer/integer requirements, and value-context rejection.
+- [x] Run `npm run test:c` and verify the tests fail because these APIs do not exist.
+- [x] Emit `.org` for nonzero `codeBase`; implement `__jump` as an integer-only, non-returning intrinsic that evaluates once and emits `jmp r7`.
+- [x] Expose `merc32-asm.c.codeBase` through extension settings and compiler service, and document both additions.
+- [x] Run `npm test` and verify toolchain tests pass.
 - [ ] Commit the toolchain and documentation changes.
 
 ### Task 3: Flash Image Packer

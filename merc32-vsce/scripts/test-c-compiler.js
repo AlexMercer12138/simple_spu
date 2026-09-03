@@ -1899,6 +1899,57 @@ const { assembly: fullDlbAssembly } = compileC('int main(void) { return 0; }', {
 });
 assert.match(fullDlbAssembly, /^__start:\r?\nmov r13, 0x1000\r?\nmov r13, r13 << 16\r?\njmp main, r14$/m);
 
+const { assembly: relocatedAssembly } = compileC(
+    'int main(void) { __jump(0x1000); return 0; }',
+    { moduleName: 'relocated_test', codeBase: 0x1000 },
+);
+assert.match(relocatedAssembly, /^\.prog relocated_test\r?\n\.org 0x1000\r?\n\.entry __start/m);
+assert.match(relocatedAssembly, /^mov r7, 0x1000\r?\njmp r7$/m);
+const relocatedResult = new SimpleCPUAssembler().assemble(relocatedAssembly, {
+    sourceFileName: 'relocated_test.asm',
+});
+assert.strictEqual(relocatedResult.origin, 0x1000);
+assert.match(relocatedResult.debugSymbols, /^__start\s+=\s+4100 \(0x1004\)$/m);
+
+const { assembly: relocatedIrqAssembly } = compileC(
+    'void __irq_handler(void) {} int main(void) { return 0; }',
+    { moduleName: 'relocated_irq_test', codeBase: 0x1000 },
+);
+assert.match(relocatedIrqAssembly, /^mov r2, 0x1004$/m);
+const relocatedIrqResult = new SimpleCPUAssembler().assemble(relocatedIrqAssembly, {
+    sourceFileName: 'relocated_irq_test.asm',
+});
+assert.match(relocatedIrqResult.debugSymbols, /^__irq_vector\s+=\s+4100 \(0x1004\)$/m);
+
+const { assembly: defaultOriginAssembly } = compileC('int main(void) { return 0; }');
+assert.doesNotMatch(defaultOriginAssembly, /^\.org\b/m);
+
+for (const codeBase of [-4, 2, 0x0800_0000, 0x1_0000_0000, 1.5]) {
+    expectCompilerError(
+        'int main(void) { return 0; }',
+        /codeBase.*ILB|codeBase.*align|codeBase.*integer/,
+        undefined,
+        { codeBase },
+    );
+}
+
+expectCompilerError(
+    'int main(void) { __jump(); return 0; }',
+    /__jump expects 1 argument/,
+);
+expectCompilerError(
+    'int main(void) { __jump(4, 8); return 0; }',
+    /__jump expects 1 argument/,
+);
+expectCompilerError(
+    'int main(void) { int value; __jump(&value); return 0; }',
+    /__jump address must have integer type/,
+);
+expectCompilerError(
+    'int main(void) { return __jump(0x1000); }',
+    /__jump does not produce a value|void expression cannot be used where a value is required/,
+);
+
 const { assembly: finalAddressAssembly } = compileC(
     'int main(void) { return "ABCDEFG"[0]; }',
     {

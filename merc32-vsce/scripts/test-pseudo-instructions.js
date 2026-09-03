@@ -126,6 +126,17 @@ assert.deepStrictEqual(hex(result.machineCodes), ['0x0008002c', '0x00090100', '0
 assert.match(result.preprocessedCode, /^jmp main\b/)
 
 result = assemble(`
+.org 0x1000
+.entry main
+main:
+mov r1, 4
+`)
+assert.strictEqual(result.origin, 0x1000)
+assert.deepStrictEqual(hex(result.machineCodes), ['0x1004002c', '0x00040100'])
+assert.match(result.debugSymbols, /^main\s+=\s+4100 \(0x1004\)$/m)
+assert.match(result.debugCode, /^\[4096\/0x1000\] jmp main/m)
+
+result = assemble(`
 mul  r1,  r2, 3
 mul  r1,  r2, r3
 div  r4,  r5, -1
@@ -319,6 +330,10 @@ mustThrow('uppercase instruction still invalid', () => assemble('MOV r1, 1\n'), 
 mustThrow('missing entry target', () => assemble('.entry missing\nmov r1, 1\n'), /entry|missing/i)
 mustThrow('duplicate entry', () => assemble('.entry start\n.entry other\nstart:\nmov r1, 1\n'), /entry|already/i)
 mustThrow('entry cannot be register', () => assemble('.entry r1\nr1_label:\nmov r1, 1\n'), /entry|register/i)
+mustThrow('duplicate origin', () => assemble('.org 0\n.org 4\nmov r1, 1\n'), /org|already/i)
+mustThrow('negative origin', () => assemble('.org -4\nmov r1, 1\n'), /org|unsigned|range/i)
+mustThrow('unaligned origin', () => assemble('.org 2\nmov r1, 1\n'), /org|align/i)
+mustThrow('origin beyond u32', () => assemble('.org 0x100000000\nmov r1, 1\n'), /org|32|range/i)
 mustThrow('cmp destination must be a register', () => assemble('cmp 1, r2 == r3\n'), /cmp|目标|寄存器/i)
 mustThrow('cmp lhs must be a register', () => assemble('cmp r1, 2 == r3\n'), /cmp|左|寄存器/i)
 mustThrow('cmp rhs must be a register or immediate', () => assemble('cmp r1, r2 == value\n'), /cmp|右|寄存器|立即数/i)

@@ -165,6 +165,7 @@ export interface AssemblyResult extends AssemblyDebugInfo {
     machineCodes: number[];
     programName?: string;
     entryLabel?: string;
+    origin: number;
     preprocessedCode: string;
 }
 
@@ -996,7 +997,7 @@ export class SimpleCPUAssembler {
 
         const effectivePreprocessedCode = rawLines.join('\n');
 
-        let byteAddr = 0;
+        let byteAddr = preprocessed.origin;
         for (let lineNum = 1; lineNum <= lines.length; lineNum++) {
             const cleanLine = lines[lineNum - 1].trim();
             if (!cleanLine) continue;
@@ -1040,7 +1041,7 @@ export class SimpleCPUAssembler {
         }
 
         const replacedCodeLines: string[] = [];
-        let pc = 0;
+        let pc = preprocessed.origin;
         for (const { processed } of processedLines) {
             const cleanLine = processed.trim();
             if (!cleanLine) continue;
@@ -1078,7 +1079,7 @@ export class SimpleCPUAssembler {
         debugCodeLines.push("// 调试文件: 去除注释后的汇编代码");
         debugCodeLines.push("// 格式: [PC地址] 代码 (十进制/十六进制)");
         debugCodeLines.push("");
-        pc = 0;
+        pc = preprocessed.origin;
         for (const parsed of parsedLines) {
             if (parsed.label) {
                 debugCodeLines.push(`// --- ${parsed.label} ---`);
@@ -1125,6 +1126,7 @@ export class SimpleCPUAssembler {
             replacedCode,
             programName: preprocessed.programName,
             entryLabel: preprocessed.entryLabel,
+            origin: preprocessed.origin,
             preprocessedCode: effectivePreprocessedCode,
         };
     }

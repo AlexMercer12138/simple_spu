@@ -9,6 +9,7 @@ export interface PreprocessResult {
     sourceCode: string;
     programName?: string;
     entryLabel?: string;
+    origin: number;
     definedSymbols: string[];
 }
 
@@ -52,12 +53,14 @@ export class AssemblerPreprocessor {
     private readonly macros = new Map<string, MacroDefinition>();
     private programName: string | undefined;
     private entryLabel: string | undefined;
+    private origin: number | undefined;
 
     preprocess(sourceCode: string, options: PreprocessOptions = {}): PreprocessResult {
         this.equs.clear();
         this.macros.clear();
         this.programName = undefined;
         this.entryLabel = undefined;
+        this.origin = undefined;
 
         const mainFile = options.sourceFileName ? path.resolve(options.sourceFileName) : undefined;
         const includeStack = new Set<string>();
@@ -72,6 +75,7 @@ export class AssemblerPreprocessor {
             sourceCode: expanded.map((line) => line.text).join('\n'),
             programName: this.programName,
             entryLabel: this.entryLabel,
+            origin: this.origin ?? 0,
             definedSymbols: Array.from(this.equs.keys()),
         };
     }
@@ -149,6 +153,9 @@ export class AssemblerPreprocessor {
                         continue;
                     case 'entry':
                         this.handleEntry(directive.rest, line);
+                        continue;
+                    case 'org':
+                        this.handleOrigin(directive.rest, line);
                         continue;
                     case 'ifdef':
                     case 'elsif':
@@ -282,6 +289,21 @@ export class AssemblerPreprocessor {
             throw this.error(line, `.entry already set to ${this.entryLabel}`);
         }
         this.entryLabel = label;
+    }
+
+    private handleOrigin(rest: string, line: SourceLine): void {
+        if (this.origin !== undefined) {
+            throw this.error(line, `.org already set to ${this.origin}`);
+        }
+        const expression = this.replaceEqusInText(rest.trim(), line);
+        const value = evaluateConstantExpression(expression, (message) => this.error(line, message));
+        if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+            throw this.error(line, '.org address must be an unsigned 32-bit integer');
+        }
+        if ((value & 3) !== 0) {
+            throw this.error(line, '.org address must be 4-byte aligned');
+        }
+        this.origin = value;
     }
 
     private defineMacro(rest: string, body: SourceLine[], line: SourceLine): void {
