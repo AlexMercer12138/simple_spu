@@ -114,6 +114,22 @@ Tiny C 在文件编译前会处理相对路径的引号 `#include`、对象式 `
 
 详细安装、使用方法与配置项见 [merc32-vsce/README.md](merc32-vsce/README.md)。
 
+### QSPI NOR 启动加载器
+
+[`example/nor_flash_bootloader.c`](example/nor_flash_bootloader.c) 是默认 SoC
+布局的参考启动加载器。它占用 ILB `0x00000000..0x00000fff`，通过
+`0x10004000` 的 `apb_qspi` 从 NOR Flash 偏移 `0x00100000` 读取镜像，并将
+状态写到 `0x08000000`。QSPI 使用 `0x03` 读命令、24 位地址、1-1-1 模式，
+`CLOCK_CFG=1`、`TRANSFER_CFG=0x00000088`、`PHASE_CFG=0x00001808`。
+
+应用必须使用 Tiny C 配置 `merc32-asm.c.codeBase=0x1000` 编译，并且完整落在
+ILB `0x00001000..0x00007fff`。先将编译得到的原始大端 Binary 用
+`npm run flash:image -- <application.bin> <application.img> 0x1000 [entry]`
+封装为带 20 字节大端头和 IEEE CRC32 的镜像，再用 Flash 编程器把
+`application.img` 写入 Flash 偏移 `0x00100000`。启动成功写入
+`0x600d0000` 后间接跳转到镜像入口；失败写入 `0x0bad0000 | reason`，其中
+非零原因码依次标识 QSPI、magic、大小、加载地址、入口、Flash 范围和 CRC。
+
 ---
 
 ## 🏗️ 架构

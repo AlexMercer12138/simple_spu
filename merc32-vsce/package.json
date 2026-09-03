@@ -342,6 +342,7 @@
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:flash-image": "npm run compile && node scripts/test-flash-image.js",
+    "test:bootloader": "npm run compile && node scripts/test-nor-flash-bootloader.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",
     "test:soc:config": "npm run compile && node scripts/test-soc-config.js",
     "test:soc:editor-session": "npm run compile && node scripts/test-soc-editor-session.js",
