@@ -2,35 +2,41 @@ export function maskAssemblyComments(source: string): string[] {
   const maskedLines: string[] = [];
   let inBlockComment = false;
   for (const line of source.split(/\r?\n/)) {
-    let masked = line;
-    let searchFrom = 0;
-    if (inBlockComment) {
-      const end = line.indexOf('*/');
-      if (end < 0) {
-        maskedLines.push(' '.repeat(line.length));
+    const masked = [...line];
+    let inQuote = false;
+    let escaped = false;
+    for (let index = 0; index < line.length; index++) {
+      if (inBlockComment) {
+        masked[index] = ' ';
+        if (line[index] === '*' && line[index + 1] === '/') {
+          masked[index + 1] = ' ';
+          index++;
+          inBlockComment = false;
+        }
         continue;
       }
-      masked = ' '.repeat(end + 2) + masked.slice(end + 2);
-      searchFrom = end + 2;
-      inBlockComment = false;
-    }
-    while (true) {
-      const start = line.indexOf('/*', searchFrom);
-      if (start < 0) break;
-      const end = line.indexOf('*/', start + 2);
-      if (end < 0) {
-        masked = masked.slice(0, start) + ' '.repeat(line.length - start);
-        inBlockComment = true;
+      if (inQuote) {
+        if (escaped) escaped = false;
+        else if (line[index] === '\\') escaped = true;
+        else if (line[index] === '"') inQuote = false;
+        continue;
+      }
+      if (line[index] === '"') {
+        inQuote = true;
+        continue;
+      }
+      if (line[index] === '/' && line[index + 1] === '/') {
+        masked.fill(' ', index);
         break;
       }
-      masked = masked.slice(0, start) + ' '.repeat(end + 2 - start) + masked.slice(end + 2);
-      searchFrom = end + 2;
+      if (line[index] === '/' && line[index + 1] === '*') {
+        masked[index] = ' ';
+        masked[index + 1] = ' ';
+        index++;
+        inBlockComment = true;
+      }
     }
-    const lineComment = masked.indexOf('//');
-    if (lineComment >= 0) {
-      masked = masked.slice(0, lineComment) + ' '.repeat(masked.length - lineComment);
-    }
-    maskedLines.push(masked);
+    maskedLines.push(masked.join(''));
   }
   return maskedLines;
 }

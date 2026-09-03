@@ -266,3 +266,110 @@ Repository-root `git diff --check` exited 0.
 ## Concerns
 
 None.
+
+## Second Final Fix Wave
+
+This explicitly authorized follow-up fixes only the regression introduced in
+`c559e18`: a `/*` sequence occurring after an earlier `//` comment incorrectly
+opened persistent block-comment state and caused later instructions to be
+silently dropped.
+
+### TDD evidence
+
+Focused regressions were added to
+`merc32-vsce/scripts/test-assemble-object.js` for:
+
+- `main:\n  mov r1, 1 // /* harmless\n  jmp external, r14`, requiring
+  an eight-byte text section and one `CALL16` relocation for `external` at
+  offset 4;
+- supported two-byte quoted immediates `"//"` and `"/*"`, requiring both
+  instructions to remain code and the following call relocation to remain at
+  offset 8.
+
+Initial RED:
+
+```text
+npm run compile; node scripts/test-assemble-object.js
+exit 1
+AssertionError: Expected values to be strictly equal:
+4 !== 8
+test-assemble-object.js:25
+```
+
+After changing only the shared masker, the required line-comment case advanced
+and exposed an independent quote boundary in the single-line comment pass used
+by `SimpleCPUAssembler.parseLine`:
+
+```text
+npm run compile; node scripts/test-assemble-object.js
+exit 1
+Error: 字符串立即数缺少结束双引号
+at SimpleCPUAssembler.splitOperands
+test-assemble-object.js:30
+```
+
+The implementation now scans each source line once from left to right. In
+normal state the earliest token wins, `//` masks the rest of that line without
+changing block state, `/* ... */` carries block state across lines, and quoted
+or escaped content is preserved. Comment masking still replaces characters
+with spaces so source positions remain stable. The assembler's existing
+single-line `removeComments` helper received the corresponding quote-aware
+ordering because the focused object path necessarily calls it through
+`parseLine`; its public shape and unclosed-inline-block behavior are unchanged.
+
+Focused GREEN:
+
+```text
+npm run compile
+exit 0
+node scripts/test-assemble-object.js
+exit 0: assemble object tests passed
+node scripts/test-linker-relocations.js
+exit 0: linker relocation tests passed
+node scripts/test-linker-integration.js
+exit 0: linker integration tests passed
+```
+
+Existing inline and multiline block-comment regressions remained green.
+
+### Complete Task 6 verification
+
+The following commands were rerun from `merc32-vsce`; all 17 exited 0:
+
+```text
+npm test
+npm run test:c
+npm run test:c:preprocessor
+npm run test:c:rtl
+node scripts/test-c-integration.js
+node scripts/test-c-typed-rtl.js
+node scripts/test-mobj-format.js
+node scripts/test-assemble-object.js
+node scripts/test-linker-integration.js
+node scripts/test-linker-layout.js
+node scripts/test-linker-relocations.js
+node scripts/test-runtime-packaging.js
+node scripts/test-linker-runtime-execution.js
+node scripts/test-runtime-startup.js
+node scripts/test-runtime-integer.js
+node scripts/test-runtime-float32.js
+node scripts/test-runtime-float64-abi.js
+```
+
+Notable fresh output:
+
+- `npm test`: infrastructure, pseudo-instruction, C preprocessor, and legacy C
+  compiler tests passed.
+- `npm run test:c:rtl`: 6/6 RTL simulations passed.
+- Typed C RTL and cross-object linker runtime execution passed.
+- Runtime packaging, startup, integer, float32, and float64 ABI tests passed.
+- Repository-root `git diff --check` exited 0 before staging.
+
+Files changed in this wave:
+
+- `merc32-vsce/src/linker/sourceText.ts`
+- `merc32-vsce/src/assembler.ts`
+- `merc32-vsce/scripts/test-assemble-object.js`
+- this report
+
+No other deferred finding was changed. Concerns: none.

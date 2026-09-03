@@ -174,24 +174,32 @@ export class SimpleCPUAssembler {
     private errors: string[] = [];
 
     removeComments(line: string): string {
-        // 移除行内块注释 /* ... */
-        while (true) {
-            const startIdx = line.indexOf('/*');
-            if (startIdx === -1) break;
-            const endIdx = line.indexOf('*/', startIdx + 2);
-            if (endIdx === -1) {
-                // 块注释未闭合，删除从 /* 开始到行尾
-                line = line.substring(0, startIdx);
-                break;
+        let result = '';
+        let inQuote = false;
+        let escaped = false;
+        for (let index = 0; index < line.length; index++) {
+            if (inQuote) {
+                result += line[index];
+                if (escaped) escaped = false;
+                else if (line[index] === '\\') escaped = true;
+                else if (line[index] === '"') inQuote = false;
+                continue;
             }
-            line = line.substring(0, startIdx) + line.substring(endIdx + 2);
+            if (line[index] === '"') {
+                result += line[index];
+                inQuote = true;
+                continue;
+            }
+            if (line[index] === '/' && line[index + 1] === '/') break;
+            if (line[index] === '/' && line[index + 1] === '*') {
+                const end = line.indexOf('*/', index + 2);
+                if (end < 0) break;
+                index = end + 1;
+                continue;
+            }
+            result += line[index];
         }
-        // 移除行注释 //
-        const idx = line.indexOf('//');
-        if (idx !== -1) {
-            line = line.substring(0, idx);
-        }
-        return line.trim();
+        return result.trim();
     }
 
     extractLabel(line: string): [string | null, string] {

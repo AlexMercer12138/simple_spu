@@ -21,6 +21,16 @@ assert.strictEqual(entry.symbols.find(symbol => symbol.name === 'start').offset,
 assert.strictEqual(entry.relocations.length, 0);
 const comments = assembleToObject('// comment\nmain: jmp r14 // trailing\n');
 assert.strictEqual(comments.sections[0].size, 4);
+const lineCommentBlockMarker = assembleToObject('main:\n  mov r1, 1 // /* harmless\n  jmp external, r14\n');
+assert.strictEqual(lineCommentBlockMarker.sections[0].size, 8);
+assert.strictEqual(lineCommentBlockMarker.relocations.length, 1);
+assert.strictEqual(lineCommentBlockMarker.relocations[0].kind, 'CALL16');
+assert.strictEqual(lineCommentBlockMarker.relocations[0].symbol, 'external');
+assert.strictEqual(lineCommentBlockMarker.relocations[0].offset, 4);
+const quotedCommentMarkers = assembleToObject('main:\n  mov r1, "//"\n  mov r2, "/*"\n  jmp external, r14\n');
+assert.strictEqual(quotedCommentMarkers.sections[0].size, 12);
+assert.deepStrictEqual(quotedCommentMarkers.relocations.map(relocation => relocation.symbol), ['external']);
+assert.strictEqual(quotedCommentMarkers.relocations[0].offset, 8);
 const inlineBlockComment = assembleToObject('main: /* call the helper */ jmp external, r14\n');
 assert.strictEqual(inlineBlockComment.sections[0].size, 4);
 assert.strictEqual(inlineBlockComment.relocations[0].offset, 0);
