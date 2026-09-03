@@ -1,22 +1,72 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { assembleToObject } from '../linker/assembleObject';
 import { Merc32Object } from '../linker/objectFormat';
 
 export interface RuntimeOptions { readonly root?: string; }
+
+interface RuntimeObjectManifest {
+  readonly file: string;
+  readonly exports: readonly string[];
+}
+
+interface RuntimeManifest {
+  readonly abi: string;
+  readonly objects: readonly RuntimeObjectManifest[];
+  readonly symbols: readonly string[];
+}
+
 export function getDefaultRuntimeObjects(options: RuntimeOptions = {}): Merc32Object[] { return loadRuntimeObjects(options); }
 export function loadRuntimeObjects(options: RuntimeOptions = {}): Merc32Object[] {
   const root = options.root ?? path.resolve(__dirname, '../../../runtime/merc32');
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime.manifest.json'), 'utf8')) as { objects: string[]; abi: string };
-  return manifest.objects.map(file => {
-    const content = assemblerSource(fs.readFileSync(path.join(root, file), 'utf8'));
-    return { version: 1, target: 'merc32', abi: manifest.abi, sections: [{ name: 'text', alignment: 4, size: content.length, content }], symbols: [], relocations: [] };
+  const manifest = readManifest(root);
+  const exports = new Set<string>();
+  for (const object of manifest.objects) {
+    for (const name of object.exports) {
+      if (exports.has(name)) throw new Error(`duplicate runtime export '${name}'`);
+      exports.add(name);
+    }
+  }
+  if (manifest.symbols.length !== exports.size || manifest.symbols.some(name => !exports.has(name))) {
+    throw new Error('runtime manifest symbols must match object exports');
+  }
+  const objects = manifest.objects.map(entry => {
+    const source = runtimeAssemblySource(fs.readFileSync(path.join(root, entry.file), 'utf8'));
+    const object = assembleToObject(source, { abi: manifest.abi, exports: entry.exports });
+    for (const name of entry.exports) {
+      const definitions = object.symbols.filter(symbol => symbol.name === name && symbol.binding === 'global' && symbol.defined);
+      if (definitions.length !== 1) throw new Error(`runtime export '${name}' is not defined by '${entry.file}'`);
+    }
+    return object;
   });
+  for (const name of exports) {
+    const definitions = objects.flatMap(object => object.symbols)
+      .filter(symbol => symbol.name === name && symbol.binding === 'global' && symbol.defined);
+    if (definitions.length !== 1) throw new Error(`runtime export '${name}' must be defined exactly once`);
+  }
+  return objects;
 }
 
-function assemblerSource(source: string): string {
-  return source
-    .split(/\r?\n/)
-    .map(line => line.replace(/;.*/, '').trimEnd())
-    .filter(line => line.trim() !== '.text')
-    .join('\n');
+function readManifest(root: string): RuntimeManifest {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime.manifest.json'), 'utf8')) as {
+    abi?: unknown;
+    objects?: unknown;
+    symbols?: unknown;
+  };
+  if (typeof manifest.abi !== 'string' || !Array.isArray(manifest.objects) || !Array.isArray(manifest.symbols)) {
+    throw new Error('invalid runtime manifest');
+  }
+  for (const entry of manifest.objects) {
+    if (!entry || typeof entry !== 'object' || !('file' in entry) || typeof entry.file !== 'string'
+      || !('exports' in entry) || !Array.isArray(entry.exports) || entry.exports.some((name: unknown) => typeof name !== 'string')) {
+      const file = entry && typeof entry === 'object' && 'file' in entry && typeof entry.file === 'string' ? entry.file : 'unknown';
+      throw new Error(`invalid runtime object exports for '${file}'`);
+    }
+  }
+  if (manifest.symbols.some((name: unknown) => typeof name !== 'string')) throw new Error('invalid runtime manifest symbols');
+  return manifest as unknown as RuntimeManifest;
+}
+
+function runtimeAssemblySource(source: string): string {
+  return source.split(/\r?\n/).map(line => line.replace(/;.*/, '')).join('\n');
 }
