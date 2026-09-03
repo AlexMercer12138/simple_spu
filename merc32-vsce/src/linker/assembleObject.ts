@@ -17,6 +17,8 @@ function scanIdentifiers(text: string): Array<{ name: string; index: number }> {
     const char = text[i];
     if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quote = false; continue; }
     if (char === '"') { quote = true; continue; }
+    const numeric = text.slice(i).match(/^0[xX][0-9a-fA-F]+\b|^0[bB][01]+\b/);
+    if (numeric) { i += numeric[0].length - 1; continue; }
     const match = text.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/);
     if (match) { result.push({ name: match[0], index: i }); i += match[0].length - 1; }
   }

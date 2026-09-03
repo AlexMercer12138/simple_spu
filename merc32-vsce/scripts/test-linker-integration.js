@@ -1,7 +1,11 @@
 const assert = require('assert');
-const { linkObjects } = require('../out/linker');
-const object = (name, text) => ({ version:1,target:'merc32',abi:'merc32-c-v1',sections:[{name:'text',alignment:4,size:4,content:text}],symbols:[{name,binding:'global',section:'text',offset:0,defined:true}],relocations:[] });
-const image = linkObjects([object('main', 'main:\n  jmp r14\n'), object('helper', 'helper:\n  jmp r14\n')]);
+const { assembleToObject, linkObjects } = require('../out/linker');
+const image = linkObjects([
+  assembleToObject('main:\n  jmp helper, r14\n', { exports: ['main'] }),
+  assembleToObject('helper:\n  jmp r14\n', { exports: ['helper'] }),
+], { entrySymbol: 'main' });
 assert(image.assembly.includes('main:'));
 assert.strictEqual(image.symbols.get('helper'), 4);
+assert.strictEqual(image.entryAddress, 0);
+assert.match(image.assembly, /jmp 0x4, r14/);
 console.log('linker integration tests passed');

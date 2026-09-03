@@ -58,6 +58,31 @@ __halt:
 
 ## 3. 函数调用约定
 
+### 3.0 链接重定位与控制流目标
+
+链接器的地址和节大小均以字节计。输入对象按对象输入顺序布局；在每个对象内，节按
+`text`、`rodata`、`data`、`bss` 顺序布局。每个节都从当前节基址向上对齐到自己的
+`alignment`，符号地址为：
+
+```text
+section_base = align_up(previous_section_end, section.alignment)
+symbol_address = section_base + symbol.offset
+```
+
+`text` 节从 `textBase`（默认 0）开始；`rodata`、`data` 和 `bss` 从 `dataBase`
+开始，并沿用上述顺序和对齐规则。重定位记录中的加数为字节加数，因此其最终目标为
+`S + A`，其中 `S` 是已布局符号的绝对字节地址，`A` 是 relocation addend。
+
+JAL、BZ 和 BNZ 的控制流目的地址统一为：
+
+```text
+R[rs2] + zero_extend(imm16)
+```
+
+`CALL16` 和 `BRANCH16` 使用固定宽度的直接形式时，`rs2` 必须为 `r0`。因此它们
+只能编码对齐的绝对字节地址 `S + A`，并且该值必须位于 `0..65535`。远距离控制流
+需要的固定大小模板和可用 scratch 寄存器 ABI 尚未定义，留待后续 ABI 修订。
+
 ### 3.1 参数传递
 
 函数参数采用混合传参：

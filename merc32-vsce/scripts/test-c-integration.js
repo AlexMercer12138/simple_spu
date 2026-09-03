@@ -45,11 +45,12 @@ assert.ok(object.relocations.some((relocation) =>
     relocation.kind === 'CALL16' && relocation.symbol === 'included'
 ), 'typed object generation must retain direct-call relocations');
 
-const linkedObject = linkObjects([object]);
+const linkedObject = linkObjects([object], { entrySymbol: 'main' });
 assert.strictEqual(linkedObject.symbols.get('included'), 0);
 assert.ok(linkedObject.symbols.get('main') > linkedObject.symbols.get('included'));
+assert.strictEqual(linkedObject.entryAddress, linkedObject.symbols.get('main'));
 assert.match(linkedObject.assembly, /mov r4, 7/, 'typed lowering must preserve scalar return values');
-assert.match(linkedObject.assembly, /jmp included, r14/, 'typed lowering must preserve direct calls');
+assert.match(linkedObject.assembly, /jmp 0x0, r14/, 'typed lowering must resolve direct calls to absolute targets');
 
 const scalarSource = `
 int scale(int left, int right) {
@@ -100,9 +101,9 @@ assert.strictEqual(typeof manyArgumentCallOffset, 'number');
 const manyArgumentInstructionOffset = manyArgumentAssembly
     .split(/\r?\n/)
     .filter((line) => /^\s*(?:mov|sw|jmp|bz|bnz|cmp|mul|div|rem):?/.test(line))
-    .findIndex((line) => line.trim() === 'jmp five, r14') * 4;
+    .findIndex((line) => line.trim() === 'jmp 0x0, r14') * 4;
 assert.strictEqual(manyArgumentCallOffset, manyArgumentInstructionOffset,
-    'typed call relocation must identify the call instruction, after argument setup');
+    'typed call relocation must identify the resolved call instruction, after argument setup');
 
 assert.throws(
     () => compileCToObject('int global_value = 3; int main(void) { return global_value; }'),

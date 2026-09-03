@@ -6,7 +6,7 @@ const { spawnSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const { compileCToObject } = require('../out/cCompiler');
-const { linkObjects } = require('../out/linker');
+const { assembleToObject, linkObjects } = require('../out/linker');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
 const source = `
@@ -17,10 +17,7 @@ int main(void) {
     return five(1, 2, 3, 4, 5) + 24574;
 }
 `;
-const linked = linkObjects([compileCToObject(source, { moduleName: 'typed_rtl' })]);
-const startup = `.prog typed_rtl_startup
-.entry typed_start
-
+const startupObject = assembleToObject(`
 typed_start:
   mov r13, 0x804
   mov r13, r13 << 16
@@ -39,9 +36,17 @@ typed_fail:
   sw [r8], r7
 typed_halt:
   jmp typed_halt
-`;
-const assembly = `${startup}\n${linked.assembly}`;
-const assembled = new SimpleCPUAssembler().assemble(assembly, {
+`, { exports: ['typed_start'] });
+const linked = linkObjects([
+    startupObject,
+    compileCToObject(source, { moduleName: 'typed_rtl' }),
+], { entrySymbol: 'typed_start' });
+assert.strictEqual(linked.entryAddress, 0, 'the linked startup wrapper must remain at the reset address');
+assert.strictEqual(linked.symbols.get('five'), startupObject.sections[0].size,
+    'the typed helper must begin after the startup wrapper');
+assert.match(linked.assembly, /jmp 0x3c, r14/,
+    'the typed cross-function call must use the helper final absolute byte address');
+const assembled = new SimpleCPUAssembler().assemble(linked.assembly, {
     sourceFileName: 'typed_rtl.asm',
 });
 assert.ok(assembled.machineCodes.length > 0, 'typed startup wrapper must assemble');
