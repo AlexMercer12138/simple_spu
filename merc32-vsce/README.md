@@ -34,6 +34,31 @@ npm install
 npm run compile
 ```
 
+### 打包 NOR Flash 应用镜像
+
+先用已设置实际 ILB 加载地址的 `merc32-asm.c.codeBase` 生成原始 `.bin`，再打包：
+
+```bash
+cd merc32-vsce
+npm run flash:image -- application.bin application.img 0x1000
+```
+
+可选的第四个参数指定入口地址；省略时入口等于加载地址：
+
+```bash
+npm run flash:image -- application.bin application.img 0x1000 0x1004
+```
+
+生成的镜像在 20 字节头之后原样保留输入 `.bin`，不会重定位或交换任何 payload 字节。头部字段全部为大端 32 位整数：
+
+| Offset | Field | Value |
+| ---: | --- | --- |
+| `0x00` | magic | `0x4d333246` (`M32F`) |
+| `0x04` | image size | 非零且为 4 的倍数的 payload 字节数 |
+| `0x08` | load address | 4 字节对齐的 ILB 字节地址 |
+| `0x0c` | entry address | payload 内的 4 字节对齐地址 |
+| `0x10` | CRC32 | payload 的 IEEE CRC32 |
+
 如需生成 VSIX 安装包：
 
 ```bash

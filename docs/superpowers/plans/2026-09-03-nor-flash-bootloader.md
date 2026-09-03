@@ -63,7 +63,7 @@
 - [x] Emit `.org` for nonzero `codeBase`; implement `__jump` as an integer-only, non-returning intrinsic that evaluates once and emits `jmp r7`.
 - [x] Expose `merc32-asm.c.codeBase` through extension settings and compiler service, and document both additions.
 - [x] Run `npm test` and verify toolchain tests pass.
-- [ ] Commit the toolchain and documentation changes.
+- [x] Commit the toolchain and documentation changes.
 
 ### Task 3: Flash Image Packer
 
@@ -77,12 +77,12 @@
 - Produces: `createFlashImage(payload: Buffer, options: { loadAddress: number; entryAddress?: number }): Buffer`
 - Produces: `npm run flash:image -- <input.bin> <output.img> <load-address> [entry-address]`
 
-- [ ] Add exact-byte and rejection tests for the 20-byte header, IEEE CRC32, payload preservation, load/entry alignment, empty/non-word payload, and address overflow.
-- [ ] Run the flash-image test and verify it fails because `out/flashImage` is absent.
-- [ ] Implement CRC32, validation, deterministic image generation, and a direct-execution CLI without external dependencies.
-- [ ] Run the flash-image test and verify all image tests pass.
-- [ ] Add the npm command and document usage and header layout.
-- [ ] Commit the image packer changes.
+- [x] Add exact-byte and rejection tests for the 20-byte header, IEEE CRC32, payload preservation, load/entry alignment, empty/non-word payload, and address overflow.
+- [x] Run the flash-image test and verify it fails because `out/flashImage` is absent.
+- [x] Implement CRC32, validation, deterministic image generation, and a direct-execution CLI without external dependencies.
+- [x] Run the flash-image test and verify all image tests pass.
+- [x] Add the npm command and document usage and header layout.
+- [x] Commit the image packer changes.
 
 ### Task 4: Reference QSPI NOR Bootloader
 
