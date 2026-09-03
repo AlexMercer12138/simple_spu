@@ -138,3 +138,48 @@ node scripts/test-pseudo-instructions.js
   relocated operands remain their final hexadecimal value.
 - Label-only lines are namespaced without consuming an instruction offset.
 - No BSS behavior, RTL, compiler path, package metadata, or version metadata was changed.
+
+## Fix Round 2: Mnemonic-Safe Source Replacement
+
+### RED / GREEN Evidence
+
+Added a local symbol named `jmp` with source
+`jmp: jmp jmp, r14 // self call`. Before the production edit, the focused run
+
+```text
+npm run compile
+node scripts/test-linker-relocations.js
+```
+
+failed because linked assembly was
+`__mobj_0_jmp: 0x0 0x0, r14 // self call`; source replacement had changed both
+the mnemonic and operand.
+
+After splitting each instruction into a preserved mnemonic prefix and a
+replaceable operand suffix, the linked line is
+`__mobj_0_jmp: jmp 0x0, r14 // self call`. The relocation test passes and the
+linked assembly reassembles to the exact linked machine word.
+
+### Verification
+
+The final fix-round command completed with exit code `0`:
+
+```text
+npm run compile
+node scripts/test-linker-relocations.js
+node scripts/test-assemble-object.js
+node scripts/test-pseudo-instructions.js
+node scripts/test-linker-integration.js
+```
+
+Output summary: `linker relocation tests passed`, `assemble object tests passed`,
+`pseudo-instruction tests passed`, and `linker integration tests passed`.
+
+### Self-Review
+
+- Optional label text is handled separately and cannot be changed by relocation replacement.
+- Leading whitespace, mnemonic spelling, and whitespace after the mnemonic are preserved.
+- Relocation and local-symbol substitutions operate only on operand text.
+- Trailing comments are split before replacement and appended unchanged.
+- The regression uses the real assembler to prove output validity and word equivalence.
+- No BSS behavior or other deferred work was changed.

@@ -275,6 +275,21 @@ for (const [kind, word] of [['CALL16', 0x00002e2c], ['BRANCH16', 0x0000242a]]) {
   );
 }
 
+// A local symbol that matches a mnemonic changes only the operand occurrence.
+{
+  const self = object(
+    [section('text', [0x00000e2c], 4, { source: 'jmp: jmp jmp, r14 // self call\n' })],
+    [{ name: 'jmp', binding: 'local', section: 'text', offset: 0, defined: true }],
+    [{ section: 'text', offset: 0, kind: 'CALL16', symbol: 'jmp', addend: 0 }],
+  );
+  const image = linkObjects([self]);
+  assert.match(image.assembly, /^__mobj_0_jmp: jmp 0x0, r14 \/\/ self call$/m);
+  assert.deepStrictEqual(
+    new SimpleCPUAssembler().assemble(image.assembly).machineCodes.map(word => word >>> 0),
+    image.machineCodes.map(word => word >>> 0),
+  );
+}
+
 // linkFiles consumes serialized object paths and forwards link options.
 {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-linker-'));

@@ -73,16 +73,18 @@ function patchSource(
     const uncommented = line.replace(/\/\/.*$/, '').trim();
     const code = uncommented.replace(/^[A-Za-z_][A-Za-z0-9_]*\s*[:\uff1a]\s*/, '').trim();
     if (!code || code.startsWith('.')) return labelMatch ? `${patchedLabel}${line.slice(label.length)}` : line;
-    const operandText = line.slice(label.length);
-    const commentIndex = operandText.indexOf('//');
-    let patched = commentIndex < 0 ? operandText : operandText.slice(0, commentIndex);
-    const comment = commentIndex < 0 ? '' : operandText.slice(commentIndex);
+    const instructionText = line.slice(label.length);
+    const commentIndex = instructionText.indexOf('//');
+    const instruction = commentIndex < 0 ? instructionText : instructionText.slice(0, commentIndex);
+    const comment = commentIndex < 0 ? '' : instructionText.slice(commentIndex);
+    const mnemonic = instruction.match(/^\s*[A-Za-z][A-Za-z0-9_.]*\s*/)?.[0] ?? '';
+    let patched = instruction.slice(mnemonic.length);
     for (const replacement of replacements.get(instructionOffset) ?? []) {
       patched = replaceIdentifier(patched, replacement.symbol, formatImmediate(replacement.value));
     }
     for (const [name, namespaced] of localLabels) patched = replaceIdentifier(patched, name, namespaced);
     instructionOffset += 4;
-    return `${patchedLabel}${patched}${comment}`;
+    return `${patchedLabel}${mnemonic}${patched}${comment}`;
   }).join('\n');
 }
 
