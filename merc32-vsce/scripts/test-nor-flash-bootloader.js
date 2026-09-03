@@ -44,6 +44,8 @@ for (const value of [0x10004000, 0x00000088, 0x00001808, 0x03, 0x00100000, 0x000
     assert.ok(hasImmediate(qspiReadBody, value),
         `compiled QSPI reader is missing 0x${value.toString(16)}`);
 }
+assert.ok((qspiReadBody.match(/^mov r\d+, 0x3F$/gm) || []).length >= 2,
+    'QSPI reader must clear all sticky IRQ bits before and after each transaction');
 assert.match(qspiReadBody, /^lbu r\d+, \[r\d+\]$/m,
     'QSPI reader must drain RX_DATA as bytes while the transaction runs');
 assert.match(qspiReadBody, /^cmpu r\d+, r\d+ != r\d+$/m,
