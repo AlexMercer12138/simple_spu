@@ -231,7 +231,7 @@ Read the manifest, call `assembleToObject` for every listed assembly file, filte
 
 - [ ] **Step 4: Run runtime and linker regressions**
 
-Run: `npm run compile; node scripts/test-runtime-packaging.js; node scripts/test-linker-runtime-execution.js; node scripts/test-runtime-startup.js; node scripts/test-runtime-integer.js; node scripts/test-runtime-float32.js; node scripts/test-runtime-float64-abi.js`.
+Run: `npm run compile; node scripts/test-runtime-packaging.js; node scripts/test-runtime-startup.js; node scripts/test-runtime-integer.js; node scripts/test-runtime-float32.js; node scripts/test-runtime-float64-abi.js`. Task 6 creates and then runs `test-linker-runtime-execution.js`.
 Expected: all pass; runtime loading remains side-effect free.
 
 - [ ] **Step 5: Commit**
