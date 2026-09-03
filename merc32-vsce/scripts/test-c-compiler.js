@@ -1934,6 +1934,25 @@ for (const codeBase of [-4, 2, 0x0800_0000, 0x1_0000_0000, 1.5]) {
 }
 
 expectCompilerError(
+    'int main(void) { return 0; }',
+    /codeBase.*16-bit|codeBase.*direct.*label|codeBase.*0x00007fff/i,
+    undefined,
+    { codeBase: 0x1_0000 },
+);
+expectCompilerError(
+    'int main(void) { return 0; }',
+    /codeBase.*ILB.*0x00007fff/i,
+    undefined,
+    { codeBase: 0x8000 },
+);
+expectCompilerError(
+    'int main(void) { return 0; }',
+    /generated code.*direct-label|direct-label.*generated code/i,
+    undefined,
+    { codeBase: 0x7ff0 },
+);
+
+expectCompilerError(
     'int main(void) { __jump(); return 0; }',
     /__jump expects 1 argument/,
 );

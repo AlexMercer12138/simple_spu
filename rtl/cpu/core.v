@@ -493,7 +493,8 @@ module merc32_core #(
         end else begin
             case(cpu_state)
                 ST_IDLE:cpu_state <= regi_clear_active ? ST_IDLE : ST_LOAD;
-                ST_LOAD:cpu_state <= ilb_ack ? ST_DECODE : ST_LOAD;
+                ST_LOAD:cpu_state <= (bus_req_origin == REQ_FETCH) && ilb_ack
+                                  ? ST_DECODE : ST_LOAD;
                 ST_DECODE:cpu_state <= ST_EXEC;
                 ST_EXEC:cpu_state <= exec_done ? ST_WREG : ST_EXEC;
                 ST_WREG:cpu_state <= ST_STEP;

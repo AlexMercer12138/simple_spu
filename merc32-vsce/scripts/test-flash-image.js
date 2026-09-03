@@ -24,6 +24,14 @@ const defaultEntry = createFlashImage(payload, { loadAddress: 0x00002000 });
 assert.strictEqual(defaultEntry.readUInt32BE(12), 0x00002000, 'entry defaults to the load address');
 assert.deepStrictEqual(defaultEntry.subarray(20), payload, 'the packer must not relocate or byte-swap the payload');
 
+const exactU32Boundary = createFlashImage(Buffer.from([0xde, 0xad, 0xbe, 0xef]), {
+    loadAddress: 0xffff_fffc,
+});
+assert.strictEqual(exactU32Boundary.readUInt32BE(8), 0xffff_fffc,
+    'a four-byte payload may end exactly at the 32-bit address-space boundary');
+assert.strictEqual(exactU32Boundary.readUInt32BE(12), 0xffff_fffc,
+    'the default entry remains valid at the exact 32-bit boundary');
+
 expectError('empty payload', () => createFlashImage(Buffer.alloc(0), { loadAddress: 0 }), /payload.*nonempty|nonempty.*payload/i);
 expectError('non-word payload', () => createFlashImage(Buffer.from([1, 2, 3]), { loadAddress: 0 }), /payload.*multiple.*four|multiple.*four.*payload/i);
 expectError('unaligned load address', () => createFlashImage(payload, { loadAddress: 2 }), /load.*align|align.*load/i);

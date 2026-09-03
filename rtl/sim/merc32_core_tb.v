@@ -46,6 +46,8 @@ module merc32_core_tb #(
     localparam [5:0] ST_EXEC             = 6'b000010;
     localparam [5:0] ST_STEP             = 6'b001000;
     localparam [5:0] ST_INTR             = 6'b010000;
+    localparam [1:0] REQ_DATA            = 2'd2;
+    localparam [1:0] REQ_DEBUG           = 2'd3;
 
     reg         clk = 1'b0;
     reg         rst_n = 1'b0;
@@ -962,6 +964,43 @@ module merc32_core_tb #(
         end
     endtask
 
+    task test_stale_ilb_ack_does_not_decode;
+        integer origin;
+        integer cycles;
+        reg reached;
+        begin
+            for (origin = 2; origin <= 3; origin = origin + 1) begin
+                prepare_case;
+                reached = 1'b0;
+                cycles = 0;
+                while ((cycles < MAX_WAIT_CYCLES) && !reached) begin
+                    @(posedge clk);
+                    #1;
+                    if (merc32_core_inst.cpu_state === ST_LOAD)
+                        reached = 1'b1;
+                    cycles = cycles + 1;
+                end
+                check_reached("stale ILB response setup reaches load", reached);
+                if (reached) begin
+                    if (origin == 2)
+                        force merc32_core_inst.bus_req_origin = REQ_DATA;
+                    else
+                        force merc32_core_inst.bus_req_origin = REQ_DEBUG;
+                    force ilb_ack = 1'b1;
+                    @(posedge clk);
+                    #1;
+                    checks = checks + 1;
+                    if (merc32_core_inst.cpu_state !== ST_LOAD) begin
+                        failures = failures + 1;
+                        $display("TEST FAIL: stale ILB origin %0d advanced ST_LOAD to decode", origin);
+                    end
+                    release ilb_ack;
+                    release merc32_core_inst.bus_req_origin;
+                end
+            end
+        end
+    endtask
+
     initial begin
         for (i = 0; i < MEMORY_WORDS; i = i + 1)
             program_rom[i] = enc_imm(OP_IALU, FUNC_SET, 4'd0, 4'd0, 16'd0);
@@ -991,6 +1030,7 @@ module merc32_core_tb #(
             test_interrupt_after_branch;
             test_interrupt_after_jump;
             test_level_interrupt_stays_disabled;
+            test_stale_ilb_ack_does_not_decode;
         end else begin
             $display("TEST NOTE: remaining checks skipped after opcode smoke failure");
         end

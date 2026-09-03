@@ -1400,7 +1400,11 @@ const ABI_ARG_REGS = ['r4', 'r5', 'r6', 'r7'];
 const IRQ_HANDLER_NAME = '__irq_handler';
 const IRQ_VECTOR_ADDRESS = 4;
 const IRQ_CONTEXT_REGS = ['r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'r11'];
-const ILB_EXCLUSIVE_LIMIT = 0x0800_0000;
+// Legacy Tiny C emits direct label targets as decimal immediates. The
+// assembler therefore accepts only the signed 16-bit range for those labels;
+// keep the generated near-code contract explicit until far-label lowering is
+// available.
+const DIRECT_LABEL_EXCLUSIVE_LIMIT = 0x0000_8000;
 const DLB_BASE_ADDRESS = 0x0800_0000;
 const DLB_EXCLUSIVE_LIMIT = 0x1000_0000;
 const MIN_DLB_ADDR_WIDTH = 1;
@@ -1462,8 +1466,11 @@ class CodeGenerator {
         if (!Number.isSafeInteger(codeBase)) {
             throw new CompilerError('codeBase must be an integer');
         }
-        if (codeBase < 0 || codeBase >= ILB_EXCLUSIVE_LIMIT) {
-            throw new CompilerError('codeBase must be within ILB 0x00000000..0x07FFFFFF');
+        if (codeBase < 0 || codeBase >= DIRECT_LABEL_EXCLUSIVE_LIMIT) {
+            throw new CompilerError(
+                'codeBase must be within ILB direct-label range 0x00000000..0x00007FFF '
+                + '(exclusive upper bound 0x00008000)',
+            );
         }
         if ((codeBase & 3) !== 0) {
             throw new CompilerError('codeBase must be 4-byte aligned');
@@ -1514,6 +1521,23 @@ class CodeGenerator {
             if (fn.body) {
                 this.emitFunction(fn);
                 this.emit('');
+            }
+        }
+
+        // Relocated programs rely on absolute direct labels for startup and
+        // calls. Include the .entry reset-vector word in the address budget so
+        // a near-code compile cannot defer an immediate overflow to assembly.
+        if (this.codeBase !== 0) {
+            const instructionCount = this.lines.reduce((count, line) => {
+                const trimmed = line.trim();
+                return count + (trimmed && !trimmed.startsWith('.') && !trimmed.endsWith(':') ? 1 : 0);
+            }, 0);
+            const codeEnd = this.codeBase + 4 + instructionCount * 4;
+            if (codeEnd > DIRECT_LABEL_EXCLUSIVE_LIMIT) {
+                throw new CompilerError(
+                    'generated code exceeds the signed 16-bit direct-label range; '
+                    + 'reduce code size or use a lower codeBase',
+                );
             }
         }
 

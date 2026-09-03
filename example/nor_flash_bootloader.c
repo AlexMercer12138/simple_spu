@@ -14,7 +14,7 @@
 #define QSPI_BUSY 1
 #define QSPI_IRQ_DONE 1
 #define QSPI_IRQ_ERROR 6
-#define QSPI_IRQ_CLEAR 7
+#define QSPI_IRQ_CLEAR 0x0000003f
 #define QSPI_TIMEOUT 0x00100000
 
 #define IMAGE_MAGIC 0x4d333246
@@ -51,6 +51,10 @@ unsigned int crc32_byte(unsigned int crc, unsigned int byte_value) {
     return crc;
 }
 
+/* The Tiny C IRQ controls require a concrete handler definition. */
+void __irq_handler(void) {
+}
+
 void fail(unsigned int reason) {
     volatile unsigned int *status = (volatile unsigned int *)STATUS_ADDRESS;
     *status = STATUS_FAILURE | reason;
@@ -69,6 +73,7 @@ int qspi_read(unsigned int flash_address, volatile unsigned int *destination,
     unsigned int level;
     unsigned int byte_value;
     unsigned int irq;
+    unsigned int success = 0;
 
     while (timeout != 0) {
         level = (qspi[QSPI_FIFO_STATUS] >> 8) & 0xff;
@@ -82,7 +87,7 @@ int qspi_read(unsigned int flash_address, volatile unsigned int *destination,
         timeout = timeout - 1;
     }
     if (timeout == 0) {
-        return 0;
+        goto qspi_read_done;
     }
 
     qspi[QSPI_CTRL] = 24;
@@ -103,7 +108,7 @@ int qspi_read(unsigned int flash_address, volatile unsigned int *destination,
             byte_value = *rx_data;
             level = level - 1;
             if (received >= byte_count) {
-                return 0;
+                goto qspi_read_done;
             }
             word = (word << 8) | byte_value;
             *crc = crc32_byte(*crc, byte_value);
@@ -120,24 +125,24 @@ int qspi_read(unsigned int flash_address, volatile unsigned int *destination,
 
         irq = qspi[QSPI_IRQ_STATUS];
         if ((irq & QSPI_IRQ_ERROR) != 0) {
-            return 0;
+            goto qspi_read_done;
         }
         if ((qspi[QSPI_STATUS] & QSPI_BUSY) == 0) {
             if ((received == byte_count) && ((irq & QSPI_IRQ_DONE) != 0)) {
-                qspi[QSPI_IRQ_STATUS] = QSPI_IRQ_CLEAR;
-                return 1;
+                success = 1;
             }
-            return 0;
+            goto qspi_read_done;
         }
         timeout = timeout - 1;
     }
-    return 0;
+qspi_read_done:
+    qspi[QSPI_IRQ_STATUS] = QSPI_IRQ_CLEAR;
+    return success;
 }
 
 int main(void) {
     volatile unsigned int *status = (volatile unsigned int *)STATUS_ADDRESS;
     unsigned int header[5];
-    unsigned int header_crc = 0xffffffff;
     unsigned int crc = 0xffffffff;
     unsigned int payload_bytes;
     unsigned int load_address;
@@ -147,7 +152,9 @@ int main(void) {
     unsigned int flash_address;
     volatile unsigned int *destination;
 
-    if (qspi_read(IMAGE_OFFSET, header, IMAGE_HEADER_BYTES, &header_crc) == 0) {
+    __irq_disable();
+
+    if (qspi_read(IMAGE_OFFSET, header, IMAGE_HEADER_BYTES, &crc) == 0) {
         fail(FAILURE_QSPI);
     }
     if (header[0] != IMAGE_MAGIC) {
@@ -173,6 +180,7 @@ int main(void) {
         fail(FAILURE_FLASH_RANGE);
     }
 
+    crc = 0xffffffff;
     remaining = payload_bytes;
     flash_address = IMAGE_OFFSET + IMAGE_HEADER_BYTES;
     destination = (volatile unsigned int *)load_address;

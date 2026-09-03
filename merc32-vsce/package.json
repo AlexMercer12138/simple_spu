@@ -316,7 +316,7 @@
         "merc32-asm.c.codeBase": {
           "type": "string",
           "default": "0x00000000",
-          "description": "ILB byte address used to link generated Tiny C code"
+          "description": "ILB byte address (0x00000000..0x00007FFF) used to link generated Tiny C code"
         }
       }
     }
