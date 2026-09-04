@@ -146,4 +146,14 @@ assert.strictEqual(flowFunction.blocks[0].instructions.filter((instruction) => i
 const flowLabels = flowFunction.blocks[0].instructions.filter((instruction) => instruction.op === 'label').map((instruction) => instruction.args[0]);
 assert(!flowLabels.includes('__flow_user_outer'), 'generated labels must avoid program-level symbol names');
 
+const genericSelection = JSON.parse(JSON.stringify(unit));
+const genericNode = genericSelection.nodes.find((node) => node.id === 4);
+genericNode.kind = 'generic-selection';
+genericNode.memberIndex = 0;
+delete genericNode.operator;
+assert.throws(() => adaptTypedUnit(genericSelection), (error) => {
+  assert(error instanceof CBackendCapabilityError);
+  return error.diagnostics[0].code === 'C_BACKEND_CAPABILITY';
+}, 'generic selections must report a backend capability diagnostic');
+
 console.log('C frontend backend adapter tests passed');

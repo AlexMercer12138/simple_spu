@@ -179,6 +179,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const node = nodeRecords.get(id); if (!node || node.category !== 'expression') throw new CFrontendInternalError(`node ${id} is not an expression`);
         const typed = node as Extract<TypedNodeRecord, { category: 'expression' }>;
         const type = shells.get(Number(typed.type)); if (!type) throw new CFrontendInternalError(`expression ${id} references unknown type`);
+        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'conditional' || typed.kind === 'string-literal') {
+            fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
+        }
         const operands = Object.freeze(typed.children.map((child) => adaptExpression(Number(child))));
         const expression: LoweringExpression = {
             kind: typed.kind,
@@ -207,7 +210,6 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         if (typed.kind !== 'declaration-reference' && typed.kind !== 'member' && typeSize(type) > 4) {
             fail('aggregate-valued operations are not supported by the MERC32 backend', typed.range, files);
         }
-        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'conditional' || typed.kind === 'string-literal') fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
         expressionMemo.set(id, expression);
         return expression;
     };
