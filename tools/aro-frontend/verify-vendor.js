@@ -39,12 +39,13 @@ function verifyVendoredAro(root) {
 
     const manifest = readManifest(path.join(resolvedRoot, upstream.manifest));
     const changes = readChanges(path.join(resolvedRoot, 'MERC32-CHANGES.json'));
-    const actualFiles = listRegularFiles(resolvedRoot);
+    const actualSnapshot = listRegularFiles(resolvedRoot);
     const sourceFiles = new Map();
-    for (const [file, hash] of actualFiles) {
+    for (const [file, hash] of actualSnapshot.files) {
         if (!METADATA_FILES.has(file)) sourceFiles.set(file, hash);
     }
 
+    verifyDirectories(manifest, actualSnapshot.directories);
     verifySnapshot(manifest, sourceFiles, changes);
     verifyLicenses(resolvedRoot, upstream.licenses);
 
@@ -55,7 +56,9 @@ function verifyVendoredAro(root) {
         trackedFileCount: upstream.trackedFileCount,
         zigVersion: upstream.zigVersion,
         files: Object.freeze([...sourceFiles.keys()].sort()),
-        digest: sha256(Buffer.from(JSON.stringify(manifest))),
+        digest: sha256(Buffer.from(JSON.stringify(
+            [...manifest].map(([file, hash]) => ({ path: file, sha256: hash })),
+        ))),
     });
 }
 
@@ -67,6 +70,7 @@ function readManifest(manifestPath) {
     }
 
     const files = new Map();
+    const normalizedPaths = new Map();
     let previousPath = '';
     for (const entry of manifest) {
         assertExactObject(entry, ['path', 'sha256'], 'UPSTREAM-MANIFEST.json entry');
@@ -74,8 +78,14 @@ function readManifest(manifestPath) {
         assertSha256(entry.sha256, `UPSTREAM-MANIFEST.json hash for ${entry.path}`);
         if (entry.path <= previousPath) throw new Error('UPSTREAM-MANIFEST.json paths must be sorted and unique');
         if (METADATA_FILES.has(entry.path)) throw new Error(`UPSTREAM-MANIFEST.json includes local metadata ${entry.path}`);
+        const normalizedPath = entry.path.normalize('NFC').toLocaleLowerCase('en-US');
+        const conflictingPath = normalizedPaths.get(normalizedPath);
+        if (conflictingPath !== undefined) {
+            throw new Error('case-ambiguous vendor path: ' + conflictingPath + ' and ' + entry.path);
+        }
         previousPath = entry.path;
         files.set(entry.path, entry.sha256);
+        normalizedPaths.set(normalizedPath, entry.path);
     }
     return files;
 }
@@ -134,6 +144,20 @@ function verifySnapshot(manifest, actualFiles, changes) {
     }
 }
 
+function verifyDirectories(manifest, directories) {
+    const expectedDirectories = new Set();
+    for (const file of manifest.keys()) {
+        let directory = path.posix.dirname(file);
+        while (directory !== '.') {
+            expectedDirectories.add(directory);
+            directory = path.posix.dirname(directory);
+        }
+    }
+    for (const directory of directories) {
+        if (!expectedDirectories.has(directory)) throw new Error('unknown vendor directory: ' + directory);
+    }
+}
+
 function verifyLicenses(root, licenses) {
     const [license, unicodeLicense] = licenses;
     const licenseText = fs.readFileSync(path.join(root, license), 'utf8');
@@ -146,13 +170,16 @@ function verifyLicenses(root, licenses) {
 
 function listRegularFiles(root) {
     const files = new Map();
+    const directories = new Set();
     const visit = (directory, relativeDirectory) => {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
             const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
             const absolutePath = path.join(directory, entry.name);
             const status = fs.lstatSync(absolutePath);
+            assertAllowedVendorPath(relativePath);
             if (status.isSymbolicLink()) throw new Error(`vendor snapshot contains a symlink: ${relativePath}`);
             if (status.isDirectory()) {
+                directories.add(relativePath);
                 visit(absolutePath, relativePath);
                 continue;
             }
@@ -161,7 +188,7 @@ function listRegularFiles(root) {
         }
     };
     visit(root, '');
-    return files;
+    return { files, directories };
 }
 
 function readJson(file, label) {
@@ -187,6 +214,14 @@ function assertVendorPath(value, label) {
     if (typeof value !== 'string' || value.length === 0 || value.includes('\\') || value.startsWith('/')
         || value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
         throw new Error(`${label} is not a normalized relative path`);
+    }
+}
+
+function assertAllowedVendorPath(value) {
+    for (const forbidden of ['.git', '.zig-cache', 'zig-out']) {
+        if (value === forbidden || value.startsWith(forbidden + '/')) {
+            throw new Error('forbidden vendor path: ' + value);
+        }
     }
 }
 
