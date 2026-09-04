@@ -1,7 +1,7 @@
 import { Token } from './lexer';
 import { CFrontendError } from './source';
 import { arrayType, builtinType, CType, functionType, pointerType, qualifyType, structType, unionType, typedefType, TypeQualifiers } from './types';
-import { CompoundStatement, Declaration, Declarator, Expression, Statement, TranslationUnit } from './declarations';
+import { CompoundStatement, Declaration, Declarator, Expression, Initializer, Statement, TranslationUnit } from './declarations';
 
 type MutableQualifiers = { -readonly [K in keyof TypeQualifiers]?: boolean };
 
@@ -36,8 +36,8 @@ class Parser {
         ds.push({ ...declarator, body: this.parseCompoundStatement() });
         return [{ kind: 'declaration', type: base, declarators: ds, location: first.location }];
       }
-      ds.push(declarator);
-      this.consumeInitializer();
+      const initializer = this.consumeInitializer();
+      ds.push(initializer ? { ...declarator, initializer } : declarator);
       if (!this.is(',')) break;
       this.take();
     } while (true);
@@ -182,15 +182,17 @@ class Parser {
       : functionType(type, suffix.parameters.map(parameter => parameter.type), suffix.variadic);
   }
 
-  private consumeInitializer() {
-    if (!this.is('=')) return;
+  private consumeInitializer(): Initializer | undefined {
+    if (!this.is('=')) return undefined;
     this.take();
+    const tokens: string[] = [];
     let depth = 0;
     while (this.peek().kind !== 'eof' && !(depth === 0 && (this.is(';') || this.is(',')))) {
       if (this.is('{') || this.is('(') || this.is('[')) depth++;
       if (this.is('}') || this.is(')') || this.is(']')) depth--;
-      this.take();
+      tokens.push(this.take().text);
     }
+    return { kind: 'initializer', tokens };
   }
 
   private parseCompoundStatement(): CompoundStatement {

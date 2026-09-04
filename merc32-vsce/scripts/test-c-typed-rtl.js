@@ -10,14 +10,34 @@ const { assembleToObject, linkObjects } = require('../out/linker');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
 const source = `
+struct Pair { int value; };
+int global_result;
 int five(int a, int b, int c, int d, int e) {
     return a + b + c + d + e;
 }
 int scalar_expression(int value) {
     return value ? -value + !0 : sizeof(int) + _Alignof(int) + '\\n' + ~0;
 }
+int increment(int *value) {
+    *value = *value + 3;
+    return *value;
+}
+int apply(int (*callback)(int *), int *value) {
+    return callback(value);
+}
+int memory_expression(int initial) {
+    struct Pair pair;
+    int *pointer = &pair.value;
+    pair.value = initial;
+    global_result = apply(increment, pointer);
+    return pointer[0] + global_result - pair.value;
+}
+int pointer_distance(void) {
+    int values[4];
+    return &values[3] - values;
+}
 int main(void) {
-    return five(1, 2, 3, 4, 5) + scalar_expression(3) + 24576;
+    return five(1, 2, 3, 4, 5) + scalar_expression(3) + memory_expression(4) + pointer_distance() + 24566;
 }
 `;
 const startupObject = assembleToObject(`
@@ -43,7 +63,7 @@ typed_halt:
 const linked = linkObjects([
     startupObject,
     compileCToObject(source, { moduleName: 'typed_rtl' }),
-], { entrySymbol: 'typed_start' });
+], { entrySymbol: 'typed_start', dataBase: 0x08000000 });
 assert.strictEqual(linked.entryAddress, 0, 'the linked startup wrapper must remain at the reset address');
 assert.strictEqual(linked.symbols.get('five'), startupObject.sections[0].size,
     'the typed helper must begin after the startup wrapper');

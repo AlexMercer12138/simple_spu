@@ -100,7 +100,7 @@ const manyArgumentCallOffset = manyArgumentObject.relocations.find((relocation) 
 assert.strictEqual(typeof manyArgumentCallOffset, 'number');
 const manyArgumentInstructionOffset = manyArgumentAssembly
     .split(/\r?\n/)
-    .filter((line) => /^\s*(?:mov|sw|jmp|bz|bnz|cmp|mul|div|rem):?/.test(line))
+    .filter((line) => /^\s*(?:mov|lb|lbu|lh|lhu|lw|sb|sh|sw|jmp|bz|bnz|cmp|mul|div|rem):?/.test(line))
     .findIndex((line) => line.trim() === 'jmp 0x0, r14') * 4;
 assert.strictEqual(manyArgumentCallOffset, manyArgumentInstructionOffset,
     'typed call relocation must identify the resolved call instruction, after argument setup');

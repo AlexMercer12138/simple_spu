@@ -1,5 +1,6 @@
 import { Merc32Object, ObjectSymbol, Relocation } from '../linker/objectFormat';
 import { IRFunction, IRInstruction, Merc32Module } from './ir';
+import { CType, typeAlignment, typeSize } from './types';
 
 export function generateAssembly(module: Merc32Module): string {
   return emitModule(module).assembly;
@@ -7,12 +8,26 @@ export function generateAssembly(module: Merc32Module): string {
 
 export function generateObject(module: Merc32Module): Merc32Object {
   const emitted = emitModule(module);
+  const sections: Merc32Object['sections'][number][] = [
+    { name: 'text', alignment: 4, size: emitted.size, content: emitted.assembly },
+  ];
+  const symbols = [...emitted.symbols];
+  let bssSize = 0;
+  let bssAlignment = 1;
+  for (const global of module.globals) {
+    const alignment = typeAlignment(global.type);
+    bssAlignment = Math.max(bssAlignment, alignment);
+    bssSize = alignUp(bssSize, alignment);
+    symbols.push({ name: global.name, binding: 'global', section: 'bss', offset: bssSize, defined: true });
+    bssSize += typeSize(global.type);
+  }
+  if (bssSize > 0) sections.push({ name: 'bss', alignment: bssAlignment, size: bssSize });
   return {
     version: 1,
     target: 'merc32',
     abi: module.abi,
-    sections: [{ name: 'text', alignment: 4, size: emitted.size, content: emitted.assembly }],
-    symbols: emitted.symbols,
+    sections,
+    symbols,
     relocations: emitted.relocations,
   };
 }
@@ -28,7 +43,10 @@ function emitModule(module: Merc32Module): EmittedModule {
   const lines: string[] = [];
   const symbols: ObjectSymbol[] = [];
   const relocations: Relocation[] = [];
-  const defined = new Set(module.functions.map(func => func.name));
+  const defined = new Set([
+    ...module.functions.map(func => func.name),
+    ...module.globals.map(global => global.name),
+  ]);
   const occupiedLabels = new Set(defined);
   for (const func of module.functions) {
     for (const instruction of func.blocks.flatMap(block => block.instructions)) {
@@ -47,9 +65,9 @@ function emitModule(module: Merc32Module): EmittedModule {
     symbols.push({ name: func.name, binding: 'global', section: 'text', offset, defined: true });
     lines.push(`${func.name}:`);
     const returnLabel = allocateLabel(func.returnLabel ?? `__${func.name}_return`, occupiedLabels);
-    emitFunction(func, returnLabel, emitInstruction, (symbol, instruction) => {
+    emitFunction(func, returnLabel, emitInstruction, (symbol, instruction, kind) => {
       referenced.add(symbol);
-      relocations.push({ section: 'text', offset, kind: 'CALL16', symbol, addend: 0,
+      relocations.push({ section: 'text', offset, kind, symbol, addend: 0,
         ...(instruction.location ? { debug: instruction.location } : {}) });
     }, emitLocalLabel);
   }
@@ -64,31 +82,42 @@ function emitFunction(
   func: IRFunction,
   returnLabel: string,
   emit: (instruction: string) => void,
-  reference: (symbol: string, instruction: IRInstruction) => void,
+  reference: (symbol: string, instruction: IRInstruction, kind: Relocation['kind']) => void,
   emitLabel: (label: string) => void,
 ): void {
   const argumentRegisters = ['r4', 'r5', 'r6', 'r7'];
   const parameterNames = func.parameterNames ?? [];
   const localNames = func.localNames ?? [];
-  const slots = new Map<string, number>();
-  [...parameterNames, ...localNames].forEach((name, index) => {
-    if (name) slots.set(name, 8 + index * 4);
-  });
+  const localTypes = func.localTypes ?? localNames.map(() => undefined);
+  const slots = new Map<string, { readonly offset: number; readonly type?: CType }>();
+  let nextVariableOffset = 8;
+  const variables = [
+    ...parameterNames.map((name, index) => ({ name, type: func.parameters[index] })),
+    ...localNames.map((name, index) => ({ name, type: localTypes[index] })),
+  ];
+  for (const variable of variables) {
+    if (!variable.name) continue;
+    const alignment = variable.type ? typeAlignment(variable.type) : 4;
+    nextVariableOffset = alignUp(nextVariableOffset, alignment);
+    slots.set(variable.name, { offset: nextVariableOffset, type: variable.type });
+    nextVariableOffset += variable.type ? typeSize(variable.type) : 4;
+  }
   const instructionList = func.blocks.flatMap(block => block.instructions);
   const valueSlots = Math.max(0, ...instructionList
     .filter(instruction => instruction.dest !== undefined)
     .map(instruction => (instruction.dest ?? -1) + 1));
-  const valueBase = 8 + slots.size * 4;
-  const frameSize = valueBase + valueSlots * 4;
+  const valueBase = alignUp(nextVariableOffset, 4);
+  const frameSize = alignUp(valueBase + valueSlots * 4, 4);
   const valueRegister = (value: number) => `r${4 + value % 8}`;
   const valueOffset = (value: number) => valueBase + value * 4;
   const readValue = (value: number, target: string) => emit(`mov ${target}, [r12 + ${valueOffset(value)}]`);
   const spillValue = (value: number) => emit(`sw [r12 + ${valueOffset(value)}], ${valueRegister(value)}`);
   const slot = (name: string) => {
-    const offset = slots.get(name);
-    if (offset === undefined) throw new Error(`typed code generation cannot resolve scalar '${name}'`);
-    return offset;
+    const entry = slots.get(name);
+    if (entry === undefined) throw new Error(`typed code generation cannot resolve scalar '${name}'`);
+    return entry.offset;
   };
+  const variableType = (name: string) => slots.get(name)?.type;
 
   emit(`mov r13, r13 - ${frameSize}`);
   emit('mov [r13 + 0], r14');
@@ -97,10 +126,10 @@ function emitFunction(
   parameterNames.forEach((name, index) => {
     if (!name) return;
     if (index < argumentRegisters.length) {
-      emit(`sw [r12 + ${slot(name)}], ${argumentRegisters[index]}`);
+      emitStore(variableType(name), `[r12 + ${slot(name)}]`, argumentRegisters[index], emit);
     } else {
       emit(`mov r7, [r12 + ${frameSize + (index - argumentRegisters.length) * 4}]`);
-      emit(`sw [r12 + ${slot(name)}], r7`);
+      emitStore(variableType(name), `[r12 + ${slot(name)}]`, 'r7', emit);
     }
   });
 
@@ -117,12 +146,38 @@ function emitFunction(
           spillValue(instruction.dest ?? 0);
           break;
         case 'load':
-          emit(`mov ${valueRegister(instruction.dest ?? 0)}, [r12 + ${slot(String(instruction.args[0]))}]`);
+          emitLoad(variableType(String(instruction.args[0])), valueRegister(instruction.dest ?? 0), `[r12 + ${slot(String(instruction.args[0]))}]`, emit);
           spillValue(instruction.dest ?? 0);
           break;
         case 'store':
           readValue(Number(instruction.args[1]), 'r7');
-          emit(`sw [r12 + ${slot(String(instruction.args[0]))}], r7`);
+          emitStore(variableType(String(instruction.args[0])), `[r12 + ${slot(String(instruction.args[0]))}]`, 'r7', emit);
+          break;
+        case 'address-local':
+          emit(`mov ${valueRegister(instruction.dest ?? 0)}, r12 + ${slot(String(instruction.args[0]))}`);
+          spillValue(instruction.dest ?? 0);
+          break;
+        case 'address-symbol': {
+          const symbol = String(instruction.args[0]);
+          const destination = valueRegister(instruction.dest ?? 0);
+          reference(symbol, instruction, 'HI16');
+          emit(`mov ${destination}, ${symbol}`);
+          emit(`mov ${destination}, ${destination} << 16`);
+          reference(symbol, instruction, 'LO16');
+          emit(`mov ${destination}, ${destination} + ${symbol}`);
+          spillValue(instruction.dest ?? 0);
+          break;
+        }
+        case 'load-memory':
+          readValue(Number(instruction.args[0]), 'r8');
+          emitLoadBySize(Number(instruction.args[1]), Number(instruction.args[2]) !== 0,
+            valueRegister(instruction.dest ?? 0), '[r8]', emit);
+          spillValue(instruction.dest ?? 0);
+          break;
+        case 'store-memory':
+          readValue(Number(instruction.args[0]), 'r8');
+          readValue(Number(instruction.args[1]), 'r7');
+          emitStoreBySize(Number(instruction.args[2]), '[r8]', 'r7', emit);
           break;
         case 'move-value':
           readValue(Number(instruction.args[0]), valueRegister(instruction.dest ?? 0));
@@ -133,8 +188,10 @@ function emitFunction(
           spillValue(instruction.dest ?? 0);
           break;
         case 'call':
-        case 'runtime-call': {
-          const symbol = String(instruction.args[0]);
+        case 'runtime-call':
+        case 'call-indirect': {
+          const indirect = instruction.op === 'call-indirect';
+          const target = instruction.args[0];
           const argumentsList = instruction.args.slice(1);
           const extraBytes = Math.max(0, argumentsList.length - argumentRegisters.length) * 4;
           if (extraBytes > 0) emit(`mov r13, r13 - ${extraBytes}`);
@@ -147,8 +204,14 @@ function emitFunction(
               readValue(Number(argument), argumentRegisters[index]);
             }
           });
-          reference(symbol, instruction);
-          emit(`jmp ${symbol}, r14`);
+          if (indirect) {
+            readValue(Number(target), 'r8');
+            emit('jmp r8, r14');
+          } else {
+            const symbol = String(target);
+            reference(symbol, instruction, 'CALL16');
+            emit(`jmp ${symbol}, r14`);
+          }
           if (extraBytes > 0) emit(`mov r13, r13 + ${extraBytes}`);
           if (instruction.dest !== undefined && valueRegister(instruction.dest) !== 'r4') {
             emit(`mov ${valueRegister(instruction.dest)}, r4`);
@@ -171,6 +234,36 @@ function emitFunction(
   emit(`mov r13, r12 + ${frameSize}`);
   emit('mov r12, r8');
   emit('jmp r14');
+}
+
+function alignUp(value: number, alignment: number): number {
+  return Math.ceil(value / alignment) * alignment;
+}
+
+function emitLoad(type: CType | undefined, destination: string, address: string, emit: (instruction: string) => void): void {
+  if (!type) {
+    emit(`lw ${destination}, ${address}`);
+    return;
+  }
+  const size = typeSize(type);
+  const signed = type.kind === 'builtin' && (type.name === 'char' || type.name === 'short');
+  emitLoadBySize(size, signed, destination, address, emit);
+}
+
+function emitLoadBySize(size: number, signed: boolean, destination: string, address: string, emit: (instruction: string) => void): void {
+  const mnemonic = size === 1 ? signed ? 'lb' : 'lbu' : size === 2 ? signed ? 'lh' : 'lhu' : size === 4 ? 'lw' : undefined;
+  if (!mnemonic) throw new Error(`typed code generation cannot load ${size}-byte values`);
+  emit(`${mnemonic} ${destination}, ${address}`);
+}
+
+function emitStore(type: CType | undefined, address: string, source: string, emit: (instruction: string) => void): void {
+  emitStoreBySize(type ? typeSize(type) : 4, address, source, emit);
+}
+
+function emitStoreBySize(size: number, address: string, source: string, emit: (instruction: string) => void): void {
+  const mnemonic = size === 1 ? 'sb' : size === 2 ? 'sh' : size === 4 ? 'sw' : undefined;
+  if (!mnemonic) throw new Error(`typed code generation cannot store ${size}-byte values`);
+  emit(`${mnemonic} ${address}, ${source}`);
 }
 
 function emitBinary(

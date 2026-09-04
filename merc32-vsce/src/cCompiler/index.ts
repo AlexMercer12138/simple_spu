@@ -107,10 +107,19 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
             if (!declarator.name) continue;
             if (declaration.kind === 'typedef') continue;
             if (declarator.type.kind !== 'function') {
-                throw new CFrontendError(
-                    'typed C object backend does not support global declarations',
-                    declaration.location ?? fallback,
-                );
+                if (declarator.initializer) {
+                    throw new CFrontendError(
+                        'typed C object backend does not support global declarations with initializers',
+                        declaration.location ?? fallback,
+                    );
+                }
+                if (!isSupportedObjectType(declarator.type)) {
+                    throw new CFrontendError(
+                        'typed C object backend does not support this global object type',
+                        declaration.location ?? fallback,
+                    );
+                }
+                continue;
             }
             if (!declarator.body) continue;
             if (!isSupportedFunctionType(declarator.type.returnType)
@@ -131,7 +140,23 @@ function isSupportedFunctionType(type: CType): boolean {
             || ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
     }
     if (type.kind === 'enum') return true;
+    if (type.kind === 'pointer') {
+        return type.pointee.kind === 'function'
+            ? isSupportedFunctionType(type.pointee.returnType)
+                && type.pointee.parameters.every(isSupportedFunctionType)
+            : isSupportedObjectType(type.pointee) || type.pointee.kind === 'builtin' && type.pointee.name === 'void';
+    }
     return type.kind === 'typedef' && type.target !== undefined && isSupportedFunctionType(type.target);
+}
+
+function isSupportedObjectType(type: CType): boolean {
+    if (type.kind === 'builtin') {
+        return ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
+    }
+    if (type.kind === 'enum' || type.kind === 'pointer') return true;
+    if (type.kind === 'array') return type.length !== null && isSupportedObjectType(type.element);
+    if (type.kind === 'struct' || type.kind === 'union') return type.fields.length > 0 && type.fields.every(field => isSupportedObjectType(field.type));
+    return type.kind === 'typedef' && type.target !== undefined && isSupportedObjectType(type.target);
 }
 
 function validateTypedStatements(statements: readonly Statement[], fallback: SourceLocation): void {
@@ -139,7 +164,7 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
         switch (statement.kind) {
             case 'compound': validateTypedStatements(statement.statements, statement.location ?? fallback); break;
             case 'local-declaration':
-                if (!isSupportedFunctionType(statement.type)) {
+                if (!isSupportedObjectType(statement.type)) {
                     throw new CFrontendError(
                         isFloatingType(statement.type)
                             ? 'typed C object backend does not support floating-point function bodies'
@@ -180,10 +205,17 @@ function validateTypedStatement(statement: Statement, fallback: SourceLocation):
 
 function validateTypedExpression(expression: Expression, fallback: SourceLocation): void {
     switch (expression.kind) {
-        case 'integer-literal': case 'identifier': break;
-        case 'call': expression.arguments.forEach(argument => validateTypedExpression(argument, fallback)); break;
+        case 'integer-literal': case 'character-literal': case 'identifier': case 'alignof': break;
+        case 'floating-literal': throw new CFrontendError('typed C object backend does not support floating-point function bodies', expression.location ?? fallback);
+        case 'string-literal': throw new CFrontendError('typed C object backend does not support string literals yet', expression.location ?? fallback);
+        case 'unary': validateTypedExpression(expression.operand, fallback); break;
+        case 'call': validateTypedExpression(expression.callee, fallback); expression.arguments.forEach(argument => validateTypedExpression(argument, fallback)); break;
+        case 'subscript': validateTypedExpression(expression.object, fallback); validateTypedExpression(expression.index, fallback); break;
+        case 'member': validateTypedExpression(expression.object, fallback); break;
+        case 'sizeof': if (expression.expressionOperand) validateTypedExpression(expression.expressionOperand, fallback); break;
         case 'binary': validateTypedExpression(expression.left, fallback); validateTypedExpression(expression.right, fallback); break;
-        case 'assignment': validateTypedExpression(expression.value, fallback); break;
+        case 'conditional': validateTypedExpression(expression.condition, fallback); validateTypedExpression(expression.consequent, fallback); validateTypedExpression(expression.alternate, fallback); break;
+        case 'assignment': validateTypedExpression(expression.target, fallback); validateTypedExpression(expression.value, fallback); break;
     }
 }
 
