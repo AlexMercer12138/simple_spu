@@ -142,6 +142,7 @@ fn analyze(json: []const u8) !void {
         status,
         diagnostic_records,
         &sources,
+        if (tree) |*parsed_tree| parsed_tree else null,
     );
     state.setResult(encoded);
 }

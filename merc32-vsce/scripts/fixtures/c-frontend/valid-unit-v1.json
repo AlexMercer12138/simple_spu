@@ -14,7 +14,7 @@
       { "id": 1, "path": "main.c", "byteLength": 26 }
     ],
     "types": [
-      { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }
+      { "id": 1, "kind": "builtin", "name": "int", "qualifiers": ["const"], "size": 4, "alignment": 4 }
     ],
     "symbols": [],
     "nodes": [],

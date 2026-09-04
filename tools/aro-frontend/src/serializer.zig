@@ -1,6 +1,11 @@
 const std = @import("std");
+const aro = @import("aro");
 const diagnostics = @import("diagnostics.zig");
 const source_provider = @import("source_provider.zig");
+const serialize_symbols = @import("serialize_symbols.zig");
+const serialize_types = @import("serialize_types.zig");
+
+pub const SourceState = source_provider.State;
 
 pub const Status = enum {
     ok,
@@ -8,7 +13,7 @@ pub const Status = enum {
     @"internal-error",
 };
 
-pub const Error = error{ResultTooLarge} || std.mem.Allocator.Error;
+pub const Error = anyerror;
 
 pub fn envelope(
     allocator: std.mem.Allocator,
@@ -17,6 +22,7 @@ pub fn envelope(
     status: Status,
     diagnostic_records: []const diagnostics.Diagnostic,
     sources: *const source_provider.State,
+    tree: ?*const aro.Tree,
 ) Error![]const u8 {
     var output: Buffer = .{ .allocator = allocator, .limit = limit };
     errdefer output.list.deinit(allocator);
@@ -32,13 +38,25 @@ pub fn envelope(
     try output.byte(']');
 
     if (status == .ok) {
+        const analyzed_tree = tree orelse return error.MissingTree;
+        var types = serialize_types.Store.init(allocator, analyzed_tree, sources);
+        defer types.deinit();
+        try types.collect();
+        var symbols = serialize_symbols.Store.init(allocator, analyzed_tree, &types);
+        defer symbols.deinit();
+        try symbols.collect();
+
         try output.add(",\"unit\":{");
         try output.add("\"schema\":\"merc32.typed-c-unit\",\"schemaVersion\":1,");
         try output.add("\"target\":\"merc32\",\"abi\":\"merc32-c-v1\",");
         try output.add("\"dataModel\":\"merc32-ilp32\",\"language\":\"c17-freestanding\",");
         try output.add("\"sourceFiles\":");
         try writeSourceFiles(&output, sources);
-        try output.add(",\"types\":[],\"symbols\":[],\"nodes\":[],\"declarations\":[]}");
+        try output.add(",\"types\":");
+        try types.write(&output);
+        try output.add(",\"symbols\":");
+        try symbols.write(&output);
+        try output.add(",\"nodes\":[],\"declarations\":[]}");
     } else if (diagnostic_records.len != 0 and sources.files.items.len != 0) {
         try output.add(",\"sourceFiles\":");
         try writeSourceFiles(&output, sources);
@@ -155,27 +173,27 @@ fn writePosition(output: *Buffer, position: diagnostics.Position) Error!void {
     try output.byte('}');
 }
 
-const Buffer = struct {
+pub const Buffer = struct {
     allocator: std.mem.Allocator,
     limit: usize,
     list: std.ArrayList(u8) = .empty,
 
-    fn add(buffer: *Buffer, bytes: []const u8) Error!void {
+    pub fn add(buffer: *Buffer, bytes: []const u8) Error!void {
         if (bytes.len > buffer.limit -| buffer.list.items.len) return error.ResultTooLarge;
         try buffer.list.appendSlice(buffer.allocator, bytes);
     }
 
-    fn byte(buffer: *Buffer, value: u8) Error!void {
+    pub fn byte(buffer: *Buffer, value: u8) Error!void {
         if (buffer.list.items.len == buffer.limit) return error.ResultTooLarge;
         try buffer.list.append(buffer.allocator, value);
     }
 
-    fn integer(buffer: *Buffer, value: anytype) Error!void {
+    pub fn integer(buffer: *Buffer, value: anytype) Error!void {
         var storage: [32]u8 = undefined;
         try buffer.add(std.fmt.bufPrint(&storage, "{d}", .{value}) catch unreachable);
     }
 
-    fn string(buffer: *Buffer, value: []const u8) Error!void {
+    pub fn string(buffer: *Buffer, value: []const u8) Error!void {
         try buffer.byte('"');
         for (value) |char| switch (char) {
             '"' => try buffer.add("\\\""),
@@ -222,5 +240,6 @@ test "serialized result one byte over the hard cap fails without retaining its p
         .diagnostics,
         &.{diagnostic},
         &sources,
+        null,
     ));
 }
