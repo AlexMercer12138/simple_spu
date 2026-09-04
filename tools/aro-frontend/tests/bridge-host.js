@@ -259,6 +259,103 @@ assert.strictEqual(syntax.envelope.status, 'diagnostics');
 assert.ok(syntax.envelope.diagnostics.some((item) =>
     item.severity === 'error' || item.severity === 'fatal'));
 
+const translatedRangeCases = [
+    {
+        name: 'backslash-LF splicing',
+        source: 'int x = \\\n+ bad;\n',
+        identifier: 'bad',
+        range: {
+            file: 1,
+            start: { line: 2, column: 3, byteOffset: 12 },
+            end: { line: 2, column: 6, byteOffset: 15 },
+        },
+    },
+    {
+        name: 'CRLF normalization',
+        source: 'int ok;\r\nint x = + bad;\r\n',
+        identifier: 'bad',
+        range: {
+            file: 1,
+            start: { line: 2, column: 11, byteOffset: 19 },
+            end: { line: 2, column: 14, byteOffset: 22 },
+        },
+    },
+    {
+        name: 'UTF-8 BOM removal',
+        source: '\uFEFFint x = + bad;\n',
+        identifier: 'bad',
+        range: {
+            file: 1,
+            start: { line: 1, column: 12, byteOffset: 13 },
+            end: { line: 1, column: 15, byteOffset: 16 },
+        },
+    },
+    {
+        name: 'combined transformations on a later physical line',
+        source: '\uFEFFint pre;\r\nint x = \\\r\n+ later_bad;\r\n',
+        identifier: 'later_bad',
+        range: {
+            file: 1,
+            start: { line: 3, column: 3, byteOffset: 26 },
+            end: { line: 3, column: 12, byteOffset: 35 },
+        },
+    },
+];
+for (const testCase of translatedRangeCases) {
+    const result = analyze(makeRequest({ source: testCase.source }));
+    assert.strictEqual(result.envelope.status, 'diagnostics', testCase.name);
+    const diagnostic = result.envelope.diagnostics.find((item) =>
+        item.message.includes(`'${testCase.identifier}'`));
+    assert.ok(diagnostic, `${testCase.name}: ${JSON.stringify(result.envelope)}`);
+    assert.deepStrictEqual(diagnostic.range, testCase.range,
+        `${testCase.name} must use original UTF-8 source coordinates`);
+}
+
+const translatedInclude = analyze(makeRequest({
+    source: '\uFEFFint before;\r\n#include "broken.h"\r\n',
+}), new Resolver(new Map([
+    ['broken.h', { source: '\uFEFFint pad;\r\nint x = + header_bad;\r\n' }],
+])));
+assert.strictEqual(translatedInclude.envelope.status, 'diagnostics');
+const translatedIncludeDiagnostic = translatedInclude.envelope.diagnostics.find((item) =>
+    item.message.includes("'header_bad'"));
+assert.ok(translatedIncludeDiagnostic, JSON.stringify(translatedInclude.envelope));
+assert.deepStrictEqual(translatedIncludeDiagnostic.range, {
+    file: 2,
+    start: { line: 2, column: 11, byteOffset: 23 },
+    end: { line: 2, column: 21, byteOffset: 33 },
+}, 'included diagnostics must use provider-source coordinates before Aro translation');
+assert.deepStrictEqual(translatedIncludeDiagnostic.includeTrace, [{
+    file: 1,
+    start: { line: 2, column: 10, byteOffset: 25 },
+    end: { line: 2, column: 20, byteOffset: 35 },
+}], 'include traces must use original request-source coordinates');
+
+const translatedMacro = analyze(makeRequest({
+    source: '\uFEFF#define BAD + bad\r\nint x = BAD;\r\n',
+}));
+assert.strictEqual(translatedMacro.envelope.status, 'diagnostics');
+const translatedMacroDiagnostic = translatedMacro.envelope.diagnostics.find((item) =>
+    item.message.includes("'bad'"));
+assert.ok(translatedMacroDiagnostic, JSON.stringify(translatedMacro.envelope));
+assert.deepStrictEqual(translatedMacroDiagnostic.range, {
+    file: 1,
+    start: { line: 2, column: 9, byteOffset: 30 },
+    end: { line: 2, column: 12, byteOffset: 33 },
+}, 'macro-expanded primary ranges must use original invocation coordinates');
+const translatedMacroDefinitionRange = {
+    file: 1,
+    start: { line: 1, column: 16, byteOffset: 17 },
+    end: { line: 1, column: 19, byteOffset: 20 },
+};
+assert.deepStrictEqual(translatedMacroDiagnostic.related, [{
+    message: 'expanded from here',
+    range: translatedMacroDefinitionRange,
+}], 'related macro notes must use original definition coordinates');
+assert.deepStrictEqual(translatedMacroDiagnostic.macroExpansionTrace,
+    [translatedMacroDefinitionRange],
+    'macro expansion traces must use original definition coordinates');
+
 const repeatedCanonicalSource = [
     '#ifdef SECOND_PASS',
     'int repeated = + later;',

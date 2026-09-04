@@ -130,6 +130,139 @@ pub fn lineCol(source: Source, loc: Location) ExpandedLocation {
     };
 }
 
+pub const OriginalPosition = struct {
+    byte_offset: u32,
+    line: u32,
+    column: u32,
+};
+
+pub const OriginalBoundary = struct {
+    before_splice: OriginalPosition,
+    after_splice: OriginalPosition,
+};
+
+/// Resolves monotonically increasing translated offsets against the original
+/// source bytes without retaining a per-byte translation map.
+pub const OriginalLocationMapper = struct {
+    pub const Error = error{InvalidSourceMapping};
+
+    source: Source,
+    original: []const u8,
+    original_index: usize = 0,
+    translated_index: u32 = 0,
+    splice_index: usize = 0,
+    position: OriginalPosition = .{ .byte_offset = 0, .line = 1, .column = 1 },
+    boundary_before: OriginalPosition = .{ .byte_offset = 0, .line = 1, .column = 1 },
+
+    pub fn init(source: Source, original: []const u8) OriginalLocationMapper {
+        var mapper: OriginalLocationMapper = .{
+            .source = source,
+            .original = original,
+        };
+        if (std.mem.startsWith(u8, original, "\xEF\xBB\xBF")) {
+            mapper.advanceOriginalTo(3);
+            mapper.boundary_before = mapper.position;
+        }
+        return mapper;
+    }
+
+    pub fn resolve(mapper: *OriginalLocationMapper, translated_offset: u32) Error!OriginalBoundary {
+        if (translated_offset < mapper.translated_index or translated_offset > mapper.source.buf.len) {
+            return error.InvalidSourceMapping;
+        }
+        while (mapper.translated_index < translated_offset) {
+            try mapper.consumeSplices();
+            try mapper.consumeTranslatedByte();
+            mapper.boundary_before = mapper.position;
+        }
+        const before_splice = mapper.boundary_before;
+        try mapper.consumeSplices();
+        return .{
+            .before_splice = before_splice,
+            .after_splice = mapper.position,
+        };
+    }
+
+    fn consumeSplices(mapper: *OriginalLocationMapper) Error!void {
+        while (mapper.splice_index < mapper.source.splice_locs.len) {
+            const splice_offset = mapper.source.splice_locs[mapper.splice_index];
+            if (splice_offset < mapper.translated_index) return error.InvalidSourceMapping;
+            if (splice_offset != mapper.translated_index) break;
+
+            const end = try mapper.spliceEnd();
+            mapper.advanceOriginalTo(end);
+            mapper.splice_index += 1;
+        }
+    }
+
+    fn spliceEnd(mapper: *const OriginalLocationMapper) Error!usize {
+        if (mapper.original_index >= mapper.original.len) return error.InvalidSourceMapping;
+        var index = mapper.original_index;
+        if (mapper.original[index] == '\\') {
+            index += 1;
+            while (index < mapper.original.len and isSpliceWhitespace(mapper.original[index])) : (index += 1) {}
+        }
+        if (index >= mapper.original.len) return error.InvalidSourceMapping;
+        return switch (mapper.original[index]) {
+            '\n' => index + 1,
+            '\r' => index + 1 + @intFromBool(index + 1 < mapper.original.len and mapper.original[index + 1] == '\n'),
+            else => error.InvalidSourceMapping,
+        };
+    }
+
+    fn consumeTranslatedByte(mapper: *OriginalLocationMapper) Error!void {
+        if (mapper.translated_index >= mapper.source.buf.len or mapper.original_index >= mapper.original.len) {
+            return error.InvalidSourceMapping;
+        }
+        const translated = mapper.source.buf[mapper.translated_index];
+        const original = mapper.original[mapper.original_index];
+        const original_end = if (original == translated)
+            mapper.original_index + 1
+        else if (original == '\r' and translated == '\n')
+            mapper.original_index + 1 + @intFromBool(
+                mapper.original_index + 1 < mapper.original.len and
+                    mapper.original[mapper.original_index + 1] == '\n',
+            )
+        else
+            return error.InvalidSourceMapping;
+        mapper.advanceOriginalTo(original_end);
+        mapper.translated_index += 1;
+    }
+
+    fn advanceOriginalTo(mapper: *OriginalLocationMapper, end: usize) void {
+        while (mapper.original_index < end) {
+            const byte = mapper.original[mapper.original_index];
+            switch (byte) {
+                '\r' => {
+                    mapper.original_index += 1;
+                    if (mapper.original_index < end and mapper.original[mapper.original_index] == '\n') {
+                        mapper.original_index += 1;
+                    }
+                    mapper.position.line += 1;
+                    mapper.position.column = 1;
+                },
+                '\n' => {
+                    mapper.original_index += 1;
+                    mapper.position.line += 1;
+                    mapper.position.column = 1;
+                },
+                else => {
+                    mapper.original_index += 1;
+                    if (byte & 0xC0 != 0x80) mapper.position.column += 1;
+                },
+            }
+        }
+        mapper.position.byte_offset = @intCast(mapper.original_index);
+    }
+
+    fn isSpliceWhitespace(byte: u8) bool {
+        return switch (byte) {
+            '\t', '\x0B', '\x0C', ' ' => true,
+            else => false,
+        };
+    }
+};
+
 fn codepointWidth(cp: u32) u32 {
     return switch (cp) {
         0x1100...0x115F,

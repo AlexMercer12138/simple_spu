@@ -10,7 +10,7 @@ The pinned upstream snapshot remains byte-for-byte auditable through `UPSTREAM-M
 | `src/aro/Parser.zig` | Route integer-literal and int128 capability behavior through the selected compilation model. |
 | `src/aro/Preprocessor.zig` | Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, preserve canonical alias semantics for active-source and include-guard tracking, and compile out verbose stderr logging for freestanding builds. |
 | `src/aro/Preprocessor/Parser.zig` | Validate preprocessor intmax width through the selected compilation model. |
-| `src/aro/Source.zig` | Preserve original source IDs and byte offsets in expanded diagnostic locations and expose canonical identity across source aliases. |
+| `src/aro/Source.zig` | Preserve original source IDs and byte offsets in expanded diagnostic locations, expose canonical identity across source aliases, and provide a bounded streaming map from translated locations to original source coordinates. |
 | `src/aro/TypeStore.zig` | Use compilation data-model queries for C type sizes, alignments, aliases, pointers, and functions. |
 | `src/aro/pragmas/once.zig` | Key pragma-once state by canonical source identity so per-inclusion aliases retain one-file semantics. |
 | `src/aro/record_layout.zig` | Apply the selected model's maximum natural alignment without inheriting host record-layout identity. |

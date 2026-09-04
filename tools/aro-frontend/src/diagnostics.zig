@@ -42,7 +42,7 @@ pub fn collect(
     comp: *const aro.Compilation,
     aro_diagnostics: *const aro.Diagnostics,
     sources: *const source_provider.State,
-) std.mem.Allocator.Error![]const Diagnostic {
+) (std.mem.Allocator.Error || aro.Source.OriginalLocationMapper.Error)![]const Diagnostic {
     const messages = switch (aro_diagnostics.output) {
         .to_list => |list| list.messages.items,
         else => return &.{},
@@ -147,25 +147,33 @@ fn mapSeverity(kind: aro.Diagnostics.Message.Kind) Severity {
 const TokenIndex = struct {
     const Entry = struct {
         file_id: u32,
-        offset: usize,
-        end: ?usize = null,
+        translated_offset: usize,
+        translated_end: ?usize = null,
+        original_start: ?Position = null,
+        original_end: ?Position = null,
 
         fn lessThan(_: void, lhs: Entry, rhs: Entry) bool {
             return lhs.file_id < rhs.file_id or
-                (lhs.file_id == rhs.file_id and lhs.offset < rhs.offset);
+                (lhs.file_id == rhs.file_id and lhs.translated_offset < rhs.translated_offset);
         }
+    };
+
+    const MappedRange = struct {
+        start: Position,
+        end: Position,
     };
 
     allocator: std.mem.Allocator,
     entries: []Entry,
     source_scan_count: usize = 0,
+    source_map_count: usize = 0,
 
     fn init(
         allocator: std.mem.Allocator,
         comp: *const aro.Compilation,
         messages: []const aro.Diagnostics.Message,
         sources: *const source_provider.State,
-    ) std.mem.Allocator.Error!TokenIndex {
+    ) (std.mem.Allocator.Error || aro.Source.OriginalLocationMapper.Error)!TokenIndex {
         var entries: std.ArrayList(Entry) = .empty;
         defer entries.deinit(allocator);
 
@@ -189,7 +197,7 @@ const TokenIndex = struct {
             var write_index: usize = 1;
             for (entries.items[1..]) |entry| {
                 const previous = entries.items[write_index - 1];
-                if (entry.file_id == previous.file_id and entry.offset == previous.offset) continue;
+                if (entry.file_id == previous.file_id and entry.translated_offset == previous.translated_offset) continue;
                 entries.items[write_index] = entry;
                 write_index += 1;
             }
@@ -201,7 +209,7 @@ const TokenIndex = struct {
             .entries = try entries.toOwnedSlice(allocator),
         };
         errdefer token_index.deinit();
-        token_index.scanSources(comp, sources);
+        try token_index.scanSources(comp, sources);
         return token_index;
     }
 
@@ -218,11 +226,15 @@ const TokenIndex = struct {
         const file = fileForLocation(sources, location);
         try entries.append(allocator, .{
             .file_id = file.id,
-            .offset = @min(@as(usize, location.byte_offset), file.source.len),
+            .translated_offset = location.byte_offset,
         });
     }
 
-    fn scanSources(index: *TokenIndex, comp: *const aro.Compilation, sources: *const source_provider.State) void {
+    fn scanSources(
+        index: *TokenIndex,
+        comp: *const aro.Compilation,
+        sources: *const source_provider.State,
+    ) aro.Source.OriginalLocationMapper.Error!void {
         var group_start: usize = 0;
         while (group_start < index.entries.len) {
             const file_id = index.entries[group_start].file_id;
@@ -250,29 +262,84 @@ const TokenIndex = struct {
                 const token = tokenizer.next();
                 const token_start: usize = token.start;
                 const token_end: usize = token.end;
-                while (query_index < group_end and index.entries[query_index].offset < token_start) : (query_index += 1) {}
-                while (query_index < group_end and index.entries[query_index].offset < token_end) : (query_index += 1) {
-                    index.entries[query_index].end = @min(token_end, file.source.len);
+                while (query_index < group_end and index.entries[query_index].translated_offset < token_start) : (query_index += 1) {}
+                while (query_index < group_end and index.entries[query_index].translated_offset < token_end) : (query_index += 1) {
+                    index.entries[query_index].translated_end = token_end;
                 }
                 if (token.id == .eof) break;
             }
+            for (index.entries[group_start..group_end]) |*entry| {
+                entry.translated_offset = @min(entry.translated_offset, source.buf.len);
+                if (entry.translated_end == null) {
+                    entry.translated_end = translatedCodepointEndOffset(source.buf, entry.translated_offset);
+                }
+            }
+            try index.mapSource(source, file.source, group_start, group_end);
             group_start = group_end;
         }
     }
 
-    fn findEnd(index: *const TokenIndex, file_id: u32, offset: usize) ?usize {
+    fn mapSource(
+        index: *TokenIndex,
+        source: aro.Source,
+        original: []const u8,
+        group_start: usize,
+        group_end: usize,
+    ) aro.Source.OriginalLocationMapper.Error!void {
+        var mapper = aro.Source.OriginalLocationMapper.init(source, original);
+        index.source_map_count += 1;
+        var start_index = group_start;
+        var end_index = group_start;
+        while (start_index < group_end or end_index < group_end) {
+            const next_start = if (start_index < group_end)
+                index.entries[start_index].translated_offset
+            else
+                std.math.maxInt(usize);
+            const next_end = if (end_index < group_end)
+                index.entries[end_index].translated_end.?
+            else
+                std.math.maxInt(usize);
+            const translated_offset = @min(next_start, next_end);
+            const boundary = try mapper.resolve(@intCast(translated_offset));
+
+            while (start_index < group_end and
+                index.entries[start_index].translated_offset == translated_offset) : (start_index += 1)
+            {
+                index.entries[start_index].original_start = originalPosition(boundary.after_splice);
+            }
+            while (end_index < group_end and
+                index.entries[end_index].translated_end.? == translated_offset) : (end_index += 1)
+            {
+                index.entries[end_index].original_end = originalPosition(boundary.before_splice);
+            }
+        }
+    }
+
+    fn findRange(index: *const TokenIndex, file_id: u32, translated_offset: usize) ?MappedRange {
         const Key = struct { file_id: u32, offset: usize };
-        const key: Key = .{ .file_id = file_id, .offset = offset };
+        const key: Key = .{ .file_id = file_id, .offset = translated_offset };
         const entry_index = std.sort.binarySearch(Entry, index.entries, key, struct {
             fn order(wanted: Key, entry: Entry) std.math.Order {
                 const file_order = std.math.order(wanted.file_id, entry.file_id);
                 if (file_order != .eq) return file_order;
-                return std.math.order(wanted.offset, entry.offset);
+                return std.math.order(wanted.offset, entry.translated_offset);
             }
         }.order) orelse return null;
-        return index.entries[entry_index].end;
+        const entry = index.entries[entry_index];
+        return .{
+            .start = entry.original_start orelse return null,
+            .end = entry.original_end orelse return null,
+        };
     }
 };
+
+fn originalPosition(position: aro.Source.OriginalPosition) Position {
+    return .{
+        .line = position.line,
+        .column = position.column,
+        .byte_offset = position.byte_offset,
+    };
+}
 
 fn fileForLocation(sources: *const source_provider.State, location: aro.Source.ExpandedLocation) source_provider.SourceFile {
     return sources.fileForAroId(location.source_id) orelse
@@ -286,58 +353,43 @@ fn rangeForExpanded(
     location: aro.Source.ExpandedLocation,
 ) Range {
     const file = fileForLocation(sources, location);
-    const source = file.source;
-    const offset = @min(@as(usize, location.byte_offset), source.len);
-    const line = @max(location.line_no, 1);
-    const column = @max(location.col, 1);
-    const end_offset = token_index.findEnd(file.id, offset) orelse codepointEndOffset(source, offset);
-    const end = positionAfter(source, offset, end_offset, line, column);
+    const mapped = token_index.findRange(file.id, location.byte_offset) orelse return startRange(file);
     return .{
         .file = file.id,
-        .start = .{ .line = line, .column = column, .byte_offset = @intCast(offset) },
-        .end = end,
+        .start = mapped.start,
+        .end = mapped.end,
     };
 }
 
-fn codepointEndOffset(source: []const u8, offset: usize) usize {
+fn translatedCodepointEndOffset(source: []const u8, offset: usize) usize {
     if (offset >= source.len or source[offset] == '\n') return offset;
     const sequence_len = std.unicode.utf8ByteSequenceLength(source[offset]) catch 1;
     return offset + @min(sequence_len, source.len - offset);
 }
 
-fn positionAfter(
-    source: []const u8,
-    start_offset: usize,
-    end_offset: usize,
-    start_line: u32,
-    start_column: u32,
-) Position {
-    var position: Position = .{
-        .line = start_line,
-        .column = start_column,
-        .byte_offset = @intCast(start_offset),
-    };
-    var offset = start_offset;
-    while (offset < end_offset) {
-        if (source[offset] == '\n') {
-            offset += 1;
-            position.line += 1;
-            position.column = 1;
-        } else {
-            const sequence_len = std.unicode.utf8ByteSequenceLength(source[offset]) catch 1;
-            offset += @min(sequence_len, end_offset - offset);
-            position.column += 1;
-        }
-    }
-    position.byte_offset = @intCast(end_offset);
-    return position;
-}
-
 fn startRange(file: source_provider.SourceFile) Range {
+    const end: Position = if (file.source.len == 0)
+        .{ .line = 1, .column = 1, .byte_offset = 0 }
+    else switch (file.source[0]) {
+        '\n' => .{ .line = 2, .column = 1, .byte_offset = 1 },
+        '\r' => .{
+            .line = 2,
+            .column = 1,
+            .byte_offset = 1 + @as(u32, @intFromBool(file.source.len > 1 and file.source[1] == '\n')),
+        },
+        else => blk: {
+            const sequence_len = std.unicode.utf8ByteSequenceLength(file.source[0]) catch 1;
+            break :blk .{
+                .line = 1,
+                .column = 2,
+                .byte_offset = @intCast(@min(sequence_len, file.source.len)),
+            };
+        },
+    };
     return .{
         .file = file.id,
         .start = .{ .line = 1, .column = 1, .byte_offset = 0 },
-        .end = .{ .line = 1, .column = 1 + @intFromBool(file.source.len > 0), .byte_offset = @intFromBool(file.source.len > 0) },
+        .end = end,
     };
 }
 
@@ -413,6 +465,84 @@ test "token index scans each diagnostic source once" {
     var token_index = try TokenIndex.init(std.testing.allocator, &comp, &messages, &sources);
     defer token_index.deinit();
     try std.testing.expectEqual(@as(usize, 1), token_index.source_scan_count);
-    try std.testing.expectEqual(first_offset + "first_bad".len, token_index.findEnd(1, first_offset).?);
-    try std.testing.expectEqual(second_offset + "second_bad".len, token_index.findEnd(1, second_offset).?);
+    try std.testing.expectEqual(@as(usize, 1), token_index.source_map_count);
+    try std.testing.expectEqual(
+        first_offset + "first_bad".len,
+        token_index.findRange(1, first_offset).?.end.byte_offset,
+    );
+    try std.testing.expectEqual(
+        second_offset + "second_bad".len,
+        token_index.findRange(1, second_offset).?.end.byte_offset,
+    );
+}
+
+test "original location mapper distinguishes both sides of a splice" {
+    var comp = try aro.Compilation.init(.testing);
+    defer comp.deinit();
+    const original = "1\\\n+";
+    const source = try comp.addSourceFromBuffer("splice.c", original);
+    var mapper = aro.Source.OriginalLocationMapper.init(source, original);
+
+    const start = try mapper.resolve(0);
+    try std.testing.expectEqual(@as(u32, 0), start.after_splice.byte_offset);
+    const splice = try mapper.resolve(1);
+    try std.testing.expectEqual(@as(u32, 1), splice.before_splice.byte_offset);
+    try std.testing.expectEqual(@as(u32, 3), splice.after_splice.byte_offset);
+    try std.testing.expectEqual(@as(u32, 1), splice.before_splice.line);
+    try std.testing.expectEqual(@as(u32, 2), splice.before_splice.column);
+    try std.testing.expectEqual(@as(u32, 2), splice.after_splice.line);
+    try std.testing.expectEqual(@as(u32, 1), splice.after_splice.column);
+    const end = try mapper.resolve(2);
+    try std.testing.expectEqual(@as(u32, original.len), end.after_splice.byte_offset);
+}
+
+test "original location mapper covers Aro newline translations exhaustively" {
+    var aro_diagnostics: aro.Diagnostics = .{ .output = .ignore };
+    var comp = try aro.Compilation.init(.testing);
+    comp.diagnostics = &aro_diagnostics;
+    defer comp.deinit();
+    const alphabet = [_]u8{ '\r', '\n', ' ', '\\', 'a' };
+    var original: [alphabet.len]u8 = @splat(alphabet[0]);
+    var source_index: usize = 0;
+
+    while (true) {
+        var path_buffer: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buffer, "mapping-{d}.c", .{source_index});
+        const source = try comp.addSourceFromBuffer(path, &original);
+        var mapper = aro.Source.OriginalLocationMapper.init(source, &original);
+        var translated_offset: u32 = 0;
+        while (translated_offset <= source.buf.len) : (translated_offset += 1) {
+            const boundary = try mapper.resolve(translated_offset);
+            try std.testing.expect(boundary.before_splice.byte_offset <= boundary.after_splice.byte_offset);
+            try std.testing.expect(boundary.after_splice.byte_offset <= original.len);
+            if (translated_offset == source.buf.len) {
+                try std.testing.expectEqual(@as(u32, original.len), boundary.after_splice.byte_offset);
+            }
+        }
+        source_index += 1;
+
+        if (std.mem.allEqual(u8, &original, alphabet[alphabet.len - 1])) break;
+        var digit = original.len;
+        while (digit != 0) {
+            digit -= 1;
+            const alphabet_index = std.mem.indexOfScalar(u8, &alphabet, original[digit]).?;
+            original[digit] = alphabet[(alphabet_index + 1) % alphabet.len];
+            if (original[digit] != alphabet[0]) break;
+        }
+    }
+    try std.testing.expectEqual(std.math.powi(usize, alphabet.len, alphabet.len) catch unreachable, source_index);
+}
+
+test "start range ends at an original UTF-8 boundary" {
+    const file: source_provider.SourceFile = .{
+        .id = 7,
+        .path = "bom.c",
+        .source = "\xEF\xBB\xBFint value;\n",
+        .aro_id = null,
+    };
+    try std.testing.expectEqualDeep(Range{
+        .file = 7,
+        .start = .{ .line = 1, .column = 1, .byte_offset = 0 },
+        .end = .{ .line = 1, .column = 2, .byte_offset = 3 },
+    }, startRange(file));
 }

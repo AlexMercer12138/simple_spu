@@ -40,8 +40,8 @@
     {
       "path": "src/aro/Source.zig",
       "upstreamSha256": "d481a94b93257a0447423fff8e1c2d508d7e638d5ff8baaaebf46e24c73f7478",
-      "sha256": "4131888d35da4758dc2f50639e40cec2778aafe43c0135ed0ab91608c30ffa34",
-      "reason": "Preserve original source IDs and byte offsets in expanded diagnostic locations and expose canonical identity across source aliases."
+      "sha256": "2c4c5417d5145ca616ac35abde3e77e4b3496e8dbe54422ee310ba243dd6ef14",
+      "reason": "Preserve original source IDs and byte offsets in expanded diagnostic locations, expose canonical identity across source aliases, and provide a bounded streaming map from translated locations to original source coordinates."
     },
     {
       "path": "src/aro/TypeStore.zig",
