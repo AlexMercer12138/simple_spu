@@ -38,6 +38,13 @@ export function generateObject(module: Merc32Module): Merc32Object {
   }
   if (data.length > 0) sections.push({ name: 'data', alignment: dataAlignment, size: data.length, content: data });
   if (bssSize > 0) sections.push({ name: 'bss', alignment: bssAlignment, size: bssSize });
+  const definedNames = new Set(symbols.map((symbol) => symbol.name));
+  for (const relocation of emittedDataRelocations) {
+    if (!definedNames.has(relocation.symbol)) {
+      symbols.push({ name: relocation.symbol, binding: 'global', defined: false });
+      definedNames.add(relocation.symbol);
+    }
+  }
   return {
     version: 1,
     target: 'merc32',
@@ -262,7 +269,7 @@ function emitLoad(type: CType | undefined, destination: string, address: string,
     return;
   }
   const size = typeSize(type);
-  const signed = type.kind === 'builtin' && (type.name === 'char' || type.name === 'short');
+  const signed = type.kind === 'builtin' && (type.name === 'char' || type.name === 'signed char' || type.name === 'short');
   emitLoadBySize(size, signed, destination, address, emit);
 }
 

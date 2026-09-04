@@ -12,6 +12,8 @@ export interface LoweringExpression {
     readonly location: SourceLocation;
     readonly operands: readonly LoweringExpression[];
     readonly symbol?: string;
+    readonly binding?: string;
+    readonly symbolId?: number;
     readonly operator?: string;
     readonly conversion?: string;
     readonly memberIndex?: number;
@@ -41,7 +43,7 @@ export interface LoweringGlobal {
 
 export type LoweringStatement =
     | Readonly<{ kind: 'compound'; statements: readonly LoweringStatement[]; location: SourceLocation }>
-    | Readonly<{ kind: 'declaration'; name: string; type: CType; initializer?: LoweringExpression | LoweringInitializer; location: SourceLocation }>
+    | Readonly<{ kind: 'declaration'; name: string; binding?: string; symbolId?: number; type: CType; initializer?: LoweringExpression | LoweringInitializer; location: SourceLocation }>
     | Readonly<{ kind: 'expression'; expression: LoweringExpression; location: SourceLocation }>
     | Readonly<{ kind: 'return'; expression?: LoweringExpression; location: SourceLocation }>
     | Readonly<{ kind: 'if'; test: LoweringExpression; thenBranch: LoweringStatement; elseBranch?: LoweringStatement; location: SourceLocation }>

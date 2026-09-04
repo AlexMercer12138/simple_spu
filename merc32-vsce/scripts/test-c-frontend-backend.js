@@ -78,4 +78,23 @@ assert.throws(() => adaptTypedUnit(unsupported), (error) => {
   return error.diagnostics[0].code === 'C_BACKEND_CAPABILITY';
 });
 
+const compoundAssignment = JSON.parse(JSON.stringify(unit));
+compoundAssignment.nodes.find((node) => node.id === 4).kind = 'assignment';
+compoundAssignment.nodes.find((node) => node.id === 4).operator = '+=';
+assert.throws(() => adaptTypedUnit(compoundAssignment), (error) => {
+  assert(error instanceof CBackendCapabilityError);
+  return error.diagnostics[0].message.includes("operator '+='");
+});
+
+const switchUnit = JSON.parse(JSON.stringify(unit));
+switchUnit.nodes.find((node) => node.id === 2).children = [7];
+switchUnit.nodes.push(
+  { id: 7, category: 'statement', kind: 'switch', range: range(), children: [6, 8] },
+  { id: 8, category: 'statement', kind: 'compound', range: range(), children: [9] },
+  { id: 9, category: 'statement', kind: 'case', range: range(), caseValue: { kind: 'integer', bits: 32, signed: true, value: '1' }, children: [6, 10] },
+  { id: 10, category: 'statement', kind: 'empty', range: range(), children: [] },
+);
+const switchProgram = adaptTypedUnit(switchUnit);
+assert.doesNotThrow(() => generateObject(lowerProgram(switchProgram)));
+
 console.log('C frontend backend adapter tests passed');

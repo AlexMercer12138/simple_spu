@@ -73,7 +73,9 @@ function constantValue(constant: TypedConstant, symbols: ReadonlyMap<number, Typ
         case 'integer': {
             const value = parseInteger(constant.value);
             const limit = 1n << BigInt(constant.bits);
-            if (value < (constant.signed ? -(limit >> 1n) : 0n) || value >= limit) {
+            const minimum = constant.signed ? -(limit >> 1n) : 0n;
+            const maximum = constant.signed ? (limit >> 1n) - 1n : limit - 1n;
+            if (value < minimum || value > maximum) {
                 fail(`integer constant ${constant.value} does not fit ${constant.bits}-bit ${constant.signed ? 'signed' : 'unsigned'} value`, range, files);
             }
             return value;
@@ -144,7 +146,12 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                 if (isUnsupportedBuiltin(record.name)) fail(`${record.name} operations are not supported by the MERC32 backend`, findRange(record, unit), files);
                 break;
         }
-        if (record.kind === 'function' && record.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
+        if (record.kind === 'function') {
+            if (record.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
+            if (typeSize(shell.returnType) > 4 || shell.parameters.some((parameter: CType) => typeSize(parameter) > 4)) {
+                fail('aggregate function return and parameter values are not supported by the MERC32 backend', findRange(record, unit), files);
+            }
+        }
         if (record.kind !== 'function' && (typeSize(shell) !== record.size || typeAlignment(shell) !== record.alignment)) {
             throw new CFrontendInternalError(`serialized layout disagrees with MERC32 ABI for type ${record.id}`);
         }
@@ -152,6 +159,20 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
     for (const shell of shells.values()) Object.freeze(shell);
 
     const nodeRecords = new Map(unit.nodes.map((node) => [Number(node.id), node]));
+    const functionScopedVariables = new Set<number>();
+    for (const root of unit.declarations) {
+        const rootNode = nodeRecords.get(Number(root));
+        if (!rootNode || rootNode.kind !== 'function-definition') continue;
+        const visit = (id: number): void => {
+            const current = nodeRecords.get(id); if (!current) return;
+            if (current.category === 'declaration' && 'symbol' in current) {
+                const symbol = symbols.get(Number(current.symbol));
+                if (symbol?.kind === 'variable') functionScopedVariables.add(Number(symbol.id));
+            }
+            current.children.forEach((child) => visit(Number(child)));
+        };
+        rootNode.children.forEach((child) => visit(Number(child)));
+    }
     const expressionMemo = new Map<number, LoweringExpression>();
     const adaptExpression = (id: number): LoweringExpression => {
         const cached = expressionMemo.get(id); if (cached) return cached;
@@ -168,7 +189,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             ...(typed.constant ? { constant: constantValue(typed.constant, symbols, files, typed.range) } : {}),
             ...('operator' in typed ? { operator: typed.operator } : {}),
             ...('conversion' in typed ? { conversion: typed.conversion, targetType: shells.get(Number(typed.targetType)) } : {}),
-            ...('symbol' in typed ? { symbol: symbols.get(Number(typed.symbol))?.name } : {}),
+            ...('symbol' in typed ? symbolBinding(Number(typed.symbol), symbols) : {}),
             ...('memberIndex' in typed ? {
                 memberIndex: Number(typed.memberIndex),
                 memberOffset: memberOffset(operands[0]?.type ?? type, Number(typed.memberIndex), files),
@@ -176,6 +197,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             ...('targetType' in typed && !('conversion' in typed) ? { targetType: shells.get(Number(typed.targetType)) } : {}),
         };
         if ((typed.kind === 'binary' && !['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(typed.operator))
+            || (typed.kind === 'assignment' && typed.operator !== '=')
             || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*'].includes(typed.operator))) {
             fail(`operator '${'operator' in typed ? typed.operator : String((typed as { kind: string }).kind)}' is not supported by the MERC32 backend`, typed.range, files);
         }
@@ -185,7 +207,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         if (typed.kind !== 'declaration-reference' && typed.kind !== 'member' && typeSize(type) > 4) {
             fail('aggregate-valued operations are not supported by the MERC32 backend', typed.range, files);
         }
-        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal') fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
+        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'conditional' || typed.kind === 'string-literal') fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
         expressionMemo.set(id, expression);
         return expression;
     };
@@ -201,11 +223,15 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         switch (node.kind) {
             case 'compound': statement = { kind: 'compound', statements: Object.freeze(node.children.map((id) => adaptStatement(Number(id)))), location }; break;
             case 'declaration-statement': {
-                const declaration = node.children.map((id) => nodeRecords.get(Number(id))).find((item) => item?.category === 'declaration');
-                if (!declaration || !('symbol' in declaration)) throw new CFrontendInternalError('declaration statement has no declaration child');
-                const symbol = symbols.get(Number(declaration.symbol)); if (!symbol || !('type' in symbol)) throw new CFrontendInternalError('declaration statement has no symbol');
-                const initializer = declaration.children.length === 1 ? adaptExpression(Number(declaration.children[0])) : undefined;
-                statement = { kind: 'declaration', name: symbol.name, type: shells.get(Number(symbol.type)) as CType, ...(initializer ? { initializer } : {}), location };
+                const declarations = node.children.map((id) => nodeRecords.get(Number(id))).filter((item): item is Extract<TypedNodeRecord, { category: 'declaration' }> & { symbol: number } => item?.category === 'declaration' && 'symbol' in item);
+                if (declarations.length === 0) throw new CFrontendInternalError('declaration statement has no declaration child');
+                const statements = declarations.map((declaration) => {
+                    const symbol = symbols.get(Number(declaration.symbol)); if (!symbol || !('type' in symbol)) throw new CFrontendInternalError('declaration statement has no symbol');
+                    const initializer = declaration.children.length === 1 ? adaptExpression(Number(declaration.children[0])) : undefined;
+                    const binding = localBinding(symbol);
+                    return { kind: 'declaration' as const, name: symbol.name, ...(binding ? { binding } : {}), symbolId: Number(symbol.id), type: shells.get(Number(symbol.type)) as CType, ...(initializer ? { initializer } : {}), location };
+                });
+                statement = statements.length === 1 ? statements[0] : { kind: 'compound', statements, location };
                 break;
             }
             case 'expression-statement': statement = { kind: 'expression', expression: expr(0), location }; break;
@@ -215,7 +241,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             case 'do-while': statement = { kind: 'do-while', body: child(0), test: expr(1), location }; break;
             case 'for': statement = { kind: 'for', ...(node.children.length > 0 ? { init: nodeRecords.get(Number(node.children[0]))?.category === 'expression' ? expr(0) : child(0) } : {}), ...(node.children.length > 1 ? { test: expr(1) } : {}), ...(node.children.length > 2 ? { step: expr(2) } : {}), body: child(node.children.length - 1), location }; break;
             case 'switch': statement = { kind: 'switch', test: expr(0), body: child(1), location }; break;
-            case 'case': statement = { kind: 'case', value: parseInteger(node.caseValue.value), statement: child(0), location }; break;
+            case 'case': statement = { kind: 'case', value: parseInteger(node.caseValue.value), statement: child(node.children.length - 1), location }; break;
             case 'default': statement = { kind: 'default', statement: child(0), location }; break;
             case 'goto': statement = { kind: 'goto', label: node.label, location }; break;
             case 'label': statement = { kind: 'label', label: node.label, statement: child(0), location }; break;
@@ -228,6 +254,8 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
     const globals: LoweringGlobal[] = [];
     for (const symbol of unit.symbols) {
         if (symbol.kind !== 'variable' || symbol.storage === 'automatic' || !symbol.definition) continue;
+        if (symbol.storage === 'thread') fail('thread-local storage is not supported by the MERC32 backend', symbol.range, files);
+        if (functionScopedVariables.has(Number(symbol.id))) fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
         const type = shells.get(Number(symbol.type)); if (!type) throw new CFrontendInternalError(`global ${symbol.name} references unknown type`);
         globals.push({ name: symbol.name, type, ...(symbol.initializer ? { initializer: adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range) } : {}), location: rangeLocation(symbol.range, files) });
     }
@@ -246,17 +274,18 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const locals: TypedSymbolRecord[] = [];
         const collectLocals = (statement: LoweringStatement): void => {
             if (statement.kind === 'declaration') {
-                const local = unit.symbols.find((candidate) => candidate.kind === 'variable' && candidate.name === statement.name && candidate.storage === 'automatic');
+                const local = unit.symbols.find((candidate) => candidate.kind === 'variable' && Number(candidate.id) === statement.symbolId && candidate.storage === 'automatic');
                 if (local) locals.push(local);
             }
             if (statement.kind === 'compound') statement.statements.forEach(collectLocals);
             else if ('body' in statement && statement.body) collectLocals(statement.body);
             if (statement.kind === 'if') { collectLocals(statement.thenBranch); if (statement.elseBranch) collectLocals(statement.elseBranch); }
             if (statement.kind === 'for' && statement.init && isLoweringStatement(statement.init)) collectLocals(statement.init);
+            if ((statement.kind === 'case' || statement.kind === 'default' || statement.kind === 'label') && statement.statement) collectLocals(statement.statement);
         };
         collectLocals(body);
-        const parameterNames = type.parameters.map((_parameter, index) => parameters[index]?.name ?? '');
-        functions.push({ name: symbol.name, returnType: type.returnType, parameters: type.parameters, parameterNames, localNames: locals.map((local) => local.name), localTypes: locals.map((local) => shells.get(Number((local as Extract<TypedSymbolRecord, { kind: 'variable' }>).type)) as CType), body, location: rangeLocation(symbol.range, files) });
+        const parameterNames = type.parameters.map((_parameter, index) => parameters[index] ? localBinding(parameters[index]) ?? parameters[index].name : '');
+        functions.push({ name: symbol.name, returnType: type.returnType, parameters: type.parameters, parameterNames, localNames: locals.map((local) => localBinding(local) ?? local.name), localTypes: locals.map((local) => shells.get(Number((local as Extract<TypedSymbolRecord, { kind: 'variable' }>).type)) as CType), body, location: rangeLocation(symbol.range, files) });
     }
     return Object.freeze({ abi: 'merc32-c-v1', globals: Object.freeze(globals), functions: Object.freeze(functions) });
 }
@@ -280,11 +309,37 @@ function isLoweringStatement(value: LoweringExpression | LoweringStatement): val
 }
 
 function memberOffset(type: CType, index: number, files: ReadonlyMap<number, string>): number {
+    type = unwrapType(type);
     if (type.kind === 'pointer') type = type.pointee;
     if (type.kind !== 'struct' && type.kind !== 'union') throw new CFrontendInternalError('member expression base is not an aggregate');
     const member = type.fields[index];
     if (!member) throw new CFrontendInternalError(`aggregate member index ${index} is out of range`);
     return member.offset ?? 0;
+}
+
+function unwrapType(type: CType): CType {
+    const seen = new Set<CType>();
+    let current = type;
+    while (current.kind === 'typedef' && current.target && !seen.has(current)) {
+        seen.add(current);
+        current = current.target;
+    }
+    return current;
+}
+
+function localBinding(symbol: TypedSymbolRecord): string | undefined {
+    if (symbol.kind === 'variable' && symbol.storage !== 'automatic') return undefined;
+    if (symbol.kind !== 'variable' && symbol.kind !== 'parameter') return undefined;
+    return `${symbol.name}#${Number(symbol.id)}`;
+}
+
+function symbolBinding(id: number, symbols: ReadonlyMap<number, TypedSymbolRecord>): Readonly<{ symbol: string; binding?: string; symbolId: number; constant?: LoweringConstant }> {
+    const symbol = symbols.get(id);
+    if (!symbol) throw new CFrontendInternalError(`declaration-reference references unknown symbol ${id}`);
+    if (symbol.kind === 'enumerator') {
+        return { symbol: symbol.name, symbolId: id, constant: parseInteger(symbol.value.value) };
+    }
+    return { symbol: symbol.name, binding: localBinding(symbol), symbolId: id };
 }
 
 function adaptInitializer(initializer: NonNullable<Extract<TypedSymbolRecord, { kind: 'variable' }>['initializer']>, _type: CType, unit: TypedCUnitV1, _types: ReadonlyMap<number, CType>, symbols: ReadonlyMap<number, TypedSymbolRecord>, files: ReadonlyMap<number, string>, ownerRange: SourceRange): LoweringInitializer {
