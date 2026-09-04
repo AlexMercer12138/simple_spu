@@ -178,4 +178,17 @@ typedefFunction.nodes.find((node) => node.id === 1).type = 7;
 assert.doesNotThrow(() => generateObject(lowerProgram(adaptTypedUnit(typedefFunction))),
   'function symbols may use a typedef-wrapped function type');
 
+const externFunctionDeclaration = JSON.parse(JSON.stringify(unit));
+externFunctionDeclaration.types.push({ id: 9, kind: 'function', returnType: 1, parameters: [1], variadic: false, qualifiers: [], size: 0, alignment: 4 });
+externFunctionDeclaration.symbols.push({ id: 5, kind: 'function', name: 'later_helper', type: 9, linkage: 'external', definition: false, range: range() });
+externFunctionDeclaration.nodes.push(
+  { id: 7, category: 'statement', kind: 'declaration-statement', range: range(), children: [8] },
+  { id: 8, category: 'declaration', kind: 'function-declaration', type: 9, symbol: 5, range: range(), children: [] },
+);
+externFunctionDeclaration.nodes.find((node) => node.id === 2).children = [7, 3];
+const externProgram = adaptTypedUnit(externFunctionDeclaration);
+assert.deepStrictEqual(externProgram.functions.find((func) => func.name === 'add').localNames, [],
+  'local extern function declarations must not become local variable slots');
+assert.doesNotThrow(() => generateObject(lowerProgram(externProgram)));
+
 console.log('C frontend backend adapter tests passed');

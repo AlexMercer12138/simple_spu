@@ -227,9 +227,13 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             case 'compound': statement = { kind: 'compound', statements: Object.freeze(node.children.map((id) => adaptStatement(Number(id)))), location }; break;
             case 'declaration-statement': {
                 const declarations = node.children.map((id) => nodeRecords.get(Number(id))).filter((item): item is Extract<TypedNodeRecord, { category: 'declaration' }> & { symbol: number } => item?.category === 'declaration' && 'symbol' in item);
-                if (declarations.length === 0) throw new CFrontendInternalError('declaration statement has no declaration child');
-                const statements = declarations.map((declaration) => {
+                const variableDeclarations = declarations.filter((declaration) => symbols.get(Number(declaration.symbol))?.kind === 'variable');
+                if (variableDeclarations.length === 0) { statement = { kind: 'empty', location }; break; }
+                const statements = variableDeclarations.map((declaration) => {
                     const symbol = symbols.get(Number(declaration.symbol)); if (!symbol || !('type' in symbol)) throw new CFrontendInternalError('declaration statement has no symbol');
+                    if (symbol.kind !== 'variable') throw new CFrontendInternalError('declaration statement variable filter failed');
+                    if (symbol.storage === 'thread') fail('thread-local storage is not supported by the MERC32 backend', symbol.range, files);
+                    if (symbol.storage !== 'automatic') fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
                     const initializer = declaration.children.length === 1 ? adaptExpression(Number(declaration.children[0])) : undefined;
                     const binding = localBinding(symbol);
                     return { kind: 'declaration' as const, name: symbol.name, ...(binding ? { binding } : {}), symbolId: Number(symbol.id), type: shells.get(Number(symbol.type)) as CType, ...(initializer ? { initializer } : {}), location };
