@@ -94,7 +94,7 @@ fn peek(p: *Parser) TokenWithExpansionLocs {
 }
 
 pub fn parse(p: *Parser) Error!?Value {
-    assert(p.pp.comp.target.intMaxType().bitSizeof(p.pp.comp) == intmax_width);
+    assert(p.pp.comp.intMaxType().bitSizeof(p.pp.comp) == intmax_width);
     const val = (try p.binaryExpr(.any, true)) orelse return null;
 
     const last = p.peek();

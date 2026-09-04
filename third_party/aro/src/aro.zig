@@ -1,5 +1,6 @@
 pub const CodeGen = @import("aro/CodeGen.zig");
 pub const Compilation = @import("aro/Compilation.zig");
+pub const DataModel = @import("aro/DataModel.zig");
 pub const Diagnostics = @import("aro/Diagnostics.zig");
 pub const Driver = @import("aro/Driver.zig");
 pub const Parser = @import("aro/Parser.zig");

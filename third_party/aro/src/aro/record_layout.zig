@@ -35,6 +35,8 @@ const SysVContext = struct {
     attr_packed: bool,
     /// The value of #pragma pack(N) at the type level if any.
     max_field_align_bits: ?u64,
+    /// Target data-model cap on natural field alignment.
+    natural_max_align_bits: ?u64,
     /// The alignment of this record.
     aligned_bits: u32,
     is_union: bool,
@@ -52,7 +54,7 @@ const SysVContext = struct {
             if (field.qt.isInvalid()) continue;
             const type_layout = computeLayout(field.qt, self.comp);
 
-            if (self.comp.target.isMinGW()) {
+            if (self.comp.data_model == null and self.comp.target.isMinGW()) {
                 field.layout = try self.layoutMinGWField(field, type_layout);
             } else {
                 if (field.bit_width.unpack()) |bit_width| {
@@ -216,7 +218,10 @@ const SysVContext = struct {
         fld_layout: RecordLayout,
         field: *const Record.Field,
     ) !FieldLayout {
-        var fld_align_bits = fld_layout.field_alignment_bits;
+        var fld_align_bits = if (self.natural_max_align_bits) |max_bits|
+            @min(fld_layout.field_alignment_bits, max_bits)
+        else
+            fld_layout.field_alignment_bits;
 
         // If the struct or the field is packed, then the alignment of the underlying type is
         // ignored. See test case 0084.
@@ -260,7 +265,10 @@ const SysVContext = struct {
     ) !FieldLayout {
         const is_named = field.name_tok != 0;
         const ty_size_bits = fld_layout.size_bits;
-        var ty_fld_algn_bits: u32 = fld_layout.field_alignment_bits;
+        var ty_fld_algn_bits: u32 = if (self.natural_max_align_bits) |max_bits|
+            @intCast(@min(fld_layout.field_alignment_bits, max_bits))
+        else
+            fld_layout.field_alignment_bits;
         const target = &self.comp.target;
 
         if (bit_width > 0) {
@@ -573,7 +581,7 @@ pub fn compute(
     const packed_attr = am.hasAttribute(opt_decl, .@"packed");
     const requested_align = am.requestedAlignment(opt_decl, comp);
 
-    const use_sysv_layout = switch (comp.langopts.emulate) {
+    const use_sysv_layout = comp.data_model != null or switch (comp.langopts.emulate) {
         .msvc => false,
         .clang, .no => comp.target.abi != .msvc,
         .gcc => true,
@@ -583,6 +591,7 @@ pub fn compute(
         var context: SysVContext = .{
             .attr_packed = packed_attr,
             .max_field_align_bits = if (pragma_pack) |pak| @as(u64, pak) * BITS_PER_BYTE else null,
+            .natural_max_align_bits = if (comp.maxFieldAlignment()) |alignment| @as(u64, alignment) * BITS_PER_BYTE else null,
             .aligned_bits = (requested_align orelse 1) * BITS_PER_BYTE,
             .is_union = is_union,
             .size_bits = 0,

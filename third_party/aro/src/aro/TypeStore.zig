@@ -572,7 +572,7 @@ pub const QualType = packed struct(u32) {
             .void => 1,
             .bool => 1,
             .func => 1,
-            .nullptr_t, .block => comp.target.ptrBitWidth() / 8,
+            .nullptr_t, .block => comp.ptrBitWidth() / 8,
             .pointer => |pointer| {
                 _ = pointer;
                 // switch (pointer.size) {
@@ -582,7 +582,7 @@ pub const QualType = packed struct(u32) {
                 // }
                 // switch (pointer.address_space) {
                 // }
-                return comp.target.ptrBitWidth() / 8;
+                return comp.ptrBitWidth() / 8;
             },
             .storage_float => |storage_float| storage_float.bits() / 8,
             .int => |int_ty| int_ty.bits(comp) / 8,
@@ -728,26 +728,26 @@ pub const QualType = packed struct(u32) {
                 .schar,
                 .uchar,
                 => 1,
-                .short => comp.target.cTypeAlignment(.short),
-                .ushort => comp.target.cTypeAlignment(.ushort),
-                .int => comp.target.cTypeAlignment(.int),
-                .uint => comp.target.cTypeAlignment(.uint),
+                .short => comp.cTypeAlignment(.short),
+                .ushort => comp.cTypeAlignment(.ushort),
+                .int => comp.cTypeAlignment(.int),
+                .uint => comp.cTypeAlignment(.uint),
 
-                .long => comp.target.cTypeAlignment(.long),
-                .ulong => comp.target.cTypeAlignment(.ulong),
-                .long_long => comp.target.cTypeAlignment(.longlong),
-                .ulong_long => comp.target.cTypeAlignment(.ulonglong),
+                .long => comp.cTypeAlignment(.long),
+                .ulong => comp.cTypeAlignment(.ulong),
+                .long_long => comp.cTypeAlignment(.longlong),
+                .ulong_long => comp.cTypeAlignment(.ulonglong),
                 .int24, .uint24 => 1,
                 .int128, .uint128 => if (comp.target.cpu.arch == .s390x and comp.target.os.tag == .linux and comp.target.abi.isGnu()) 8 else 16,
             },
             .float => |float_ty| switch (float_ty) {
-                .float => comp.target.cTypeAlignment(.float),
-                .double => comp.target.cTypeAlignment(.double),
-                .long_double => comp.target.cTypeAlignment(.longdouble),
+                .float => comp.cTypeAlignment(.float),
+                .double => comp.cTypeAlignment(.double),
+                .long_double => comp.cTypeAlignment(.longdouble),
                 .bf16, .fp16, .float16 => 2,
                 .float128 => 16,
-                .float32 => comp.target.cTypeAlignment(.float),
-                .float64 => comp.target.cTypeAlignment(.double),
+                .float32 => comp.cTypeAlignment(.float),
+                .float64 => comp.cTypeAlignment(.double),
                 .float32x => 8,
                 .float64x => 16,
                 .float128x => unreachable, // Not supported
@@ -768,12 +768,9 @@ pub const QualType = packed struct(u32) {
             .atomic => |atomic| continue :loop atomic.base(comp).type,
             .complex => |complex| continue :loop complex.base(comp).type,
 
-            .pointer, .nullptr_t, .block => switch (comp.target.cpu.arch) {
-                .avr => 1,
-                else => @intCast(qt.bitSizeof(comp) / 8),
-            },
+            .pointer, .nullptr_t, .block => comp.pointerAlignment(),
 
-            .func => comp.target.defaultFunctionAlignment(),
+            .func => comp.defaultFunctionAlignment(),
 
             .array => |array| return array.elem.alignof(comp),
             .vector => |vector| continue :loop vector.elem.base(comp).type,
@@ -1730,17 +1727,17 @@ pub const Type = union(enum) {
 
         pub fn bits(int: Int, comp: *const Compilation) u16 {
             return switch (int) {
-                .char => comp.target.cTypeBitSize(.char),
-                .schar => comp.target.cTypeBitSize(.char),
-                .uchar => comp.target.cTypeBitSize(.char),
-                .short => comp.target.cTypeBitSize(.short),
-                .ushort => comp.target.cTypeBitSize(.ushort),
-                .int => comp.target.cTypeBitSize(.int),
-                .uint => comp.target.cTypeBitSize(.uint),
-                .long => comp.target.cTypeBitSize(.long),
-                .ulong => comp.target.cTypeBitSize(.ulong),
-                .long_long => comp.target.cTypeBitSize(.longlong),
-                .ulong_long => comp.target.cTypeBitSize(.ulonglong),
+                .char => comp.cTypeBitSize(.char),
+                .schar => comp.cTypeBitSize(.char),
+                .uchar => comp.cTypeBitSize(.char),
+                .short => comp.cTypeBitSize(.short),
+                .ushort => comp.cTypeBitSize(.ushort),
+                .int => comp.cTypeBitSize(.int),
+                .uint => comp.cTypeBitSize(.uint),
+                .long => comp.cTypeBitSize(.long),
+                .ulong => comp.cTypeBitSize(.ulong),
+                .long_long => comp.cTypeBitSize(.longlong),
+                .ulong_long => comp.cTypeBitSize(.ulonglong),
                 .int128 => 128,
                 .uint128 => 128,
                 .int24, .uint24 => 24,
@@ -1771,9 +1768,9 @@ pub const Type = union(enum) {
                 .bf16 => 16,
                 .fp16 => 16,
                 .float16 => 16,
-                .float => comp.target.cTypeBitSize(.float),
-                .double => comp.target.cTypeBitSize(.double),
-                .long_double => comp.target.cTypeBitSize(.longdouble),
+                .float => comp.cTypeBitSize(.float),
+                .double => comp.cTypeBitSize(.double),
+                .long_double => comp.cTypeBitSize(.longdouble),
                 .float128 => 128,
                 .float32 => 32,
                 .float64 => 64,
@@ -2391,41 +2388,13 @@ pub fn set(ts: *TypeStore, gpa: std.mem.Allocator, ty: Type, index: usize) !void
 pub fn initNamedTypes(ts: *TypeStore, comp: *Compilation) !void {
     const os = comp.target.os.tag;
     const arch = comp.target.cpu.arch;
-    ts.wchar = switch (os) {
-        .openbsd, .netbsd => .int,
-        .ps4, .ps5 => .ushort,
-        .uefi => .ushort,
-        .windows => .ushort,
-        .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => .int,
-        else => switch (arch) {
-            .aarch64, .aarch64_be => .uint,
-            .arm, .armeb, .thumb, .thumbeb => .uint,
-            .ve, .msp430 => .uint,
-            .x86_64, .x86 => .int,
-            .xcore => .uchar,
-            else => .int,
-        },
-    };
+    ts.wchar = comp.wcharType();
+    ts.wint = comp.wintType();
 
-    ts.wint = switch (os) {
-        .fuchsia => .uint,
-        .linux => .uint,
-        .openbsd => .int,
-        .uefi => .ushort,
-        .windows => .ushort,
-        else => switch (arch) {
-            .csky => .uint,
-            .loongarch32, .loongarch64 => .uint,
-            .riscv32, .riscv32be, .riscv64, .riscv64be => .uint,
-            .ve => .uint,
-            .xcore => .uint,
-            .xtensa, .xtensaeb => .uint,
-            else => .int,
-        },
-    };
-
-    const ptr_width = comp.target.ptrBitWidth();
-    ts.ptrdiff = if (arch == .wasm32)
+    const ptr_width = comp.ptrBitWidth();
+    ts.ptrdiff = if (comp.data_model != null)
+        .int
+    else if (arch == .wasm32)
         .long
     else if (os == .windows and ptr_width == 64)
         .long_long
@@ -2436,7 +2405,9 @@ pub fn initNamedTypes(ts: *TypeStore, comp: *Compilation) !void {
         else => unreachable,
     };
 
-    ts.size = if (arch == .wasm32)
+    ts.size = if (comp.data_model != null)
+        .uint
+    else if (arch == .wasm32)
         .ulong
     else if (os == .windows and ptr_width == 64)
         .ulong_long
@@ -2454,10 +2425,10 @@ pub fn initNamedTypes(ts: *TypeStore, comp: *Compilation) !void {
         else => .int,
     };
 
-    ts.intmax = comp.target.intMaxType();
-    ts.intptr = comp.target.intPtrType();
-    ts.int16 = comp.target.int16Type();
-    ts.int64 = comp.target.int64Type();
+    ts.intmax = comp.intMaxType();
+    ts.intptr = comp.intPtrType();
+    ts.int16 = if (comp.data_model != null) .short else comp.target.int16Type();
+    ts.int64 = if (comp.data_model != null) .long_long else comp.target.int64Type();
     ts.uint_least16_t = comp.intLeastN(16, .unsigned);
     ts.uint_least32_t = comp.intLeastN(32, .unsigned);
 
@@ -3227,7 +3198,7 @@ pub const Builder = struct {
             else => {},
         }
 
-        if (new == .int128 and !b.parser.comp.target.hasInt128()) {
+        if (new == .int128 and !b.parser.comp.hasInt128()) {
             try b.parser.err(source_tok, .type_not_supported_on_target, .{"__int128"});
         }
 

@@ -1,4 +1,47 @@
 {
   "formatVersion": 1,
-  "files": []
+  "files": [
+    {
+      "path": "src/aro.zig",
+      "upstreamSha256": "d746c2723b00ac062b4e88024e07b56959114abd7deaf3cd064a8e8c31208d8e",
+      "sha256": "a70f0b5ed22f4169710e465e88a3e7aa6875cf0227b625492311b2d5a0978002",
+      "reason": "Export the explicit public MERC32 data-model value."
+    },
+    {
+      "path": "src/aro/Compilation.zig",
+      "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
+      "sha256": "80b7d9a9b018347fbb26ca8dd46347465d92aabd5c5abe098bb18d230af5a1c4",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, and MERC32 macro profile."
+    },
+    {
+      "path": "src/aro/DataModel.zig",
+      "upstreamSha256": null,
+      "sha256": "79cbe26c343b6b74a384a1ded6c225af7c6e0dfcc32aa2a7820c6038751bb2b9",
+      "reason": "Define the explicit MERC32 ILP32 sizes, alignments, function alignment, and signed-char model."
+    },
+    {
+      "path": "src/aro/Parser.zig",
+      "upstreamSha256": "974e42408bc63089a5a1ea1d6d6f158081d01a7373d56c42a1e96a7ddfc9ec19",
+      "sha256": "26f7246bdb3aafc1e09e2ec80aa190002da807130385b7fc0fe99c349ddb5c34",
+      "reason": "Route integer-literal and int128 capability behavior through the selected compilation model."
+    },
+    {
+      "path": "src/aro/Preprocessor/Parser.zig",
+      "upstreamSha256": "08ac9e783393a604199c2d3b9edeba1501e0321ae9feddca7257d667fdbf1312",
+      "sha256": "469c8b08ec46b6d72d0c59bf24a5a83454b79811de09c4558bf94273b97e5028",
+      "reason": "Validate preprocessor intmax width through the selected compilation model."
+    },
+    {
+      "path": "src/aro/TypeStore.zig",
+      "upstreamSha256": "833dde83ca478b21c2fcf316644658bce55bdd07e1d38c54b6d3ce7bd654e10d",
+      "sha256": "c766caab91260c43f57f5f4390e4d57f207e773bbf7ba15cfcdb92c6bef411b5",
+      "reason": "Use compilation data-model queries for C type sizes, alignments, aliases, pointers, and functions."
+    },
+    {
+      "path": "src/aro/record_layout.zig",
+      "upstreamSha256": "97c47faa7335bd42c7859efbfcaaf4c1578951e1509b213597b86059b22016af",
+      "sha256": "25a9fe3fca2f773179bd4b4bd2fe32d7df38fa1a57271a0cde3b6526d112ff9b",
+      "reason": "Apply the selected model's maximum natural alignment without inheriting host record-layout identity."
+    }
+  ]
 }

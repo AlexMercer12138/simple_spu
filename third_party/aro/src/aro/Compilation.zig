@@ -10,6 +10,7 @@ const Interner = backend.Interner;
 const CodeGenOptions = backend.CodeGenOptions;
 
 const Builtins = @import("Builtins.zig");
+const DataModel = @import("DataModel.zig");
 const Diagnostics = @import("Diagnostics.zig");
 const DepFile = @import("DepFile.zig");
 const LangOpts = @import("LangOpts.zig");
@@ -149,6 +150,7 @@ embed_dirs: std.ArrayList([]const u8) = .empty,
 
 environment: Environment = .{},
 target: Target = .default,
+data_model: ?DataModel = null,
 darwin_target_variant: ?Target = null,
 cmodel: std.builtin.CodeModel = .default,
 
@@ -174,6 +176,7 @@ pub const InitOptions = struct {
     environ_map: ?*const std.process.Environ.Map,
     /// Defaults to `std.Io.Dir.cwd()`
     cwd: ?std.Io.Dir = null,
+    data_model: ?DataModel = null,
 
     add_default_pragma_handlers: bool = true,
 
@@ -205,7 +208,11 @@ pub fn init(options: InitOptions) !Compilation {
         .arena = options.arena,
         .io = options.io,
         .diagnostics = options.diagnostics,
-        .cwd = options.cwd orelse .cwd(),
+        .cwd = options.cwd orelse if (comptime @import("builtin").os.tag == .freestanding)
+            .{ .handle = undefined }
+        else
+            .cwd(),
+        .data_model = options.data_model,
     };
     errdefer comp.deinit();
 
@@ -217,6 +224,87 @@ pub fn init(options: InitOptions) !Compilation {
         try comp.addDefaultPragmaHandlers();
     }
     return comp;
+}
+
+pub fn ptrBitWidth(comp: *const Compilation) u16 {
+    return if (comp.data_model) |model| model.pointer_bits else comp.target.ptrBitWidth();
+}
+
+pub fn cTypeBitSize(comp: *const Compilation, ty: std.Target.CType) u16 {
+    return if (comp.data_model) |model| model.cTypeBitSize(ty) else comp.target.cTypeBitSize(ty);
+}
+
+pub fn cTypeAlignment(comp: *const Compilation, ty: std.Target.CType) u16 {
+    return if (comp.data_model) |model| model.cTypeAlignment(ty) else comp.target.cTypeAlignment(ty);
+}
+
+pub fn pointerAlignment(comp: *const Compilation) u16 {
+    if (comp.data_model) |model| return model.pointer_bits / 8;
+    return switch (comp.target.cpu.arch) {
+        .avr => 1,
+        else => comp.target.ptrBitWidth() / 8,
+    };
+}
+
+pub fn intPtrType(comp: *const Compilation) QualType {
+    return if (comp.data_model != null) .int else comp.target.intPtrType();
+}
+
+pub fn intMaxType(comp: *const Compilation) QualType {
+    return if (comp.data_model != null) .long_long else comp.target.intMaxType();
+}
+
+pub fn wcharType(comp: *const Compilation) QualType {
+    if (comp.data_model != null) return .int;
+    const target = &comp.target;
+    return switch (target.os.tag) {
+        .openbsd, .netbsd => .int,
+        .ps4, .ps5 => .ushort,
+        .uefi => .ushort,
+        .windows => .ushort,
+        .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => .int,
+        else => switch (target.cpu.arch) {
+            .aarch64, .aarch64_be => .uint,
+            .arm, .armeb, .thumb, .thumbeb => .uint,
+            .ve, .msp430 => .uint,
+            .x86_64, .x86 => .int,
+            .xcore => .uchar,
+            else => .int,
+        },
+    };
+}
+
+pub fn wintType(comp: *const Compilation) QualType {
+    if (comp.data_model != null) return .uint;
+    const target = &comp.target;
+    return switch (target.os.tag) {
+        .fuchsia => .uint,
+        .linux => .uint,
+        .openbsd => .int,
+        .uefi => .ushort,
+        .windows => .ushort,
+        else => switch (target.cpu.arch) {
+            .csky => .uint,
+            .loongarch32, .loongarch64 => .uint,
+            .riscv32, .riscv32be, .riscv64, .riscv64be => .uint,
+            .ve => .uint,
+            .xcore => .uint,
+            .xtensa, .xtensaeb => .uint,
+            else => .int,
+        },
+    };
+}
+
+pub fn sigAtomicType(comp: *const Compilation) QualType {
+    return if (comp.data_model != null) .int else comp.target.sigAtomicType();
+}
+
+pub fn defaultFunctionAlignment(comp: *const Compilation) u8 {
+    return if (comp.data_model) |model| model.function_alignment else comp.target.defaultFunctionAlignment();
+}
+
+pub fn maxFieldAlignment(comp: *const Compilation) ?u16 {
+    return if (comp.data_model) |model| model.maximum_natural_alignment else null;
 }
 
 pub fn deinit(comp: *Compilation) void {
@@ -258,6 +346,8 @@ pub const SystemDefinesMode = enum {
 };
 
 fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
+    if (comp.data_model != null) return comp.generateMerc32SystemDefines(w);
+
     const define = struct {
         fn define(_w: *Io.Writer, name: []const u8) !void {
             try _w.print("#define {s} 1\n", .{name});
@@ -276,7 +366,7 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
         }
     }.defineStd;
     const target = &comp.target;
-    const ptr_width = target.ptrBitWidth();
+    const ptr_width = comp.ptrBitWidth();
     const is_gnu = comp.langopts.standard.isGNU();
 
     const gnuc_version = comp.langopts.gnuc_version orelse comp.langopts.emulate.defaultGccVersion();
@@ -772,9 +862,9 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
             }
             if (target.cpu.has(.mips, .msa)) try define(w, "__mips_msa");
             if (target.cpu.has(.mips, .nomadd4)) try define(w, "__mips_no_madd4");
-            try w.print("#define _MIPS_SZPTR {d}\n", .{target.ptrBitWidth()});
-            try w.print("#define _MIPS_SZINT {d}\n", .{target.cTypeBitSize(.int)});
-            try w.print("#define _MIPS_SZLONG {d}\n", .{target.cTypeBitSize(.long)});
+            try w.print("#define _MIPS_SZPTR {d}\n", .{comp.ptrBitWidth()});
+            try w.print("#define _MIPS_SZINT {d}\n", .{comp.cTypeBitSize(.int)});
+            try w.print("#define _MIPS_SZLONG {d}\n", .{comp.cTypeBitSize(.long)});
             try w.print("#define __mips_isa_rev {d}\n", .{target.mipsIsaRev()});
         },
         .powerpc,
@@ -1144,13 +1234,13 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
         else => {},
     }
 
-    if (ptr_width == 64 and target.cTypeBitSize(.long) == 64 and
-        target.cTypeBitSize(.int) == 32)
+    if (ptr_width == 64 and comp.cTypeBitSize(.long) == 64 and
+        comp.cTypeBitSize(.int) == 32)
     {
         try define(w, "_LP64");
         try define(w, "__LP64__");
-    } else if (ptr_width == 32 and target.cTypeBitSize(.long) == 32 and
-        target.cTypeBitSize(.int) == 32)
+    } else if (ptr_width == 32 and comp.cTypeBitSize(.long) == 32 and
+        comp.cTypeBitSize(.int) == 32)
     {
         try define(w, "_ILP32");
         try define(w, "__ILP32__");
@@ -1256,7 +1346,7 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
     try comp.generateIntMaxAndWidth(w, "PTRDIFF", comp.type_store.ptrdiff);
     try comp.generateIntMaxAndWidth(w, "INTPTR", comp.type_store.intptr);
     try comp.generateIntMaxAndWidth(w, "UINTPTR", try comp.type_store.intptr.makeIntUnsigned(comp));
-    try comp.generateIntMaxAndWidth(w, "SIG_ATOMIC", target.sigAtomicType());
+    try comp.generateIntMaxAndWidth(w, "SIG_ATOMIC", comp.sigAtomicType());
 
     // int widths
     try w.print("#define __BITINT_MAXWIDTH__ {d}\n", .{bit_int_max_bits});
@@ -1275,7 +1365,7 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
     try comp.generateSizeofType(w, "__SIZEOF_WCHAR_T__", comp.type_store.wchar);
     try comp.generateSizeofType(w, "__SIZEOF_WINT_T__", comp.type_store.wint);
 
-    if (target.hasInt128()) {
+    if (comp.hasInt128()) {
         try comp.generateSizeofType(w, "__SIZEOF_INT128__", .int128);
     }
 
@@ -1336,6 +1426,77 @@ fn generateSystemDefines(comp: *Compilation, w: *Io.Writer) !void {
     }
 }
 
+fn generateMerc32SystemDefines(comp: *Compilation, w: *Io.Writer) !void {
+    try w.writeAll(
+        \\#define __MERC32__ 1
+        \\#define __merc32__ 1
+        \\#define _ILP32 1
+        \\#define __ILP32__ 1
+        \\#define __ORDER_LITTLE_ENDIAN__ 1234
+        \\#define __ORDER_BIG_ENDIAN__ 4321
+        \\#define __ORDER_PDP_ENDIAN__ 3412
+        \\#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+        \\#define __LITTLE_ENDIAN__ 1
+        \\#define __CHAR_BIT__ 8
+        \\
+    );
+
+    try comp.generateIntWidth(w, "BOOL", .bool);
+    try comp.generateIntMaxAndWidth(w, "SCHAR", .schar);
+    try comp.generateIntMaxAndWidth(w, "SHRT", .short);
+    try comp.generateIntMaxAndWidth(w, "INT", .int);
+    try comp.generateIntMaxAndWidth(w, "LONG", .long);
+    try comp.generateIntMaxAndWidth(w, "LONG_LONG", .long_long);
+    try comp.generateIntMaxAndWidth(w, "WCHAR", comp.wcharType());
+    try comp.generateIntMaxAndWidth(w, "WINT", comp.wintType());
+    try comp.generateIntMaxAndWidth(w, "INTMAX", comp.intMaxType());
+    try comp.generateIntMaxAndWidth(w, "SIZE", comp.type_store.size);
+    try comp.generateIntMaxAndWidth(w, "UINTMAX", .ulong_long);
+    try comp.generateIntMaxAndWidth(w, "PTRDIFF", comp.type_store.ptrdiff);
+    try comp.generateIntMaxAndWidth(w, "INTPTR", comp.intPtrType());
+    try comp.generateIntMaxAndWidth(w, "UINTPTR", .uint);
+    try comp.generateIntMaxAndWidth(w, "SIG_ATOMIC", comp.sigAtomicType());
+
+    try comp.generateSizeofType(w, "__SIZEOF_FLOAT__", .float);
+    try comp.generateSizeofType(w, "__SIZEOF_DOUBLE__", .double);
+    try comp.generateSizeofType(w, "__SIZEOF_LONG_DOUBLE__", .long_double);
+    try comp.generateSizeofType(w, "__SIZEOF_SHORT__", .short);
+    try comp.generateSizeofType(w, "__SIZEOF_INT__", .int);
+    try comp.generateSizeofType(w, "__SIZEOF_LONG__", .long);
+    try comp.generateSizeofType(w, "__SIZEOF_LONG_LONG__", .long_long);
+    try w.print("#define __SIZEOF_POINTER__ {d}\n", .{comp.ptrBitWidth() / 8});
+    try comp.generateSizeofType(w, "__SIZEOF_PTRDIFF_T__", comp.type_store.ptrdiff);
+    try comp.generateSizeofType(w, "__SIZEOF_SIZE_T__", comp.type_store.size);
+    try comp.generateSizeofType(w, "__SIZEOF_WCHAR_T__", comp.wcharType());
+    try comp.generateSizeofType(w, "__SIZEOF_WINT_T__", comp.wintType());
+
+    try comp.generateTypeMacro(w, "__INTPTR_TYPE__", comp.intPtrType());
+    try comp.generateTypeMacro(w, "__UINTPTR_TYPE__", .uint);
+    try comp.generateTypeMacro(w, "__INTMAX_TYPE__", comp.intMaxType());
+    try comp.generateIntLiteralMacros("__INTMAX", w, comp.intMaxType());
+    try comp.generateTypeMacro(w, "__UINTMAX_TYPE__", .ulong_long);
+    try comp.generateIntLiteralMacros("__UINTMAX", w, .ulong_long);
+    try comp.generateTypeMacro(w, "__PTRDIFF_TYPE__", comp.type_store.ptrdiff);
+    try comp.generateTypeMacro(w, "__SIZE_TYPE__", comp.type_store.size);
+    try comp.generateTypeMacro(w, "__WCHAR_TYPE__", comp.wcharType());
+    try comp.generateTypeMacro(w, "__WINT_TYPE__", comp.wintType());
+    try comp.generateTypeMacro(w, "__SIG_ATOMIC_TYPE__", comp.sigAtomicType());
+    try comp.generateTypeMacro(w, "__CHAR16_TYPE__", comp.type_store.uint_least16_t);
+    try comp.generateTypeMacro(w, "__CHAR32_TYPE__", comp.type_store.uint_least32_t);
+
+    try comp.generateExactWidthTypes(w);
+    try comp.generateFastAndLeastWidthTypes(w);
+    try generateFloatMacros(w, "FLT", .IEEESingle, "F");
+    try generateFloatMacros(w, "DBL", .IEEEDouble, "");
+    try generateFloatMacros(w, "LDBL", .IEEEDouble, "L");
+    try w.writeAll(
+        \\#define __FLT_EVAL_METHOD__ 0
+        \\#define __FLT_RADIX__ 2
+        \\#define __DECIMAL_DIG__ __LDBL_DECIMAL_DIG__
+        \\
+    );
+}
+
 const RiscvFloatAbi = enum { soft, single, double };
 
 fn riscvFloatAbi(target: *const Target) RiscvFloatAbi {
@@ -1382,7 +1543,7 @@ fn writeBuiltinMacros(comp: *Compilation, system_defines_mode: SystemDefinesMode
     if (comp.langopts.emulate != .msvc) {
         try w.writeAll("#define __STDC__ 1\n");
     }
-    try w.print("#define __STDC_HOSTED__ {d}\n", .{@intFromBool(comp.target.os.tag != .freestanding)});
+    try w.print("#define __STDC_HOSTED__ {d}\n", .{@intFromBool(comp.data_model == null and comp.target.os.tag != .freestanding)});
 
     // standard macros
     try w.writeAll(
@@ -1393,7 +1554,9 @@ fn writeBuiltinMacros(comp: *Compilation, system_defines_mode: SystemDefinesMode
         \\#define __STDC_EMBED_EMPTY__ 2
         \\
     );
-    if (comp.langopts.standard.atLeast(.c11)) switch (comp.target.os.tag) {
+    if (comp.data_model != null and comp.langopts.standard.atLeast(.c11)) {
+        try w.writeAll("#define __STDC_NO_THREADS__ 1\n");
+    } else if (comp.langopts.standard.atLeast(.c11)) switch (comp.target.os.tag) {
         .openbsd, .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => {
             try w.writeAll("#define __STDC_NO_THREADS__ 1\n");
         },
@@ -1679,7 +1842,11 @@ fn generateExactWidthType(comp: *Compilation, w: *Io.Writer, original_qt: QualTy
 }
 
 pub fn hasFloat128(comp: *const Compilation) bool {
-    return comp.target.hasFloat128();
+    return comp.data_model == null and comp.target.hasFloat128();
+}
+
+pub fn hasInt128(comp: *const Compilation) bool {
+    return comp.data_model == null and comp.target.hasInt128();
 }
 
 pub fn hasHalfPrecisionFloatABI(comp: *const Compilation) bool {
@@ -1758,7 +1925,7 @@ pub fn nextLargestIntSameSign(comp: *const Compilation, qt: QualType) ?QualType 
 
 /// Maximum size of an array, in bytes
 pub fn maxArrayBytes(comp: *const Compilation) u64 {
-    const max_bits = @min(61, comp.target.ptrBitWidth());
+    const max_bits = @min(61, comp.ptrBitWidth());
     return (@as(u64, 1) << @truncate(max_bits)) - 1;
 }
 
@@ -1776,7 +1943,10 @@ pub fn fixedEnumTagType(comp: *const Compilation) ?QualType {
 }
 
 pub fn getCharSignedness(comp: *const Compilation) std.builtin.Signedness {
-    return comp.langopts.char_signedness_override orelse comp.target.cCharSignedness();
+    return comp.langopts.char_signedness_override orelse if (comp.data_model) |model|
+        model.char_signedness
+    else
+        comp.target.cCharSignedness();
 }
 
 pub fn hasClangStyleBoundsSafety(comp: *const Compilation) bool {
@@ -2573,6 +2743,7 @@ pub fn getSourceMTimeUncached(comp: *const Compilation, source_id: Source.Id) ?u
 }
 
 pub fn isTargetArch(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return mem.eql(u8, query, "merc32");
     const arch, const opt_sub_arch = Target.parseArchName(query) orelse return false;
     if (arch != comp.target.cpu.arch) return false;
     const sub_arch = opt_sub_arch orelse return true;

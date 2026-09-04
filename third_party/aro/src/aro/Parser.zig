@@ -1132,8 +1132,10 @@ pub fn parse(pp: *Preprocessor) Compilation.Error!Tree {
         if (p.comp.langopts.hasChar8_T()) {
             try p.addImplicitTypedef("char8_t", .uchar);
         }
-        try p.addImplicitTypedef("__int128_t", .int128);
-        try p.addImplicitTypedef("__uint128_t", .uint128);
+        if (p.comp.data_model == null or p.comp.hasInt128()) {
+            try p.addImplicitTypedef("__int128_t", .int128);
+            try p.addImplicitTypedef("__uint128_t", .uint128);
+        }
         if (p.comp.langopts.has_int24) {
             try p.addImplicitTypedef("__int24__", .int24);
             try p.addImplicitTypedef("__uint24", .uint24);
@@ -10990,7 +10992,7 @@ fn fixedSizeInt(p: *Parser, base: u8, buf: []const u8, suffix: number_literal.Su
             const max_int = try Value.maxInt(res.qt, p.comp);
             if (interned_val.compare(.lte, max_int, p.comp)) break;
         } else switch (p.comp.langopts.emulate) {
-            .no, .gcc => if (p.comp.target.hasInt128()) {
+            .no, .gcc => if (p.comp.hasInt128()) {
                 res.qt = .int128;
             } else {
                 res.qt = .long_long;
