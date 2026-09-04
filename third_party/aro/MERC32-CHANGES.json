@@ -10,8 +10,8 @@
     {
       "path": "src/aro/Compilation.zig",
       "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
-      "sha256": "80b7d9a9b018347fbb26ca8dd46347465d92aabd5c5abe098bb18d230af5a1c4",
-      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, and MERC32 macro profile."
+      "sha256": "694058543fc1452097b988cbea7b3fb424b6cf45cc0440ebb9b80fba42d04266",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, and target-independent alias selection."
     },
     {
       "path": "src/aro/DataModel.zig",
@@ -24,6 +24,12 @@
       "upstreamSha256": "974e42408bc63089a5a1ea1d6d6f158081d01a7373d56c42a1e96a7ddfc9ec19",
       "sha256": "26f7246bdb3aafc1e09e2ec80aa190002da807130385b7fc0fe99c349ddb5c34",
       "reason": "Route integer-literal and int128 capability behavior through the selected compilation model."
+    },
+    {
+      "path": "src/aro/Preprocessor.zig",
+      "upstreamSha256": "b514f987592d5113598c88c1ceb8361ac9a432fd8d455b63a202357a0704d29f",
+      "sha256": "1e488aac88beee0f61ffef40514d804bbd9ec8f41968a5e2cce4afaa1a437a18",
+      "reason": "Route builtin and feature checks through model-aware compilation capability queries."
     },
     {
       "path": "src/aro/Preprocessor/Parser.zig",

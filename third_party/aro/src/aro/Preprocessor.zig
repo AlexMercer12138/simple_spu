@@ -1792,10 +1792,12 @@ fn handleBuiltinMacro(
                     else
                         false;
                 },
-                .has_feature => features.hasFeature(pp.comp, ident_str),
-                .has_extension => features.hasExtension(pp.comp, ident_str),
+                .has_feature => pp.comp.allowsTargetFeature(Attribute.normalize(ident_str)) and
+                    features.hasFeature(pp.comp, ident_str),
+                .has_extension => pp.comp.allowsTargetFeature(Attribute.normalize(ident_str)) and
+                    features.hasExtension(pp.comp, ident_str),
 
-                .has_builtin => Builtins.fromName(pp.comp, ident_str) != null or
+                .has_builtin => pp.comp.hasBuiltin(ident_str) or
                     ((pp.comp.langopts.emulate == .no or pp.comp.langopts.emulate == .clang) and
                         Macro.Builtin.has_builtin_special_cases.has(ident_str)),
 

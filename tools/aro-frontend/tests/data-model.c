@@ -3,6 +3,16 @@ _Static_assert(__STDC_HOSTED__ == 0, "freestanding");
 _Static_assert(__MERC32__ == 1 && __merc32__ == 1, "target macros");
 _Static_assert(__is_target_arch(merc32), "target query");
 _Static_assert(!__is_target_arch(x86_64) && !__is_target_arch(wasm32), "no substitute target query");
+_Static_assert(!__is_target_os(linux) && !__is_target_os(darwin), "no backing OS");
+_Static_assert(!__is_target_vendor(pc) && !__is_target_vendor(apple), "no backing vendor");
+_Static_assert(!__is_target_environment(gnu) && !__is_target_environment(none), "no backing environment");
+_Static_assert(!__is_target_variant_os(ios), "no backing variant OS");
+_Static_assert(!__is_target_variant_environment(simulator), "no backing variant environment");
+_Static_assert(!__has_builtin(__builtin_ia32_addcarryx_u64), "no backing architecture builtin");
+_Static_assert(__has_builtin(__builtin_types_compatible_p), "common builtin remains available");
+_Static_assert(!__has_feature(c_thread_local), "no backing target feature");
+_Static_assert(!__has_extension(c_thread_local), "no backing target extension");
+_Static_assert(__has_feature(c_alignof), "language feature remains available");
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "little endian");
 _Static_assert((char)-1 < 0, "plain char is signed");
 
@@ -34,6 +44,12 @@ typedef __UINTMAX_TYPE__ uintmax_t;
 typedef __WCHAR_TYPE__ wchar_t;
 typedef __WINT_TYPE__ wint_t;
 typedef __SIG_ATOMIC_TYPE__ sig_atomic_t;
+typedef __INT_LEAST16_TYPE__ int_least16_t;
+typedef __UINT_LEAST16_TYPE__ uint_least16_t;
+typedef __INT_FAST16_TYPE__ int_fast16_t;
+typedef __UINT_FAST16_TYPE__ uint_fast16_t;
+typedef __CHAR16_TYPE__ char16_t;
+typedef __CHAR32_TYPE__ char32_t;
 
 #define ASSERT_TYPE(expr, type) \
     _Static_assert(_Generic((expr), type: 1, default: 0), #expr)
@@ -46,6 +62,12 @@ ASSERT_TYPE((uintmax_t)0, unsigned long long);
 ASSERT_TYPE((wchar_t)0, int);
 ASSERT_TYPE((wint_t)0, unsigned int);
 ASSERT_TYPE((sig_atomic_t)0, int);
+ASSERT_TYPE((int_least16_t)0, short);
+ASSERT_TYPE((uint_least16_t)0, unsigned short);
+ASSERT_TYPE((int_fast16_t)0, short);
+ASSERT_TYPE((uint_fast16_t)0, unsigned short);
+ASSERT_TYPE((char16_t)0, unsigned short);
+ASSERT_TYPE((char32_t)0, unsigned int);
 
 ASSERT_TYPE(1, int);
 ASSERT_TYPE(1U, unsigned int);

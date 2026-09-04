@@ -1681,16 +1681,18 @@ pub fn smallestNBitIntTargetIndependent(comp: *const Compilation, bits: usize, s
 
 /// Lowest-rank integer type with at least N bits; subject to platform idiosyncrasies
 pub fn intLeastN(comp: *const Compilation, bits: usize, signedness: std.builtin.Signedness) QualType {
-    if (bits <= 24 and bits > Type.Int.int.bits(comp) and comp.langopts.has_int24) {
-        return if (signedness == .signed) .int24 else .uint24;
-    }
-    if (bits == 64 and (comp.target.os.tag.isDarwin() or comp.target.cpu.arch.isWasm())) {
-        // WebAssembly and Darwin use `long long` for `int_least64_t` and `int_fast64_t`.
-        return if (signedness == .signed) .long_long else .ulong_long;
-    }
-    if (bits == 16 and comp.target.cpu.arch == .avr) {
-        // AVR uses int for int_least16_t and int_fast16_t.
-        return if (signedness == .signed) .int else .uint;
+    if (comp.data_model == null) {
+        if (bits <= 24 and bits > Type.Int.int.bits(comp) and comp.langopts.has_int24) {
+            return if (signedness == .signed) .int24 else .uint24;
+        }
+        if (bits == 64 and (comp.target.os.tag.isDarwin() or comp.target.cpu.arch.isWasm())) {
+            // WebAssembly and Darwin use `long long` for `int_least64_t` and `int_fast64_t`.
+            return if (signedness == .signed) .long_long else .ulong_long;
+        }
+        if (bits == 16 and comp.target.cpu.arch == .avr) {
+            // AVR uses int for int_least16_t and int_fast16_t.
+            return if (signedness == .signed) .int else .uint;
+        }
     }
     return comp.smallestNBitIntTargetIndependent(bits, signedness);
 }
@@ -1847,6 +1849,15 @@ pub fn hasFloat128(comp: *const Compilation) bool {
 
 pub fn hasInt128(comp: *const Compilation) bool {
     return comp.data_model == null and comp.target.hasInt128();
+}
+
+pub fn hasBuiltin(comp: *Compilation, query: []const u8) bool {
+    const builtin = Builtins.fromName(comp, query) orelse return false;
+    return comp.data_model == null or std.meta.activeTag(builtin.tag) == .common;
+}
+
+pub fn allowsTargetFeature(comp: *const Compilation, normalized_query: []const u8) bool {
+    return comp.data_model == null or !mem.eql(u8, normalized_query, "c_thread_local");
 }
 
 pub fn hasHalfPrecisionFloatABI(comp: *const Compilation) bool {
@@ -2752,18 +2763,22 @@ pub fn isTargetArch(comp: *const Compilation, query: []const u8) bool {
 }
 
 pub fn isTargetOs(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return false;
     return Target.isOs(&comp.target, query);
 }
 
 pub fn isTargetVendor(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return false;
     return Target.parseVendorName(query) == comp.target.vendor;
 }
 
 pub fn isTargetAbi(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return false;
     return Target.isAbi(&comp.target, query);
 }
 
 pub fn isTargetVariantOs(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return false;
     if (comp.target.os.tag.isDarwin()) {
         const variant_target = &(comp.darwin_target_variant orelse return false);
         return Target.isOs(variant_target, query);
@@ -2772,6 +2787,7 @@ pub fn isTargetVariantOs(comp: *const Compilation, query: []const u8) bool {
 }
 
 pub fn isTargetVariantEnvironment(comp: *const Compilation, query: []const u8) bool {
+    if (comp.data_model != null) return false;
     if (comp.target.os.tag.isDarwin()) {
         const variant_target = &(comp.darwin_target_variant orelse return false);
         return Target.isAbi(variant_target, query);
