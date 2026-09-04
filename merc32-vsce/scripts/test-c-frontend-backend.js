@@ -97,4 +97,23 @@ switchUnit.nodes.push(
 const switchProgram = adaptTypedUnit(switchUnit);
 assert.doesNotThrow(() => generateObject(lowerProgram(switchProgram)));
 
+const typedefPointerMember = JSON.parse(JSON.stringify(unit));
+typedefPointerMember.types.push(
+  { id: 7, kind: 'typedef', name: 'PairAlias', target: 4, qualifiers: [], size: 8, alignment: 4 },
+  { id: 8, kind: 'pointer', pointee: 7, qualifiers: [], size: 4, alignment: 4 },
+);
+typedefPointerMember.types.find((type) => type.id === 6).parameters = [8];
+typedefPointerMember.symbols.find((symbol) => symbol.id === 4).type = 8;
+const memberReference = typedefPointerMember.nodes.find((node) => node.id === 5);
+memberReference.type = 8;
+const member = typedefPointerMember.nodes.find((node) => node.id === 4);
+member.kind = 'member';
+member.type = 1;
+member.valueCategory = 'lvalue';
+member.memberIndex = 1;
+delete member.operator;
+member.children = [5];
+assert.doesNotThrow(() => generateObject(lowerProgram(adaptTypedUnit(typedefPointerMember))),
+  'member access through a pointer to a typedef-wrapped aggregate must lower');
+
 console.log('C frontend backend adapter tests passed');

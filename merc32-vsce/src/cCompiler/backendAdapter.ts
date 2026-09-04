@@ -310,7 +310,7 @@ function isLoweringStatement(value: LoweringExpression | LoweringStatement): val
 
 function memberOffset(type: CType, index: number, files: ReadonlyMap<number, string>): number {
     type = unwrapType(type);
-    if (type.kind === 'pointer') type = type.pointee;
+    if (type.kind === 'pointer') type = unwrapType(type.pointee);
     if (type.kind !== 'struct' && type.kind !== 'union') throw new CFrontendInternalError('member expression base is not an aggregate');
     const member = type.fields[index];
     if (!member) throw new CFrontendInternalError(`aggregate member index ${index} is out of range`);
