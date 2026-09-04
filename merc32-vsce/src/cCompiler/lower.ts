@@ -65,7 +65,7 @@ function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IR
     return { name, parameters: [], parameterNames: [], localNames: [], localTypes: [], blocks: [{ label: `${name}.entry`, instructions }] };
 }
 
-function lowerFunction(func: LoweringFunction, occupiedNames: ReadonlySet<string>): IRFunction {
+function lowerFunction(func: LoweringFunction, occupiedNames: Set<string>): IRFunction {
     const lowerer = new FunctionLowerer(func, occupiedNames);
     lowerer.lowerStatement(func.body);
     if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') lowerer.instructions.push({ op: 'ret', args: [lowerer.constant(0)] });
@@ -84,7 +84,7 @@ class FunctionLowerer {
     private readonly userLabels = new Map<string, string>();
     private readonly labels = new Set<string>();
     private readonly variables = new Map<string, CType>();
-    public constructor(private readonly func: LoweringFunction, private readonly occupiedNames: ReadonlySet<string>) {
+    public constructor(private readonly func: LoweringFunction, private readonly occupiedNames: Set<string>) {
         func.parameterNames.forEach((name, index) => { if (name) this.variables.set(name, func.parameters[index]); });
     }
     public lowerStatement(statement: LoweringStatement): void {
@@ -129,10 +129,10 @@ class FunctionLowerer {
     private divideBy(value: number, size: number, location: IRInstruction['location']): number { if (size === 1) return value; const scale = this.constant(size, location); const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['/', value, scale], dest: result, location }); return result; }
     private lowerLogical(expression: LoweringExpression): number { const result = this.allocateValue(); const yes = this.label('logic_true'); const no = this.label('logic_false'); const end = this.label('logic_end'); const left = this.lowerExpression(expression.operands[0]); if (expression.operator === '&&') { this.instructions.push({ op: 'branch-zero', args: [left, no] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-zero', args: [right, no] }, { op: 'jump', args: [yes] }); } else { this.instructions.push({ op: 'branch-nonzero', args: [left, yes] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-nonzero', args: [right, yes] }, { op: 'jump', args: [no] }); } this.instructions.push({ op: 'label', args: [yes] }, { op: 'constant', args: [1], dest: result }, { op: 'jump', args: [end] }, { op: 'label', args: [no] }, { op: 'constant', args: [0], dest: result }, { op: 'label', args: [end] }); return result; }
     public returnLabel(): string { return this.label('return'); }
-    private label(prefix: string): string { let candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; while (this.labels.has(candidate) || this.occupiedNames.has(candidate)) candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; this.labels.add(candidate); return candidate; }
+    private label(prefix: string): string { let candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; while (this.labels.has(candidate) || this.occupiedNames.has(candidate)) candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; this.labels.add(candidate); this.occupiedNames.add(candidate); return candidate; }
     private allocateValue(): number { return this.nextValue++; }
     public constant(value: number, location?: IRInstruction['location']): number { const dest = this.allocateValue(); this.instructions.push({ op: 'constant', args: [value], dest, location }); return dest; }
-    private userLabel(label: string): string { const existing = this.userLabels.get(label); if (existing) return existing; let generated = `__${this.func.name}_user_${label}`; let serial = 0; while (this.labels.has(generated) || this.occupiedNames.has(generated)) generated = `__${this.func.name}_user_${label}_${serial++}`; this.labels.add(generated); this.userLabels.set(label, generated); return generated; }
+    private userLabel(label: string): string { const existing = this.userLabels.get(label); if (existing) return existing; let generated = `__${this.func.name}_user_${label}`; let serial = 0; while (this.labels.has(generated) || this.occupiedNames.has(generated)) generated = `__${this.func.name}_user_${label}_${serial++}`; this.labels.add(generated); this.occupiedNames.add(generated); this.userLabels.set(label, generated); return generated; }
 }
 
 function isStatement(value: LoweringExpression | LoweringStatement): value is LoweringStatement {

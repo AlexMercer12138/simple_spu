@@ -146,13 +146,14 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                 if (isUnsupportedBuiltin(record.name)) fail(`${record.name} operations are not supported by the MERC32 backend`, findRange(record, unit), files);
                 break;
         }
-        if (record.kind === 'function') {
-            if (record.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
-            if (typeSize(shell.returnType) > 4 || shell.parameters.some((parameter: CType) => typeSize(parameter) > 4)) {
+        const functionShape = unwrapType(shell);
+        if (functionShape.kind === 'function') {
+            if (functionShape.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
+            if (typeSize(functionShape.returnType) > 4 || functionShape.parameters.some((parameter: CType) => typeSize(parameter) > 4)) {
                 fail('aggregate function return and parameter values are not supported by the MERC32 backend', findRange(record, unit), files);
             }
         }
-        if (record.kind !== 'function' && (typeSize(shell) !== record.size || typeAlignment(shell) !== record.alignment)) {
+        if (functionShape.kind !== 'function' && (typeSize(shell) !== record.size || typeAlignment(shell) !== record.alignment)) {
             throw new CFrontendInternalError(`serialized layout disagrees with MERC32 ABI for type ${record.id}`);
         }
     }
@@ -265,9 +266,8 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
     const functions: LoweringFunction[] = [];
     for (const symbol of unit.symbols) {
         if (symbol.kind !== 'function' || !symbol.definition) continue;
-        const functionTypeRecord = records.get(Number(symbol.type));
-        if (!functionTypeRecord || functionTypeRecord.kind !== 'function') throw new CFrontendInternalError(`function ${symbol.name} has non-function type`);
-        const type = shells.get(Number(symbol.type)) as Extract<CType, { kind: 'function' }>;
+        const type = unwrapType(shells.get(Number(symbol.type)) as CType);
+        if (type.kind !== 'function') throw new CFrontendInternalError(`function ${symbol.name} has non-function type`);
         if (type.variadic) fail('variadic functions are not supported by the MERC32 backend', symbol.range, files);
         const definition = unit.declarations.map((id) => nodeRecords.get(Number(id))).find((node) => node?.kind === 'function-definition' && 'symbol' in node && Number(node.symbol) === Number(symbol.id));
         const bodyNode = definition?.children.map((id) => nodeRecords.get(Number(id))).find((node) => node?.category === 'statement' && node.kind === 'compound');

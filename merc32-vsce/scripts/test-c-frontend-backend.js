@@ -156,4 +156,26 @@ assert.throws(() => adaptTypedUnit(genericSelection), (error) => {
   return error.diagnostics[0].code === 'C_BACKEND_CAPABILITY';
 }, 'generic selections must report a backend capability diagnostic');
 
+const crossFunctionLabels = {
+  abi: 'merc32-c-v1', globals: [],
+  functions: [
+    { name: 'a', returnType: scalarType, parameters: [], parameterNames: [], localNames: [], localTypes: [],
+      body: { kind: 'label', label: 'b_user_c', statement: empty, location: loc } },
+    { name: 'a_user_b', returnType: scalarType, parameters: [], parameterNames: [], localNames: [], localTypes: [],
+      body: { kind: 'label', label: 'c', statement: empty, location: loc } },
+  ],
+};
+const labelModule = lowerProgram(crossFunctionLabels);
+const generatedLabels = labelModule.functions.flatMap((func) => func.blocks[0].instructions)
+  .filter((instruction) => instruction.op === 'label').map((instruction) => instruction.args[0]);
+assert.strictEqual(new Set(generatedLabels).size, generatedLabels.length,
+  'generated labels must remain unique across functions');
+
+const typedefFunction = JSON.parse(JSON.stringify(unit));
+typedefFunction.types.push({ id: 7, kind: 'typedef', name: 'Adder', target: 6, qualifiers: [], size: 0, alignment: 4 });
+typedefFunction.symbols.find((symbol) => symbol.id === 3).type = 7;
+typedefFunction.nodes.find((node) => node.id === 1).type = 7;
+assert.doesNotThrow(() => generateObject(lowerProgram(adaptTypedUnit(typedefFunction))),
+  'function symbols may use a typedef-wrapped function type');
+
 console.log('C frontend backend adapter tests passed');
