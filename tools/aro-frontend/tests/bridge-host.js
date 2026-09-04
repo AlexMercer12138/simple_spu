@@ -259,6 +259,15 @@ assert.strictEqual(syntax.envelope.status, 'diagnostics');
 assert.ok(syntax.envelope.diagnostics.some((item) =>
     item.severity === 'error' || item.severity === 'fatal'));
 
+const trailingSpliceEof = analyze(makeRequest({ source: 'int x\\\n' }));
+assert.strictEqual(trailingSpliceEof.envelope.status, 'diagnostics');
+assert.ok(trailingSpliceEof.envelope.diagnostics[0], JSON.stringify(trailingSpliceEof.envelope));
+assert.deepStrictEqual(trailingSpliceEof.envelope.diagnostics[0].range, {
+    file: 1,
+    start: { line: 2, column: 1, byteOffset: 7 },
+    end: { line: 2, column: 1, byteOffset: 7 },
+}, 'a zero-width EOF diagnostic after a trailing splice must map to the original EOF point');
+
 const translatedRangeCases = [
     {
         name: 'backslash-LF splicing',

@@ -310,7 +310,12 @@ const TokenIndex = struct {
             while (end_index < group_end and
                 index.entries[end_index].translated_end.? == translated_offset) : (end_index += 1)
             {
-                index.entries[end_index].original_end = originalPosition(boundary.before_splice);
+                const entry = &index.entries[end_index];
+                const original_end = if (entry.translated_offset == entry.translated_end.?)
+                    boundary.after_splice
+                else
+                    boundary.before_splice;
+                entry.original_end = originalPosition(original_end);
             }
         }
     }
@@ -474,6 +479,32 @@ test "token index scans each diagnostic source once" {
         second_offset + "second_bad".len,
         token_index.findRange(1, second_offset).?.end.byte_offset,
     );
+}
+
+test "token index maps empty and non-empty ranges at a splice boundary" {
+    var comp = try aro.Compilation.init(.testing);
+    defer comp.deinit();
+    const original = "a\\\n+";
+    const source = try comp.addSourceFromBuffer("splice-ranges.c", original);
+    var entries = [_]TokenIndex.Entry{
+        .{ .file_id = 1, .translated_offset = 0, .translated_end = 1 },
+        .{ .file_id = 1, .translated_offset = 1, .translated_end = 1 },
+    };
+    var token_index: TokenIndex = .{
+        .allocator = std.testing.allocator,
+        .entries = &entries,
+    };
+
+    try token_index.mapSource(source, original, 0, entries.len);
+
+    try std.testing.expectEqualDeep(TokenIndex.MappedRange{
+        .start = .{ .line = 1, .column = 1, .byte_offset = 0 },
+        .end = .{ .line = 1, .column = 2, .byte_offset = 1 },
+    }, token_index.findRange(1, 0).?);
+    try std.testing.expectEqualDeep(TokenIndex.MappedRange{
+        .start = .{ .line = 2, .column = 1, .byte_offset = 3 },
+        .end = .{ .line = 2, .column = 1, .byte_offset = 3 },
+    }, token_index.findRange(1, 1).?);
 }
 
 test "original location mapper distinguishes both sides of a splice" {
