@@ -125,4 +125,25 @@ assert.throws(() => adaptTypedUnit(externTls), (error) => {
   return error.diagnostics[0].message.includes('thread-local');
 });
 
+const loc = { file: 'main.c', line: 1, column: 1 };
+const scalarType = program.functions[0].returnType;
+const literal = (value) => ({ kind: 'integer-literal', type: scalarType, valueCategory: 'rvalue', location: loc, operands: [], constant: BigInt(value) });
+const empty = { kind: 'empty', location: loc };
+const nestedSwitch = { kind: 'switch', test: literal(0), body: { kind: 'compound', statements: [
+  { kind: 'case', value: 2n, statement: empty, location: loc },
+], location: loc }, location: loc };
+const labeledCase = { kind: 'label', label: 'outer', statement: { kind: 'case', value: 1n, statement: empty, location: loc }, location: loc };
+const controlProgram = {
+  abi: 'merc32-c-v1',
+  globals: [{ name: '__flow_user_outer', type: scalarType }],
+  functions: [{ name: 'flow', returnType: scalarType, parameters: [], parameterNames: [], localNames: [], localTypes: [],
+    body: { kind: 'switch', test: literal(0), body: { kind: 'compound', statements: [labeledCase, nestedSwitch], location: loc }, location: loc } }],
+};
+const flowModule = lowerProgram(controlProgram);
+const flowFunction = flowModule.functions.find((func) => func.name === 'flow');
+assert.strictEqual(flowFunction.blocks[0].instructions.filter((instruction) => instruction.op === 'branch-nonzero').length, 2,
+  'outer switch must ignore nested switch cases while still collecting label-wrapped cases');
+const flowLabels = flowFunction.blocks[0].instructions.filter((instruction) => instruction.op === 'label').map((instruction) => instruction.args[0]);
+assert(!flowLabels.includes('__flow_user_outer'), 'generated labels must avoid program-level symbol names');
+
 console.log('C frontend backend adapter tests passed');

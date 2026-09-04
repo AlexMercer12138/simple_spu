@@ -18,7 +18,8 @@ function isLoweringProgram(value: unknown): value is LoweringProgram {
 
 function lowerTypedProgram(program: LoweringProgram): Merc32Module {
     const globals = program.globals.map(lowerGlobal);
-    const functions = program.functions.map((func) => lowerFunction(func));
+    const occupiedNames = new Set([...globals.map((global) => global.name), ...program.functions.map((func) => func.name)]);
+    const functions = program.functions.map((func) => lowerFunction(func, occupiedNames));
     if ([...globals, ...functions].some((item) => item.name === '__merc32_init_globals')) {
         throw new Error("reserved compiler symbol '__merc32_init_globals' is already defined");
     }
@@ -64,8 +65,8 @@ function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IR
     return { name, parameters: [], parameterNames: [], localNames: [], localTypes: [], blocks: [{ label: `${name}.entry`, instructions }] };
 }
 
-function lowerFunction(func: LoweringFunction): IRFunction {
-    const lowerer = new FunctionLowerer(func);
+function lowerFunction(func: LoweringFunction, occupiedNames: ReadonlySet<string>): IRFunction {
+    const lowerer = new FunctionLowerer(func, occupiedNames);
     lowerer.lowerStatement(func.body);
     if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') lowerer.instructions.push({ op: 'ret', args: [lowerer.constant(0)] });
     return { name: func.name, returnType: func.returnType, parameters: func.parameters, parameterNames: func.parameterNames, localNames: lowerer.localNames, localTypes: lowerer.localTypes, returnLabel: lowerer.returnLabel(), blocks: [{ label: `${func.name}.entry`, instructions: lowerer.instructions }] };
@@ -83,7 +84,7 @@ class FunctionLowerer {
     private readonly userLabels = new Map<string, string>();
     private readonly labels = new Set<string>();
     private readonly variables = new Map<string, CType>();
-    public constructor(private readonly func: LoweringFunction) {
+    public constructor(private readonly func: LoweringFunction, private readonly occupiedNames: ReadonlySet<string>) {
         func.parameterNames.forEach((name, index) => { if (name) this.variables.set(name, func.parameters[index]); });
     }
     public lowerStatement(statement: LoweringStatement): void {
@@ -128,16 +129,16 @@ class FunctionLowerer {
     private divideBy(value: number, size: number, location: IRInstruction['location']): number { if (size === 1) return value; const scale = this.constant(size, location); const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['/', value, scale], dest: result, location }); return result; }
     private lowerLogical(expression: LoweringExpression): number { const result = this.allocateValue(); const yes = this.label('logic_true'); const no = this.label('logic_false'); const end = this.label('logic_end'); const left = this.lowerExpression(expression.operands[0]); if (expression.operator === '&&') { this.instructions.push({ op: 'branch-zero', args: [left, no] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-zero', args: [right, no] }, { op: 'jump', args: [yes] }); } else { this.instructions.push({ op: 'branch-nonzero', args: [left, yes] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-nonzero', args: [right, yes] }, { op: 'jump', args: [no] }); } this.instructions.push({ op: 'label', args: [yes] }, { op: 'constant', args: [1], dest: result }, { op: 'jump', args: [end] }, { op: 'label', args: [no] }, { op: 'constant', args: [0], dest: result }, { op: 'label', args: [end] }); return result; }
     public returnLabel(): string { return this.label('return'); }
-    private label(prefix: string): string { let candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; while (this.labels.has(candidate)) candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; this.labels.add(candidate); return candidate; }
+    private label(prefix: string): string { let candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; while (this.labels.has(candidate) || this.occupiedNames.has(candidate)) candidate = `__${this.func.name}_${prefix}_${this.nextLabel++}`; this.labels.add(candidate); return candidate; }
     private allocateValue(): number { return this.nextValue++; }
     public constant(value: number, location?: IRInstruction['location']): number { const dest = this.allocateValue(); this.instructions.push({ op: 'constant', args: [value], dest, location }); return dest; }
-    private userLabel(label: string): string { const existing = this.userLabels.get(label); if (existing) return existing; let generated = `__${this.func.name}_user_${label}`; let serial = 0; while (this.labels.has(generated)) generated = `__${this.func.name}_user_${label}_${serial++}`; this.labels.add(generated); this.userLabels.set(label, generated); return generated; }
+    private userLabel(label: string): string { const existing = this.userLabels.get(label); if (existing) return existing; let generated = `__${this.func.name}_user_${label}`; let serial = 0; while (this.labels.has(generated) || this.occupiedNames.has(generated)) generated = `__${this.func.name}_user_${label}_${serial++}`; this.labels.add(generated); this.userLabels.set(label, generated); return generated; }
 }
 
 function isStatement(value: LoweringExpression | LoweringStatement): value is LoweringStatement {
     return ['compound', 'declaration', 'expression', 'return', 'if', 'while', 'do-while', 'for', 'switch', 'case', 'default', 'break', 'continue', 'goto', 'label', 'empty'].includes(value.kind);
 }
-function collectCases(statement: LoweringStatement, makeLabel: (prefix: string) => string): Array<{ statement: LoweringStatement; label: string }> { const entries: Array<{ statement: LoweringStatement; label: string }> = []; const visit = (current: LoweringStatement): void => { if (current.kind === 'compound') current.statements.forEach(visit); else if (current.kind === 'case' || current.kind === 'default') { entries.push({ statement: current, label: makeLabel(current.kind) }); visit(current.statement); } else if (current.kind === 'if') { visit(current.thenBranch); if (current.elseBranch) visit(current.elseBranch); } else if ('body' in current && current.body) visit(current.body); }; visit(statement); return entries; }
+function collectCases(statement: LoweringStatement, makeLabel: (prefix: string) => string): Array<{ statement: LoweringStatement; label: string }> { const entries: Array<{ statement: LoweringStatement; label: string }> = []; const visit = (current: LoweringStatement): void => { if (current.kind === 'compound') current.statements.forEach(visit); else if (current.kind === 'case' || current.kind === 'default') { entries.push({ statement: current, label: makeLabel(current.kind) }); visit(current.statement); } else if (current.kind === 'if') { visit(current.thenBranch); if (current.elseBranch) visit(current.elseBranch); } else if (current.kind === 'label') { if (current.statement) visit(current.statement); } else if (current.kind === 'switch') { return; } else if ('body' in current && current.body) visit(current.body); }; visit(statement); return entries; }
 function isSigned(type: CType): boolean { const unwrapped = unwrapType(type); return unwrapped.kind === 'builtin' && ['_Bool', 'char', 'signed char', 'short', 'int', 'long'].includes(unwrapped.name); }
 function unwrapType(type: CType): CType { const seen = new Set<CType>(); let current = type; while (current.kind === 'typedef' && current.target && !seen.has(current)) { seen.add(current); current = current.target; } return current; }
 function decay(type: CType): CType { const unwrapped = unwrapType(type); return unwrapped.kind === 'array' ? pointerType(unwrapped.element) : unwrapped.kind === 'function' ? pointerType(unwrapped) : unwrapped; }
