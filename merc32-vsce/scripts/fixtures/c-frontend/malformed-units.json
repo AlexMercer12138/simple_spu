@@ -1,0 +1,423 @@
+{
+  "cases": [
+    {
+      "name": "unknown unit field",
+      "invariant": "STRUCTURE_CLOSED",
+      "operations": [{ "op": "set", "path": ["unit", "frontendPrivate"], "value": 7 }]
+    },
+    {
+      "name": "unknown type kind",
+      "invariant": "TYPE_KIND",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [{ "id": 1, "kind": "private-type", "qualifiers": [], "size": 4, "alignment": 4 }]
+      }]
+    },
+    {
+      "name": "unknown symbol kind",
+      "invariant": "SYMBOL_KIND",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "symbols"],
+        "value": [{ "id": 1, "kind": "private-symbol", "name": "x", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }]
+      }]
+    },
+    {
+      "name": "unknown constant kind",
+      "invariant": "CONSTANT_KIND",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "conversion", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "conversion": "assignment", "targetType": 1, "constant": { "kind": "private-constant", "value": "0" } }]
+      }]
+    },
+    {
+      "name": "wrong protocol version",
+      "invariant": "ENVELOPE_IDENTITY",
+      "operations": [{ "op": "set", "path": ["protocolVersion"], "value": 2 }]
+    },
+    {
+      "name": "unexpected bridge build",
+      "invariant": "BUILD_ID",
+      "operations": [{ "op": "set", "path": ["bridgeBuildId"], "value": "other-build" }]
+    },
+    {
+      "name": "wrong unit schema",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "schema"], "value": "other.typed-unit" }]
+    },
+    {
+      "name": "wrong unit schema version",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "schemaVersion"], "value": 2 }]
+    },
+    {
+      "name": "substitute target identity",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "target"], "value": "x86_64" }]
+    },
+    {
+      "name": "wrong ABI identity",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "abi"], "value": "sysv" }]
+    },
+    {
+      "name": "wrong data model identity",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "dataModel"], "value": "lp64" }]
+    },
+    {
+      "name": "wrong language identity",
+      "invariant": "UNIT_IDENTITY",
+      "operations": [{ "op": "set", "path": ["unit", "language"], "value": "gnu17" }]
+    },
+    {
+      "name": "ok status without unit",
+      "invariant": "STATUS_CONSISTENCY",
+      "operations": [{ "op": "delete", "path": ["unit"] }]
+    },
+    {
+      "name": "error status with unit",
+      "invariant": "STATUS_CONSISTENCY",
+      "operations": [{ "op": "set", "path": ["status"], "value": "error" }]
+    },
+    {
+      "name": "ok status with error diagnostic",
+      "invariant": "STATUS_CONSISTENCY",
+      "operations": [{
+        "op": "set",
+        "path": ["diagnostics"],
+        "value": [{
+          "severity": "error",
+          "code": "C0001",
+          "message": "invalid source",
+          "range": {
+            "file": 1,
+            "start": { "line": 1, "column": 1, "byteOffset": 0 },
+            "end": { "line": 1, "column": 2, "byteOffset": 1 }
+          },
+          "related": [],
+          "notes": [],
+          "includeTrace": [],
+          "macroExpansionTrace": []
+        }]
+      }]
+    },
+    {
+      "name": "duplicate source file ID",
+      "invariant": "DUPLICATE_ID",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "sourceFiles"],
+        "value": [
+          { "id": 1, "path": "main.c", "byteLength": 26 },
+          { "id": 1, "path": "duplicate.c", "byteLength": 0 }
+        ]
+      }]
+    },
+    {
+      "name": "duplicate type ID",
+      "invariant": "DUPLICATE_ID",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 1, "kind": "builtin", "name": "unsigned int", "qualifiers": [], "size": 4, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "duplicate symbol ID",
+      "invariant": "DUPLICATE_ID",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "symbols"],
+        "value": [
+          { "id": 1, "kind": "typedef", "name": "A", "type": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } },
+          { "id": 1, "kind": "typedef", "name": "B", "type": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }
+        ]
+      }]
+    },
+    {
+      "name": "duplicate node ID",
+      "invariant": "DUPLICATE_ID",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [
+          { "id": 1, "category": "statement", "kind": "empty", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "children": [] },
+          { "id": 1, "category": "statement", "kind": "empty", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "children": [] }
+        ]
+      }]
+    },
+    {
+      "name": "missing type reference",
+      "invariant": "MISSING_REFERENCE",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 2, "kind": "pointer", "pointee": 99, "qualifiers": [], "size": 4, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "missing declaration node reference",
+      "invariant": "MISSING_REFERENCE",
+      "operations": [{ "op": "set", "path": ["unit", "declarations"], "value": [99] }]
+    },
+    {
+      "name": "missing child node reference",
+      "invariant": "MISSING_REFERENCE",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "statement", "kind": "compound", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "children": [99] }]
+      }]
+    },
+    {
+      "name": "missing source file reference",
+      "invariant": "MISSING_REFERENCE",
+      "operations": [{
+        "op": "set",
+        "path": ["diagnostics"],
+        "value": [{ "severity": "warning", "code": "C0004", "message": "missing file", "range": { "file": 99, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }]
+      }]
+    },
+    {
+      "name": "missing symbol reference",
+      "invariant": "MISSING_REFERENCE",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "declaration-reference", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "lvalue", "children": [], "symbol": 99 }]
+      }]
+    },
+    {
+      "name": "function symbol cross-kind type reference",
+      "invariant": "CROSS_KIND_REFERENCE",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "symbols"],
+        "value": [{
+          "id": 1,
+          "kind": "function",
+          "name": "main",
+          "type": 1,
+          "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 5, "byteOffset": 4 } },
+          "linkage": "external",
+          "definition": true
+        }]
+      }]
+    },
+    {
+      "name": "illegal by-value type cycle",
+      "invariant": "TYPE_VALUE_CYCLE",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "typedef", "name": "A", "target": 2, "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 2, "kind": "typedef", "name": "B", "target": 1, "qualifiers": [], "size": 4, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "source offset beyond UTF-8 byte length",
+      "invariant": "SOURCE_RANGE",
+      "operations": [{
+        "op": "set",
+        "path": ["diagnostics"],
+        "value": [{
+          "severity": "warning",
+          "code": "C0002",
+          "message": "byte range",
+          "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 26 }, "end": { "line": 1, "column": 2, "byteOffset": 27 } },
+          "related": [],
+          "notes": [],
+          "includeTrace": [],
+          "macroExpansionTrace": []
+        }]
+      }]
+    },
+    {
+      "name": "inverted source range",
+      "invariant": "SOURCE_RANGE",
+      "operations": [{
+        "op": "set",
+        "path": ["diagnostics"],
+        "value": [{
+          "severity": "warning",
+          "code": "C0003",
+          "message": "inverted range",
+          "range": { "file": 1, "start": { "line": 2, "column": 3, "byteOffset": 12 }, "end": { "line": 1, "column": 2, "byteOffset": 4 } },
+          "related": [],
+          "notes": [],
+          "includeTrace": [],
+          "macroExpansionTrace": []
+        }]
+      }]
+    },
+    {
+      "name": "unknown node kind",
+      "invariant": "NODE_KIND",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "statement", "kind": "private-node", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "children": [] }]
+      }]
+    },
+    {
+      "name": "expression without a type",
+      "invariant": "NODE_EXPRESSION_METADATA",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "valueCategory": "rvalue", "children": [], "constant": { "kind": "integer", "bits": 32, "signed": true, "value": "0" } }]
+      }]
+    },
+    {
+      "name": "expression without a value category",
+      "invariant": "NODE_EXPRESSION_METADATA",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "children": [], "constant": { "kind": "integer", "bits": 32, "signed": true, "value": "0" } }]
+      }]
+    },
+    {
+      "name": "signed integer outside declared width",
+      "invariant": "INTEGER_CONSTANT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "constant": { "kind": "integer", "bits": 8, "signed": true, "value": "128" } }]
+      }]
+    },
+    {
+      "name": "unsigned integer has negative value",
+      "invariant": "INTEGER_CONSTANT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "constant": { "kind": "integer", "bits": 8, "signed": false, "value": "-1" } }]
+      }]
+    },
+    {
+      "name": "unsigned 64-bit integer exceeds exact maximum",
+      "invariant": "INTEGER_CONSTANT",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "unsigned long long", "qualifiers": [], "size": 8, "alignment": 4 }] },
+        { "op": "set", "path": ["unit", "nodes"], "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "constant": { "kind": "integer", "bits": 64, "signed": false, "value": "18446744073709551616" } }] }
+      ]
+    },
+    {
+      "name": "integer literal constant signedness disagrees with expression type",
+      "invariant": "CONSTANT_TYPE",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "unsigned int", "qualifiers": [], "size": 4, "alignment": 4 }] },
+        { "op": "set", "path": ["unit", "nodes"], "value": [{ "id": 1, "category": "expression", "kind": "integer-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "constant": { "kind": "integer", "bits": 32, "signed": true, "value": "1" } }] }
+      ]
+    },
+    {
+      "name": "floating constant has invalid IEEE bit length",
+      "invariant": "FLOATING_CONSTANT",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "float", "qualifiers": [], "size": 4, "alignment": 4 }] },
+        { "op": "set", "path": ["unit", "nodes"], "value": [{ "id": 1, "category": "expression", "kind": "floating-literal", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 4, "byteOffset": 3 } }, "type": 1, "valueCategory": "rvalue", "children": [], "constant": { "kind": "floating", "type": 1, "ieeeBits": "0000" } }] }
+      ]
+    },
+    {
+      "name": "address constant references unknown symbol",
+      "invariant": "ADDRESS_CONSTANT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "conversion", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "conversion": "assignment", "targetType": 1, "constant": { "kind": "address", "symbol": 99, "addend": "0" } }]
+      }]
+    },
+    {
+      "name": "address constant addend exceeds pointer width",
+      "invariant": "ADDRESS_CONSTANT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "nodes"],
+        "value": [{ "id": 1, "category": "expression", "kind": "conversion", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "type": 1, "valueCategory": "rvalue", "children": [], "conversion": "assignment", "targetType": 1, "constant": { "kind": "address", "symbol": 99, "addend": "2147483648" } }]
+      }]
+    },
+    {
+      "name": "initializer write outside object bounds",
+      "invariant": "INITIALIZER_LAYOUT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "symbols"],
+        "value": [{ "id": 1, "kind": "variable", "name": "x", "type": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "linkage": "internal", "storage": "static", "definition": true, "initializer": { "size": 4, "zeroFill": true, "writes": [{ "offset": 2, "type": 1, "value": { "kind": "integer", "bits": 32, "signed": true, "value": "1" } }] } }]
+      }]
+    },
+    {
+      "name": "overlapping initializer writes",
+      "invariant": "INITIALIZER_LAYOUT",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }, { "id": 2, "kind": "array", "element": 1, "count": 2, "qualifiers": [], "size": 8, "alignment": 4 }] },
+        { "op": "set", "path": ["unit", "symbols"], "value": [{ "id": 1, "kind": "variable", "name": "x", "type": 2, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "linkage": "internal", "storage": "static", "definition": true, "initializer": { "size": 8, "zeroFill": true, "writes": [{ "offset": 0, "type": 1, "value": { "kind": "integer", "bits": 32, "signed": true, "value": "1" } }, { "offset": 2, "type": 1, "value": { "kind": "integer", "bits": 32, "signed": true, "value": "2" } }] } }] }
+      ]
+    },
+    {
+      "name": "initializer writes out of canonical order",
+      "invariant": "INITIALIZER_LAYOUT",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }, { "id": 2, "kind": "array", "element": 1, "count": 2, "qualifiers": [], "size": 8, "alignment": 4 }] },
+        { "op": "set", "path": ["unit", "symbols"], "value": [{ "id": 1, "kind": "variable", "name": "x", "type": 2, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "linkage": "internal", "storage": "static", "definition": true, "initializer": { "size": 8, "zeroFill": true, "writes": [{ "offset": 4, "type": 1, "value": { "kind": "integer", "bits": 32, "signed": true, "value": "1" } }, { "offset": 0, "type": 1, "value": { "kind": "integer", "bits": 32, "signed": true, "value": "2" } }] } }] }
+      ]
+    },
+    {
+      "name": "aggregate member offset is misaligned",
+      "invariant": "AGGREGATE_LAYOUT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "aggregate members overlap",
+      "invariant": "AGGREGATE_LAYOUT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "a", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }, { "name": "b", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 4, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "aggregate computed layout disagrees",
+      "invariant": "AGGREGATE_LAYOUT",
+      "operations": [{
+        "op": "set",
+        "path": ["unit", "types"],
+        "value": [
+          { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
+          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
+        ]
+      }]
+    },
+    {
+      "name": "builtin layout disagrees with independent MERC32 ABI",
+      "invariant": "ABI_LAYOUT",
+      "operations": [{ "op": "set", "path": ["unit", "types", 0, "size"], "value": 8 }]
+    },
+    {
+      "name": "source file exceeds hard byte limit",
+      "invariant": "SOURCE_LIMIT",
+      "operations": [{ "op": "set", "path": ["unit", "sourceFiles", 0, "byteLength"], "value": 4194305 }]
+    }
+  ]
+}

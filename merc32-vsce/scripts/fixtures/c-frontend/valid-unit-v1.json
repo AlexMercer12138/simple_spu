@@ -1,0 +1,23 @@
+{
+  "protocolVersion": 1,
+  "bridgeBuildId": "test-build",
+  "status": "ok",
+  "diagnostics": [],
+  "unit": {
+    "schema": "merc32.typed-c-unit",
+    "schemaVersion": 1,
+    "target": "merc32",
+    "abi": "merc32-c-v1",
+    "dataModel": "merc32-ilp32",
+    "language": "c17-freestanding",
+    "sourceFiles": [
+      { "id": 1, "path": "main.c", "byteLength": 26 }
+    ],
+    "types": [
+      { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }
+    ],
+    "symbols": [],
+    "nodes": [],
+    "declarations": []
+  }
+}
