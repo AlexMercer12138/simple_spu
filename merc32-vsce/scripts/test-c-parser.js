@@ -19,4 +19,37 @@ assert.strictEqual(callbackType.parameters[1].pointee.kind, 'array');
 const literals = tokenizeC('unsigned long long x = 1ULL; double y = 1.5e-2;');
 assert(literals.some(t => t.text === '1ULL'));
 assert(literals.some(t => t.text === '1.5e-2'));
+
+const expressionUnit = parse(`
+struct Pair { int value; };
+int choose(struct Pair *items, int index, int (*callback)(int *), int condition) {
+    return condition ? callback(&items[index].value) : sizeof(struct Pair) + _Alignof(int);
+}
+double floating(void) { return 1.5; }
+int character(void) { return '\\n'; }
+char *text(void) { return "hi"; }
+`);
+const chooseBody = expressionUnit.declarations[1].declarators[0].body;
+const conditional = chooseBody.statements[0].expression;
+assert.strictEqual(conditional.kind, 'conditional');
+assert.strictEqual(conditional.consequent.kind, 'call');
+assert.strictEqual(conditional.consequent.callee.kind, 'identifier');
+assert.strictEqual(conditional.consequent.arguments[0].kind, 'unary');
+assert.strictEqual(conditional.consequent.arguments[0].operator, '&');
+assert.strictEqual(conditional.consequent.arguments[0].operand.kind, 'member');
+assert.strictEqual(conditional.consequent.arguments[0].operand.object.kind, 'subscript');
+assert.strictEqual(conditional.alternate.kind, 'binary');
+assert.strictEqual(conditional.alternate.left.kind, 'sizeof');
+assert.strictEqual(conditional.alternate.left.typeOperand.kind, 'struct');
+assert.strictEqual(conditional.alternate.right.kind, 'alignof');
+assert.strictEqual(conditional.alternate.right.typeOperand.name, 'int');
+assert.strictEqual(expressionUnit.declarations[2].declarators[0].body.statements[0].expression.kind, 'floating-literal');
+assert.strictEqual(expressionUnit.declarations[3].declarators[0].body.statements[0].expression.value, 10);
+assert.strictEqual(expressionUnit.declarations[4].declarators[0].body.statements[0].expression.value, 'hi');
+
+const qualified = parse('int qualified(int * restrict const value);');
+assert.deepStrictEqual(
+    qualified.declarations[0].declarators[0].type.parameters[0].qualifiers,
+    { const: true, volatile: false, restrict: true },
+);
 console.log('c parser tests passed');

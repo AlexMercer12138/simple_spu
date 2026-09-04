@@ -6,6 +6,7 @@ export type BuiltinTypeName =
 export interface TypeQualifiers {
     readonly const: boolean;
     readonly volatile: boolean;
+    readonly restrict: boolean;
 }
 
 export interface TypeBase {
@@ -56,10 +57,14 @@ export interface TypedefType extends TypeBase {
 
 export type CType = BuiltinType | PointerType | ArrayType | FunctionType | StructType | UnionType | EnumType | TypedefType;
 
-const noQualifiers: TypeQualifiers = Object.freeze({ const: false, volatile: false });
+const noQualifiers: TypeQualifiers = Object.freeze({ const: false, volatile: false, restrict: false });
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 function qualifiers(value?: Partial<TypeQualifiers>): TypeQualifiers {
-    return freeze({ const: value?.const === true, volatile: value?.volatile === true });
+    return freeze({
+        const: value?.const === true,
+        volatile: value?.volatile === true,
+        restrict: value?.restrict === true,
+    });
 }
 
 export function builtinType(name: BuiltinTypeName, typeQualifiers?: Partial<TypeQualifiers>): BuiltinType {
@@ -86,6 +91,20 @@ export function enumType(values: Readonly<Record<string, number>> = {}, name?: s
 }
 export function typedefType(name: string, target?: CType, typeQualifiers?: Partial<TypeQualifiers>): TypedefType {
     return freeze({ kind: 'typedef', name, target, qualifiers: qualifiers(typeQualifiers) }) as TypedefType;
+}
+
+export function qualifyType(type: CType, typeQualifiers: Partial<TypeQualifiers>): CType {
+    const merged = { ...type.qualifiers, ...typeQualifiers };
+    switch (type.kind) {
+        case 'builtin': return builtinType(type.name, merged);
+        case 'pointer': return pointerType(type.pointee, merged);
+        case 'array': return arrayType(type.element, type.length, merged);
+        case 'function': return functionType(type.returnType, type.parameters, type.variadic, merged);
+        case 'struct': return structType(type.fields, type.name, merged);
+        case 'union': return unionType(type.fields, type.name, merged);
+        case 'enum': return enumType(type.values, type.name, merged);
+        case 'typedef': return typedefType(type.name, type.target, merged);
+    }
 }
 
 export function enumUnderlyingType(_type: EnumType): BuiltinType { return builtinType('int'); }

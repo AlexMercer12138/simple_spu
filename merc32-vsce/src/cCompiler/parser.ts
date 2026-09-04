@@ -1,12 +1,16 @@
 import { Token } from './lexer';
 import { CFrontendError } from './source';
-import { arrayType, builtinType, CType, functionType, pointerType, structType, unionType, typedefType } from './types';
+import { arrayType, builtinType, CType, functionType, pointerType, qualifyType, structType, unionType, typedefType, TypeQualifiers } from './types';
 import { CompoundStatement, Declaration, Declarator, Expression, Statement, TranslationUnit } from './declarations';
+
+type MutableQualifiers = { -readonly [K in keyof TypeQualifiers]?: boolean };
 
 export function parseTranslationUnit(tokens: Token[]): TranslationUnit { return new Parser(tokens).parse(); }
 
 class Parser {
-  private i = 0; private typedefs = new Map<string, CType>();
+  private i = 0;
+  private readonly typedefs = new Map<string, CType>();
+  private readonly tags = new Map<string, CType>();
   constructor(private readonly tokens: Token[]) {}
   private peek(n=0) { return this.tokens[this.i+n]; }
   private take(text?: string) { const t = this.peek(); if (text && t.text !== text) throw new CFrontendError(`expected '${text}'`, t.location); this.i++; return t; }
@@ -15,7 +19,16 @@ class Parser {
   private parseDeclaration(): Declaration[] {
     const first = this.peek(); const isTypedef = this.is('typedef'); if (isTypedef) this.take();
     const base = this.parseBaseType();
-    if (this.is(';')) { this.take(); return [{ kind: base.kind === 'struct' ? 'struct-declaration' : 'declaration', type: base, declarators: [], location: first.location }]; }
+    if (this.is(';')) {
+      this.take();
+      return [{
+        kind: base.kind === 'struct' || base.kind === 'union' ? 'struct-declaration' : 'declaration',
+        type: base,
+        declarators: [],
+        name: base.kind === 'struct' || base.kind === 'union' ? base.name : undefined,
+        location: first.location,
+      }];
+    }
     const result: Declaration[] = []; const ds: Declarator[] = [];
     do {
       const declarator = this.parseDeclarator(base);
@@ -34,26 +47,65 @@ class Parser {
     return result;
   }
   private parseBaseType(): CType {
-    const words: string[] = []; while (['const','volatile','unsigned','signed','short','long','int','char','void','float','double'].includes(this.peek().text)) words.push(this.take().text);
-    if (words.length === 0 && this.peek().kind === 'identifier' && this.typedefs.has(this.peek().text)) {
-      return this.typedefs.get(this.take().text)!;
+    const words: string[] = [];
+    const typeQualifiers: MutableQualifiers = {};
+    while (true) {
+      if (isQualifier(this.peek().text)) {
+        typeQualifiers[this.take().text as keyof TypeQualifiers] = true;
+        continue;
+      }
+      if (['unsigned','signed','short','long','int','char','void','float','double'].includes(this.peek().text)) {
+        words.push(this.take().text);
+        continue;
+      }
+      break;
     }
-    if (this.is('struct') || this.is('union')) { const k = this.take().text as 'struct'|'union'; const name = this.peek().kind === 'identifier' ? this.take().text : undefined; const fields: {name:string,type:CType}[] = []; if (this.is('{')) { this.take(); while (!this.is('}') && this.peek().kind !== 'eof') { const ft = this.parseBaseType(); do { const fd = this.parseDeclarator(ft); if (fd.name) fields.push({name:fd.name,type:fd.type}); if (!this.is(',')) break; this.take(); } while (true); this.take(';'); } this.take('}'); } return k === 'struct' ? structType(fields,name) : unionType(fields,name); }
-    const id = words.join(' ').replace('signed ',''); const known = this.typedefs.get(id); if (known) return known;
-    const valid = ['void','char','short','int','long','long long','float','double','unsigned char','unsigned short','unsigned int','unsigned long','unsigned long long'];
-    return valid.includes(id) ? builtinType(id as any) : typedefType(id || 'int');
+    if (words.length === 0 && this.peek().kind === 'identifier' && this.typedefs.has(this.peek().text)) {
+      return qualifyType(this.typedefs.get(this.take().text)!, typeQualifiers);
+    }
+    if (words.length === 0 && (this.is('struct') || this.is('union'))) {
+      const kind = this.take().text as 'struct'|'union';
+      const name = this.peek().kind === 'identifier' ? this.take().text : undefined;
+      let fields: {name:string,type:CType}[] | undefined;
+      if (this.is('{')) {
+        fields = [];
+        this.take();
+        while (!this.is('}') && this.peek().kind !== 'eof') {
+          const fieldType = this.parseBaseType();
+          do {
+            const field = this.parseDeclarator(fieldType);
+            if (field.name) fields.push({ name: field.name, type: field.type });
+            if (!this.is(',')) break;
+            this.take();
+          } while (true);
+          this.take(';');
+        }
+        this.take('}');
+      }
+      const existing = name ? this.tags.get(`${kind}:${name}`) : undefined;
+      const type = fields
+        ? kind === 'struct' ? structType(fields, name) : unionType(fields, name)
+        : existing ?? (kind === 'struct' ? structType([], name) : unionType([], name));
+      if (name && fields) this.tags.set(`${kind}:${name}`, type);
+      return qualifyType(type, typeQualifiers);
+    }
+    const name = normalizeBuiltinName(words);
+    return name ? builtinType(name, typeQualifiers) : typedefType(words.join(' ') || 'int', undefined, typeQualifiers);
   }
   private parseDeclarator(base: CType): Declarator {
     const node = this.parseDeclaratorNode();
-    return { name: node.name, type: this.applyDeclarator(base, node), parameters: node.functionParameters };
+    return { name: declaratorName(node), type: this.applyDeclarator(base, node), parameters: node.functionParameters };
   }
 
   private parseDeclaratorNode(): DeclaratorNode {
-    const pointers: number[] = [];
+    const pointers: MutableQualifiers[] = [];
     while (this.is('*')) {
       this.take();
-      if (this.is('const') || this.is('volatile')) this.take();
-      pointers.push(1);
+      const pointerQualifiers: MutableQualifiers = {};
+      while (isQualifier(this.peek().text)) {
+        pointerQualifiers[this.take().text as keyof TypeQualifiers] = true;
+      }
+      pointers.push(pointerQualifiers);
     }
     let name: string | undefined;
     let inner: DeclaratorNode | undefined;
@@ -89,7 +141,7 @@ class Parser {
           const parameter = this.parseDeclaratorNode();
           let parameterCType = this.applyDeclarator(parameterType, parameter);
           if (parameterCType.kind === 'array') parameterCType = pointerType(parameterCType.element);
-          params.push({ name: parameter.name, type: parameterCType, location: this.peek(-1).location });
+          params.push({ name: declaratorName(parameter), type: parameterCType, location: this.peek(-1).location });
           if (!this.is(',')) break;
           this.take();
         }
@@ -111,7 +163,7 @@ class Parser {
         let type = base;
         for (let n = node.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.suffixes[n]);
         for (let n = node.inner.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.inner.suffixes[n]);
-        for (let n = 0; n < node.inner.pointers.length; n++) type = pointerType(type);
+        for (const pointerQualifiers of node.inner.pointers) type = pointerType(type, pointerQualifiers);
         return type;
       }
       let type = this.applyDeclarator(base, node.inner);
@@ -119,7 +171,7 @@ class Parser {
       return type;
     }
     let type = base;
-    for (let n = 0; n < node.pointers.length; n++) type = pointerType(type);
+    for (const pointerQualifiers of node.pointers) type = pointerType(type, pointerQualifiers);
     for (let n = node.suffixes.length - 1; n >= 0; n--) type = this.applySuffix(type, node.suffixes[n]);
     return type;
   }
@@ -217,7 +269,7 @@ class Parser {
   }
 
   private startsDeclaration(): boolean {
-    return ['const','volatile','unsigned','signed','short','long','int','char','void','float','double','struct','union'].includes(this.peek().text)
+    return ['const','volatile','restrict','unsigned','signed','short','long','int','char','void','float','double','struct','union'].includes(this.peek().text)
       || this.peek().kind === 'identifier' && this.typedefs.has(this.peek().text);
   }
 
@@ -237,15 +289,29 @@ class Parser {
   }
 
   private parseAssignmentExpression(): Expression {
-    const left = this.parseBinaryExpression(0);
+    const left = this.parseConditionalExpression();
     if (!this.is('=')) return left;
-    if (left.kind !== 'identifier') throw new CFrontendError('assignment target must be an identifier', this.peek().location);
     this.take();
     return { kind: 'assignment', target: left, value: this.parseAssignmentExpression(), location: left.location };
   }
 
+  private parseConditionalExpression(): Expression {
+    const condition = this.parseBinaryExpression(0);
+    if (!this.is('?')) return condition;
+    this.take();
+    const consequent = this.parseExpression();
+    this.take(':');
+    return {
+      kind: 'conditional',
+      condition,
+      consequent,
+      alternate: this.parseConditionalExpression(),
+      location: condition.location,
+    };
+  }
+
   private parseBinaryExpression(minimumPrecedence: number): Expression {
-    let left = this.parsePrimaryExpression();
+    let left = this.parseUnaryExpression();
     while (true) {
       const operator = this.peek().text;
       const precedence = binaryPrecedence(operator);
@@ -256,27 +322,90 @@ class Parser {
     }
   }
 
+  private parseUnaryExpression(): Expression {
+    const token = this.peek();
+    if (token.text === 'sizeof') {
+      this.take();
+      if (this.is('(') && this.startsDeclarationAt(1)) {
+        this.take('(');
+        const typeOperand = this.parseTypeName();
+        this.take(')');
+        return { kind: 'sizeof', typeOperand, location: token.location };
+      }
+      return { kind: 'sizeof', expressionOperand: this.parseUnaryExpression(), location: token.location };
+    }
+    if (token.text === '_Alignof') {
+      this.take();
+      this.take('(');
+      const typeOperand = this.parseTypeName();
+      this.take(')');
+      return { kind: 'alignof', typeOperand, location: token.location };
+    }
+    if (['+','-','!','~','&','*'].includes(token.text)) {
+      this.take();
+      return { kind: 'unary', operator: token.text, operand: this.parseUnaryExpression(), location: token.location };
+    }
+    return this.parsePostfixExpression();
+  }
+
+  private parsePostfixExpression(): Expression {
+    let expression = this.parsePrimaryExpression();
+    while (true) {
+      if (this.is('(')) {
+        this.take();
+        const args: Expression[] = [];
+        while (!this.is(')')) {
+          args.push(this.parseAssignmentExpression());
+          if (!this.is(',')) break;
+          this.take();
+        }
+        this.take(')');
+        expression = { kind: 'call', callee: expression, arguments: args, location: expression.location };
+        continue;
+      }
+      if (this.is('[')) {
+        this.take();
+        const index = this.parseExpression();
+        this.take(']');
+        expression = { kind: 'subscript', object: expression, index, location: expression.location };
+        continue;
+      }
+      if (this.is('.') || this.is('->')) {
+        const indirect = this.take().text === '->';
+        const member = this.peek();
+        if (member.kind !== 'identifier') throw new CFrontendError('expected member name', member.location);
+        this.take();
+        expression = { kind: 'member', object: expression, member: member.text, indirect, location: expression.location };
+        continue;
+      }
+      return expression;
+    }
+  }
+
   private parsePrimaryExpression(): Expression {
     const token = this.peek();
     if (token.kind === 'number') {
       this.take();
-      const value = token.value ?? Number.parseInt(token.text, 0);
+      if (/[.eEpP]/.test(token.text)) {
+        const value = Number(token.text.replace(/[fFlL]$/, ''));
+        if (!Number.isFinite(value)) throw new CFrontendError(`invalid floating literal '${token.text}'`, token.location);
+        return { kind: 'floating-literal', value, precision: /[fF]$/.test(token.text) ? 'float' : 'double', location: token.location };
+      }
+      const value = token.value ?? Number.parseInt(token.text.replace(/[uUlL]+$/, ''), 0);
       if (!Number.isFinite(value)) throw new CFrontendError(`invalid integer literal '${token.text}'`, token.location);
       return { kind: 'integer-literal', value, location: token.location };
     }
+    if (token.kind === 'char') {
+      this.take();
+      return { kind: 'character-literal', value: decodeQuotedToken(token.text, token.location).codePointAt(0) ?? 0, location: token.location };
+    }
+    if (token.kind === 'string') {
+      this.take();
+      return { kind: 'string-literal', value: decodeQuotedToken(token.text, token.location), location: token.location };
+    }
     if (token.kind === 'identifier') {
       this.take();
-      const identifier = { kind: 'identifier' as const, name: token.text, location: token.location };
-      if (!this.is('(')) return identifier;
-      this.take();
-      const args: Expression[] = [];
-      while (!this.is(')')) {
-        args.push(this.parseExpression());
-        if (!this.is(',')) break;
-        this.take();
-      }
-      this.take(')');
-      return { kind: 'call', callee: identifier, arguments: args, location: identifier.location };
+      return { kind: 'identifier', name: token.text, location: token.location };
     }
     if (this.is('(')) {
       this.take();
@@ -286,11 +415,24 @@ class Parser {
     }
     throw new CFrontendError('expected expression', token.location);
   }
+
+  private startsDeclarationAt(offset: number): boolean {
+    const token = this.peek(offset);
+    return ['const','volatile','restrict','unsigned','signed','short','long','int','char','void','float','double','struct','union'].includes(token.text)
+      || token.kind === 'identifier' && this.typedefs.has(token.text);
+  }
+
+  private parseTypeName(): CType {
+    const base = this.parseBaseType();
+    const node = this.parseDeclaratorNode();
+    if (node.name) throw new CFrontendError('type name must not declare an identifier', this.peek(-1).location);
+    return this.applyDeclarator(base, node);
+  }
 }
 
 interface DeclaratorNode {
   readonly name?: string;
-  readonly pointers: readonly number[];
+  readonly pointers: readonly Partial<TypeQualifiers>[];
   readonly inner?: DeclaratorNode;
   readonly suffixes: readonly DeclaratorSuffix[];
   readonly functionParameters?: readonly FunctionParameter[];
@@ -316,4 +458,60 @@ function binaryPrecedence(operator: string): number {
     case '*': case '/': case '%': return 10;
     default: return -1;
   }
+}
+
+function isQualifier(text: string): text is keyof TypeQualifiers {
+  return text === 'const' || text === 'volatile' || text === 'restrict';
+}
+
+function declaratorName(node: DeclaratorNode): string | undefined {
+  return node.name ?? (node.inner ? declaratorName(node.inner) : undefined);
+}
+
+function normalizeBuiltinName(words: readonly string[]): Parameters<typeof builtinType>[0] | undefined {
+  if (words.length === 0) return undefined;
+  const unsigned = words.includes('unsigned');
+  const significant = words.filter(word => word !== 'signed' && word !== 'unsigned' && word !== 'int');
+  let base: string;
+  if (significant.length === 0) base = 'int';
+  else if (significant.every(word => word === 'long')) base = significant.length >= 2 ? 'long long' : 'long';
+  else if (significant.length === 2 && significant[0] === 'long' && significant[1] === 'double') base = 'long double';
+  else if (significant.length === 1) base = significant[0];
+  else return undefined;
+  if (unsigned && ['char','short','int','long','long long'].includes(base)) base = `unsigned ${base}`;
+  const valid = new Set(['void','char','unsigned char','short','unsigned short','int','unsigned int','long','unsigned long','long long','unsigned long long','float','double','long double']);
+  return valid.has(base) ? base as Parameters<typeof builtinType>[0] : undefined;
+}
+
+function decodeQuotedToken(text: string, location: Token['location']): string {
+  const body = text.slice(1, -1);
+  let result = '';
+  for (let index = 0; index < body.length; index++) {
+    if (body[index] !== '\\') {
+      result += body[index];
+      continue;
+    }
+    const escaped = body[++index];
+    if (escaped === undefined) throw new CFrontendError('unterminated escape sequence', location);
+    const simple: Record<string, string> = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
+    if (simple[escaped] !== undefined) {
+      result += simple[escaped];
+      continue;
+    }
+    if (escaped === 'x') {
+      const match = body.slice(index + 1).match(/^[0-9a-fA-F]+/);
+      if (!match) throw new CFrontendError('hex escape requires at least one digit', location);
+      result += String.fromCodePoint(Number.parseInt(match[0], 16));
+      index += match[0].length;
+      continue;
+    }
+    if (/[0-7]/.test(escaped)) {
+      const match = body.slice(index).match(/^[0-7]{1,3}/)![0];
+      result += String.fromCodePoint(Number.parseInt(match, 8));
+      index += match.length - 1;
+      continue;
+    }
+    result += escaped;
+  }
+  return result;
 }

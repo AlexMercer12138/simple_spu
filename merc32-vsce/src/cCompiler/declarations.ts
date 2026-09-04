@@ -1,11 +1,23 @@
 import { CType } from './types';
 import { SourceLocation } from './source';
-export type Expression = IntegerLiteralExpression | IdentifierExpression | CallExpression | BinaryExpression | AssignmentExpression;
+export type Expression =
+    | IntegerLiteralExpression | FloatingLiteralExpression | CharacterLiteralExpression | StringLiteralExpression
+    | IdentifierExpression | UnaryExpression | CallExpression | SubscriptExpression | MemberExpression
+    | SizeofExpression | AlignofExpression | BinaryExpression | ConditionalExpression | AssignmentExpression;
 export interface IntegerLiteralExpression { readonly kind: 'integer-literal'; readonly value: number; readonly location?: SourceLocation; }
+export interface FloatingLiteralExpression { readonly kind: 'floating-literal'; readonly value: number; readonly precision: 'float' | 'double'; readonly location?: SourceLocation; }
+export interface CharacterLiteralExpression { readonly kind: 'character-literal'; readonly value: number; readonly location?: SourceLocation; }
+export interface StringLiteralExpression { readonly kind: 'string-literal'; readonly value: string; readonly location?: SourceLocation; }
 export interface IdentifierExpression { readonly kind: 'identifier'; readonly name: string; readonly location?: SourceLocation; }
-export interface CallExpression { readonly kind: 'call'; readonly callee: IdentifierExpression; readonly arguments: readonly Expression[]; readonly location?: SourceLocation; }
+export interface UnaryExpression { readonly kind: 'unary'; readonly operator: string; readonly operand: Expression; readonly location?: SourceLocation; }
+export interface CallExpression { readonly kind: 'call'; readonly callee: Expression; readonly arguments: readonly Expression[]; readonly location?: SourceLocation; }
+export interface SubscriptExpression { readonly kind: 'subscript'; readonly object: Expression; readonly index: Expression; readonly location?: SourceLocation; }
+export interface MemberExpression { readonly kind: 'member'; readonly object: Expression; readonly member: string; readonly indirect: boolean; readonly location?: SourceLocation; }
+export interface SizeofExpression { readonly kind: 'sizeof'; readonly typeOperand?: CType; readonly expressionOperand?: Expression; readonly location?: SourceLocation; }
+export interface AlignofExpression { readonly kind: 'alignof'; readonly typeOperand: CType; readonly location?: SourceLocation; }
 export interface BinaryExpression { readonly kind: 'binary'; readonly operator: string; readonly left: Expression; readonly right: Expression; readonly location?: SourceLocation; }
-export interface AssignmentExpression { readonly kind: 'assignment'; readonly target: IdentifierExpression; readonly value: Expression; readonly location?: SourceLocation; }
+export interface ConditionalExpression { readonly kind: 'conditional'; readonly condition: Expression; readonly consequent: Expression; readonly alternate: Expression; readonly location?: SourceLocation; }
+export interface AssignmentExpression { readonly kind: 'assignment'; readonly target: Expression; readonly value: Expression; readonly location?: SourceLocation; }
 export type Statement = CompoundStatement | ReturnStatement | LocalDeclarationStatement | ExpressionStatement | IfStatement | WhileStatement | DoWhileStatement | SwitchStatement | CaseStatement | ForStatement | BreakStatement | ContinueStatement | GotoStatement | LabelStatement | EmptyStatement;
 export interface CompoundStatement { readonly kind: 'compound'; readonly statements: readonly Statement[]; readonly location?: SourceLocation; }
 export interface ReturnStatement { readonly kind: 'return'; readonly expression?: Expression; readonly location?: SourceLocation; }

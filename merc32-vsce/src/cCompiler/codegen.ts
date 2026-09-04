@@ -124,6 +124,10 @@ function emitFunction(
           readValue(Number(instruction.args[1]), 'r7');
           emit(`sw [r12 + ${slot(String(instruction.args[0]))}], r7`);
           break;
+        case 'move-value':
+          readValue(Number(instruction.args[0]), valueRegister(instruction.dest ?? 0));
+          spillValue(instruction.dest ?? 0);
+          break;
         case 'binary':
           emitBinary(instruction, valueRegister, readValue, emit);
           spillValue(instruction.dest ?? 0);

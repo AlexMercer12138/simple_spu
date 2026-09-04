@@ -13,8 +13,11 @@ const source = `
 int five(int a, int b, int c, int d, int e) {
     return a + b + c + d + e;
 }
+int scalar_expression(int value) {
+    return value ? -value + !0 : sizeof(int) + _Alignof(int) + '\\n' + ~0;
+}
 int main(void) {
-    return five(1, 2, 3, 4, 5) + 24574;
+    return five(1, 2, 3, 4, 5) + scalar_expression(3) + 24576;
 }
 `;
 const startupObject = assembleToObject(`

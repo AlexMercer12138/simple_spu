@@ -10,7 +10,7 @@ export interface Token {
   readonly location: SourceLocation;
 }
 
-const keywords = new Set(['void','char','short','int','long','unsigned','signed','float','double','const','volatile','typedef','struct','union','enum','static','extern','auto','register','sizeof','return','if','else','while','for','do','switch','case','default','break','continue','goto']);
+const keywords = new Set(['void','char','short','int','long','unsigned','signed','float','double','const','volatile','restrict','typedef','struct','union','enum','static','extern','auto','register','sizeof','_Alignof','return','if','else','while','for','do','switch','case','default','break','continue','goto']);
 const operators = ['>>=','<<=','...','->','++','--','==','!=','<=','>=','&&','||','<<','>>','+=','-=','*=','/=','%=','&=','|=','^='];
 
 export function tokenizeC(

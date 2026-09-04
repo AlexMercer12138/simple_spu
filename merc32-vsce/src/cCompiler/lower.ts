@@ -1,6 +1,6 @@
 import { AnalyzedProgram, evaluateIntegerConstantExpression } from './sema';
 import { Expression, Statement, TranslationUnit } from './declarations';
-import { CType } from './types';
+import { CType, typeAlignment, typeSize } from './types';
 import { IRBlock, IRFunction, IRInstruction, Merc32Module } from './ir';
 
 export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32Module {
@@ -155,6 +155,7 @@ class FunctionLowerer {
   private lowerExpression(expression: Expression): number {
     switch (expression.kind) {
       case 'integer-literal':
+      case 'character-literal':
         return this.constant(expression.value, expression.location);
       case 'identifier': {
         const dest = this.allocateValue();
@@ -162,6 +163,9 @@ class FunctionLowerer {
         return dest;
       }
       case 'assignment': {
+        if (expression.target.kind !== 'identifier') {
+          throw new Error('typed code generation does not yet support indirect assignment targets');
+        }
         const value = this.lowerExpression(expression.value);
         this.instructions.push({ op: 'store', args: [expression.target.name, value], location: expression.location });
         return value;
@@ -175,11 +179,54 @@ class FunctionLowerer {
         return dest;
       }
       case 'call': {
+        if (expression.callee.kind !== 'identifier') {
+          throw new Error('typed code generation does not yet support indirect calls');
+        }
         const args = expression.arguments.map(argument => this.lowerExpression(argument));
         const dest = this.allocateValue();
         this.instructions.push({ op: 'call', args: [expression.callee.name, ...args], dest, location: expression.location });
         return dest;
       }
+      case 'unary': {
+        const operand = this.lowerExpression(expression.operand);
+        if (expression.operator === '+') return operand;
+        const right = expression.operator === '~' ? this.constant(-1, expression.location) : operand;
+        const left = expression.operator === '-' ? this.constant(0, expression.location) : operand;
+        const operator = expression.operator === '-' ? '-'
+          : expression.operator === '!' ? '=='
+            : expression.operator === '~' ? '^' : undefined;
+        if (!operator) throw new Error(`typed code generation does not yet support unary '${expression.operator}'`);
+        const comparisonRight = expression.operator === '!' ? this.constant(0, expression.location) : right;
+        const dest = this.allocateValue();
+        this.instructions.push({ op: 'binary', args: [operator, left, comparisonRight], dest, location: expression.location });
+        return dest;
+      }
+      case 'sizeof': {
+        if (!expression.typeOperand) throw new Error('typed code generation does not yet support sizeof expressions');
+        return this.constant(typeSize(expression.typeOperand), expression.location);
+      }
+      case 'alignof':
+        return this.constant(typeAlignment(expression.typeOperand), expression.location);
+      case 'conditional': {
+        const result = this.allocateValue();
+        const alternateLabel = this.label('conditional_alternate');
+        const endLabel = this.label('conditional_end');
+        const condition = this.lowerExpression(expression.condition);
+        this.instructions.push({ op: 'branch-zero', args: [condition, alternateLabel], location: expression.location });
+        const consequent = this.lowerExpression(expression.consequent);
+        this.instructions.push({ op: 'move-value', args: [consequent], dest: result, location: expression.consequent.location });
+        this.instructions.push({ op: 'jump', args: [endLabel] });
+        this.instructions.push({ op: 'label', args: [alternateLabel] });
+        const alternate = this.lowerExpression(expression.alternate);
+        this.instructions.push({ op: 'move-value', args: [alternate], dest: result, location: expression.alternate.location });
+        this.instructions.push({ op: 'label', args: [endLabel] });
+        return result;
+      }
+      case 'floating-literal':
+      case 'string-literal':
+      case 'subscript':
+      case 'member':
+        throw new Error(`typed code generation does not yet support '${expression.kind}' expressions`);
     }
   }
 

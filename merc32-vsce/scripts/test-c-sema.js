@@ -38,4 +38,42 @@ const unit = { kind: 'translation-unit', declarations: [
 ] };
 const program = analyzeTranslationUnit(unit);
 assert.strictEqual(program.typedefs.get('T').name, 'int');
+
+function analyze(source) {
+  const { tokenizeC, parseTranslationUnit } = require('../out/cCompiler');
+  return analyzeTranslationUnit(parseTranslationUnit(tokenizeC(source)));
+}
+
+const expressionProgram = analyze(`
+struct Pair { int value; };
+int choose(struct Pair *items, int index, int (*callback)(int *), int condition) {
+  return condition ? callback(&items[index].value) : sizeof(struct Pair) + _Alignof(int);
+}
+`);
+const chooseReturn = expressionProgram.unit.declarations[1].declarators[0].body.statements[0].expression;
+assert.strictEqual(expressionProgram.expressionTypes.get(chooseReturn).name, 'unsigned int');
+assert.strictEqual(expressionProgram.expressionTypes.get(chooseReturn.consequent.arguments[0]).kind, 'pointer');
+assert.strictEqual(expressionProgram.expressionTypes.get(chooseReturn.alternate.left).name, 'unsigned int');
+
+assert.doesNotThrow(() => analyze('int shadow(int value) { { int value = 2; } return value; }'));
+assert.throws(
+  () => analyze('struct Pair { int value; }; int bad(struct Pair pair) { return pair.missing; }'),
+  /has no member 'missing'/,
+);
+assert.throws(
+  () => analyze('int bad(int value) { return *value; }'),
+  /dereference requires a pointer/,
+);
+assert.throws(
+  () => analyze('int bad(int value) { return value(1); }'),
+  /called object is not a function/,
+);
+assert.throws(
+  () => analyze('int target(int value) { return value; } int bad(void) { return target(); }'),
+  /expects 1 argument.*got 0/,
+);
+assert.throws(
+  () => analyze('int bad(void) { const int value = 1; value = 2; return value; }'),
+  /assignment to const-qualified object/,
+);
 console.log('c semantic tests passed');
