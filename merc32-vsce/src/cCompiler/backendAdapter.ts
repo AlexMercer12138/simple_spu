@@ -253,8 +253,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
 
     const globals: LoweringGlobal[] = [];
     for (const symbol of unit.symbols) {
-        if (symbol.kind !== 'variable' || symbol.storage === 'automatic' || !symbol.definition) continue;
+        if (symbol.kind !== 'variable') continue;
         if (symbol.storage === 'thread') fail('thread-local storage is not supported by the MERC32 backend', symbol.range, files);
+        if (symbol.storage === 'automatic' || !symbol.definition) continue;
         if (functionScopedVariables.has(Number(symbol.id))) fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
         const type = shells.get(Number(symbol.type)); if (!type) throw new CFrontendInternalError(`global ${symbol.name} references unknown type`);
         globals.push({ name: symbol.name, type, ...(symbol.initializer ? { initializer: adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range) } : {}), location: rangeLocation(symbol.range, files) });

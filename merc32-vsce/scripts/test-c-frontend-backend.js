@@ -116,4 +116,13 @@ member.children = [5];
 assert.doesNotThrow(() => generateObject(lowerProgram(adaptTypedUnit(typedefPointerMember))),
   'member access through a pointer to a typedef-wrapped aggregate must lower');
 
+const externTls = JSON.parse(JSON.stringify(unit));
+const tlsSymbol = externTls.symbols.find((symbol) => symbol.id === 2);
+tlsSymbol.storage = 'thread';
+tlsSymbol.definition = false;
+assert.throws(() => adaptTypedUnit(externTls), (error) => {
+  assert(error instanceof CBackendCapabilityError);
+  return error.diagnostics[0].message.includes('thread-local');
+});
+
 console.log('C frontend backend adapter tests passed');
