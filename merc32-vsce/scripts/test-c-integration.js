@@ -167,6 +167,12 @@ assert.deepStrictEqual(
     ],
     'typed aggregate globals must infer list and string array bounds before lowering',
 );
+const designatedInferredArrayObject = compileCToObject('int inferred[][2] = { [1] = { 1, 2 }, 3 };');
+assert.deepStrictEqual(
+    designatedInferredArrayObject.sections.find((section) => section.name === 'data').content,
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0],
+    'typed aggregate globals must continue after designated braced inferred array elements',
+);
 assert.throws(
     () => compileCToObject('float add(float left, float right) { return left + right; }'),
     /typed C object backend does not support floating-point function bodies/,

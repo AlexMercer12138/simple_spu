@@ -485,7 +485,8 @@ function completeArrayBounds(type: CType, initializer: CInitializer): CType {
     }
     element = completeArrayBounds(element, entry.value);
     const slots = scalarSlotCount(element);
-    if (entry.designators.length === 0 && entry.value.kind === 'initializer' && leafCursor % slots === 0) leafCursor += slots;
+    if (entry.value.kind === 'initializer'
+      && ((entry.designators.length === 0 && leafCursor % slots === 0) || entry.designators.length === 1)) leafCursor += slots;
     else leafCursor++;
   }
   return arrayType(element, type.length ?? Math.ceil(leafCursor / scalarSlotCount(element)), type.qualifiers);
