@@ -44,9 +44,26 @@ int parenthesized_expression(void) {
 unsigned int cast_identity(int value) {
     return (unsigned int)value;
 }
+int add_one(int value) {
+    return value + 1;
+}
+int parenthesized_call(void) {
+    return (add_one)(2);
+}
+int parenthesized_array(void) {
+    int values[1];
+    values[0] = 4;
+    return (values)[0];
+}
+int parenthesized_member(void) {
+    struct Pair pair;
+    pair.value = 5;
+    return (pair).value;
+}
 int main(void) {
     test_pass(five(1, 2, 3, 4, 5) + scalar_expression(3) + memory_expression(4)
-        + pointer_distance() + parenthesized_expression() + cast_identity(7) + 24551);
+        + pointer_distance() + parenthesized_expression() + cast_identity(7)
+        + parenthesized_call() + parenthesized_array() + parenthesized_member() + 24539);
     return 0;
 }
 `;

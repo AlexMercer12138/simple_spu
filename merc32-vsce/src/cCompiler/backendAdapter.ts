@@ -225,7 +225,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             && typeSize(type) !== typeSize(operands[0].type)) {
             fail('narrowing or widening integer casts are not supported by the MERC32 backend', typed.range, files);
         }
-        if (typed.kind !== 'declaration-reference' && typed.kind !== 'member' && typeSize(type) > 4) {
+        const transparentParentheses = typed.kind === 'unary' && typed.operator === 'parentheses';
+        if (typed.kind !== 'declaration-reference' && typed.kind !== 'member'
+            && !transparentParentheses && typeSize(type) > 4) {
             fail('aggregate-valued operations are not supported by the MERC32 backend', typed.range, files);
         }
         expressionMemo.set(id, expression);

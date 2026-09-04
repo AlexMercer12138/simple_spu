@@ -55,6 +55,25 @@ for (const [name, expression] of [
     assert(result.artifact, `${name} must compile through the real Aro WASM object path`);
     assert.deepStrictEqual(result.diagnostics.filter((item) => item.severity === 'error'), []);
 }
+for (const [name, source] of [
+    ['parenthesized function designator', `
+        int increment(int value) { return value + 1; }
+        int probe(void) { return (increment)(2); }
+    `],
+    ['parenthesized array lvalue', `
+        int probe(void) { int values[1]; values[0] = 4; return (values)[0]; }
+    `],
+    ['parenthesized aggregate lvalue', `
+        struct Pair { int value; };
+        int probe(void) { struct Pair pair; pair.value = 5; return (pair).value; }
+    `],
+]) {
+    const result = compileCToObjectDetailed(source, {
+        sourceName: `${name.replaceAll(' ', '-')}.c`,
+    });
+    assert(result.artifact, `${name} must reach downstream decay/member lowering through real Aro WASM`);
+    assert.deepStrictEqual(result.diagnostics.filter((item) => item.severity === 'error'), []);
+}
 const narrowingCast = compileCToObjectDetailed(
     'unsigned char probe(int value) { return (unsigned char)value; }',
     { sourceName: 'narrowing-cast.c' },
