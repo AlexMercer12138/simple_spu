@@ -338,6 +338,7 @@
     "compile": "tsc -p ./",
     "test:infrastructure": "npm run compile && node scripts/test-test-infrastructure.js",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
+    "test:c:aro-vendor": "node scripts/test-aro-vendor.js",
     "test:c:preprocessor": "npm run compile && node scripts/test-c-preprocessor.js",
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
