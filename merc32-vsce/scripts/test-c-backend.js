@@ -8,7 +8,12 @@ assert(!allocator.isReserved('r4'));
 assert(allocator.isReserved('r0'));
 assert(allocator.isReserved('r12'));
 const irModule = lowerProgram({ kind: 'translation-unit', declarations: [] });
-assert.strictEqual(irModule.functions.length, 0);
-assert.strictEqual(generateAssembly(irModule), '');
-assert.strictEqual(generateObject(irModule).target, 'merc32');
+assert.deepStrictEqual(irModule.functions.map((func) => func.name), ['__merc32_init_globals']);
+assert.match(generateAssembly(irModule), /^__merc32_init_globals:/);
+const object = generateObject(irModule);
+assert.strictEqual(object.target, 'merc32');
+assert(object.symbols.some((symbol) =>
+    symbol.name === '__merc32_init_globals' && symbol.binding === 'global' && symbol.defined
+));
+assert(!object.sections.some((section) => section.name === 'data' || section.name === 'bss'));
 console.log('c backend tests passed');

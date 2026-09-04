@@ -64,6 +64,16 @@ export function analyzeTranslationUnit(unit: TranslationUnit): AnalyzedProgram {
   }
   for (const declaration of unit.declarations) {
     for (const declarator of declaration.declarators) {
+      if (!declarator.initializer || declarator.initializer.kind === 'initializer') continue;
+      const initializerType = decay(analyzeExpression(declarator.initializer, scope, expressionTypes));
+      if (!isAssignable(declarator.type, initializerType)) {
+        throw frontendError(`initializer for '${declarator.name ?? '<anonymous>'}' has incompatible type`, declarator.location ?? declaration.location);
+      }
+      evaluateIntegerConstantExpression(declarator.initializer);
+    }
+  }
+  for (const declaration of unit.declarations) {
+    for (const declarator of declaration.declarators) {
       if (declarator.type.kind !== 'function' || !declarator.body) continue;
       const functionScope = scope.child();
       for (const parameter of declarator.parameters ?? []) {

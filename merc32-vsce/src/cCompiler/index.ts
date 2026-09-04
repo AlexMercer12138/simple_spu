@@ -107,9 +107,9 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
             if (!declarator.name) continue;
             if (declaration.kind === 'typedef') continue;
             if (declarator.type.kind !== 'function') {
-                if (declarator.initializer) {
+                if (declarator.initializer?.kind === 'initializer') {
                     throw new CFrontendError(
-                        'typed C object backend does not support global declarations with initializers',
+                        'typed C object backend does not support aggregate global initializers yet',
                         declaration.location ?? fallback,
                     );
                 }
@@ -119,6 +119,7 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
                         declaration.location ?? fallback,
                     );
                 }
+                if (declarator.initializer) validateTypedExpression(declarator.initializer, fallback);
                 continue;
             }
             if (!declarator.body) continue;

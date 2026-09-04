@@ -24,15 +24,27 @@ for (const name of manifest.symbols) {
 
 const startup = runtime.find(object => object.symbols.some(symbol => symbol.name === 'startup' && symbol.defined));
 assert(startup);
+assert(startup.symbols.some(symbol => symbol.name === '__merc32_init_globals' && symbol.binding === 'global' && !symbol.defined));
 assert(startup.symbols.some(symbol => symbol.name === 'main' && symbol.binding === 'global' && !symbol.defined));
+assert(startup.relocations.some(relocation => relocation.symbol === '__merc32_init_globals' && relocation.kind === 'CALL16'));
 assert(startup.relocations.some(relocation => relocation.symbol === 'main' && relocation.kind === 'CALL16'));
 assert.strictEqual(startup.symbols.find(symbol => symbol.name === 'halt').binding, 'local');
 assert(runtime.some(object => object.relocations.length > 0));
-assert.throws(() => linkObjects(runtime), /unresolved symbol 'main'/);
-const userMain = assembleToObject('main:\n  jmp r14\n', { abi: manifest.abi, exports: ['main'] });
+assert.throws(() => linkObjects(runtime), /unresolved symbol '__merc32_init_globals'/);
+const globalsOnly = assembleToObject('__merc32_init_globals:\n  jmp r14\n', {
+  abi: manifest.abi,
+  exports: ['__merc32_init_globals'],
+});
+assert.throws(() => linkObjects([...runtime, globalsOnly]), /unresolved symbol 'main'/);
+const userMain = assembleToObject('__merc32_init_globals:\n  jmp r14\nmain:\n  jmp r14\n', {
+  abi: manifest.abi,
+  exports: ['__merc32_init_globals', 'main'],
+});
 const image = linkObjects([...runtime, userMain], { entrySymbol: 'startup' });
 assert.strictEqual(image.entryAddress, 0);
-assert.strictEqual(image.symbols.get('main'), runtime.reduce((size, object) => size + object.sections.find(section => section.name === 'text').size, 0));
+const runtimeTextSize = runtime.reduce((size, object) => size + object.sections.find(section => section.name === 'text').size, 0);
+assert.strictEqual(image.symbols.get('__merc32_init_globals'), runtimeTextSize);
+assert.strictEqual(image.symbols.get('main'), runtimeTextSize + 4);
 
 function withRuntimeManifest(value, run) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-runtime-catalog-'));

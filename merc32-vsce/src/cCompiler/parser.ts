@@ -182,9 +182,10 @@ class Parser {
       : functionType(type, suffix.parameters.map(parameter => parameter.type), suffix.variadic);
   }
 
-  private consumeInitializer(): Initializer | undefined {
+  private consumeInitializer(): Expression | Initializer | undefined {
     if (!this.is('=')) return undefined;
     this.take();
+    if (!this.is('{')) return this.parseAssignmentExpression();
     const tokens: string[] = [];
     let depth = 0;
     while (this.peek().kind !== 'eof' && !(depth === 0 && (this.is(';') || this.is(',')))) {

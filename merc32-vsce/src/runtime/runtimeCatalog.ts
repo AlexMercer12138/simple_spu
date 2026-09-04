@@ -77,7 +77,10 @@ function readManifest(root: string): RuntimeManifest {
 }
 
 function runtimeAssemblySource(source: string): string {
-  return source.split(/\r?\n/).map(line => line.replace(/;.*/, '')).join('\n');
+  return source.split(/\r?\n/)
+    .map(line => line.replace(/;.*/, ''))
+    .filter(line => line.trim() !== '.text')
+    .join('\n');
 }
 
 function runtimeObjectPath(root: string, file: string): string {

@@ -11,6 +11,7 @@ const {
     compileCFileToObject,
     analyzeTranslationUnit,
     lowerProgram,
+    loadRuntimeObjects,
     parseTranslationUnit,
     tokenizeC,
 } = require('../out/cCompiler');
@@ -38,12 +39,20 @@ assert.strictEqual(object.abi, 'merc32-c-v1');
 assert.strictEqual(typeof object.sections[0].content, 'string');
 assert.deepStrictEqual(
     object.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-    ['included', 'main'],
-    'typed object generation must publish each function definition',
+    ['included', 'main', '__merc32_init_globals'],
+    'typed object generation must publish each function definition and its runtime initializer entry',
 );
 assert.ok(object.relocations.some((relocation) =>
     relocation.kind === 'CALL16' && relocation.symbol === 'included'
 ), 'typed object generation must retain direct-call relocations');
+
+const startupObject = loadRuntimeObjects().find((runtimeObject) =>
+    runtimeObject.symbols.some((symbol) => symbol.name === 'startup' && symbol.defined)
+);
+assert.ok(startupObject, 'runtime catalog must provide startup');
+const startupLinkedObject = linkObjects([startupObject, object], { entrySymbol: 'startup' });
+assert.strictEqual(startupLinkedObject.entryAddress, 0,
+    'typed objects without globals must still satisfy the runtime global initializer contract');
 
 const linkedObject = linkObjects([object], { entrySymbol: 'main' });
 assert.strictEqual(linkedObject.symbols.get('included'), 0);
@@ -69,8 +78,8 @@ const scalarObject = compileCToObject(scalarSource, { moduleName: 'typed_scalar_
 const scalarAssembly = linkObjects([scalarObject]).assembly;
 assert.deepStrictEqual(
     scalarObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-    ['scale', 'main'],
-    'typed objects must define scalar functions with parameters and locals',
+    ['scale', 'main', '__merc32_init_globals'],
+    'typed objects must define scalar functions with parameters, locals, and runtime initialization',
 );
 assert.ok(scalarObject.relocations.some((relocation) =>
     relocation.kind === 'CALL16' && relocation.symbol === 'scale'
@@ -105,11 +114,18 @@ const manyArgumentInstructionOffset = manyArgumentAssembly
 assert.strictEqual(manyArgumentCallOffset, manyArgumentInstructionOffset,
     'typed call relocation must identify the resolved call instruction, after argument setup');
 
-assert.throws(
-    () => compileCToObject('int global_value = 3; int main(void) { return global_value; }'),
-    /typed C object backend does not support global declarations/,
-    'typed object generation must reject unsupported globals instead of discarding them',
+const initializedGlobalObject = compileCToObject('int global_value = 3; int main(void) { return global_value; }');
+assert.deepStrictEqual(
+    initializedGlobalObject.sections.find((section) => section.name === 'data').content,
+    [3, 0, 0, 0],
+    'typed initialized globals must preserve their little-endian data image',
 );
+assert.ok(initializedGlobalObject.symbols.some((symbol) =>
+    symbol.name === 'global_value' && symbol.defined && symbol.section === 'data'
+), 'typed initialized globals must publish data symbols');
+assert.ok(initializedGlobalObject.symbols.some((symbol) =>
+    symbol.name === '__merc32_init_globals' && symbol.defined && symbol.section === 'text'
+), 'typed global objects must publish their startup initialization function');
 assert.throws(
     () => compileCToObject('float add(float left, float right) { return left + right; }'),
     /typed C object backend does not support floating-point function bodies/,
@@ -410,7 +426,7 @@ try {
     const preprocessedObject = compileCFileToObject(entry, { moduleName: 'preprocessed_object' });
     assert.deepStrictEqual(
         preprocessedObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-        ['helper', 'included', 'main'],
+        ['helper', 'included', 'main', '__merc32_init_globals'],
     );
     assert.ok(preprocessedObject.relocations.some((relocation) => relocation.symbol === 'included'));
     assert.ok(preprocessedObject.relocations.some((relocation) =>

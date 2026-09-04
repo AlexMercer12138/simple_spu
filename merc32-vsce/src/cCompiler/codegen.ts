@@ -12,15 +12,25 @@ export function generateObject(module: Merc32Module): Merc32Object {
     { name: 'text', alignment: 4, size: emitted.size, content: emitted.assembly },
   ];
   const symbols = [...emitted.symbols];
+  const data: number[] = [];
+  let dataAlignment = 1;
   let bssSize = 0;
   let bssAlignment = 1;
   for (const global of module.globals) {
     const alignment = typeAlignment(global.type);
-    bssAlignment = Math.max(bssAlignment, alignment);
-    bssSize = alignUp(bssSize, alignment);
-    symbols.push({ name: global.name, binding: 'global', section: 'bss', offset: bssSize, defined: true });
-    bssSize += typeSize(global.type);
+    if (global.initializer) {
+      dataAlignment = Math.max(dataAlignment, alignment);
+      while (data.length < alignUp(data.length, alignment)) data.push(0);
+      symbols.push({ name: global.name, binding: 'global', section: 'data', offset: data.length, defined: true });
+      data.push(...global.initializer);
+    } else {
+      bssAlignment = Math.max(bssAlignment, alignment);
+      bssSize = alignUp(bssSize, alignment);
+      symbols.push({ name: global.name, binding: 'global', section: 'bss', offset: bssSize, defined: true });
+      bssSize += typeSize(global.type);
+    }
   }
+  if (data.length > 0) sections.push({ name: 'data', alignment: dataAlignment, size: data.length, content: data });
   if (bssSize > 0) sections.push({ name: 'bss', alignment: bssAlignment, size: bssSize });
   return {
     version: 1,

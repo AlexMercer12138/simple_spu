@@ -1,7 +1,7 @@
 import { AnalyzedProgram, evaluateIntegerConstantExpression } from './sema';
 import { Expression, Statement, TranslationUnit } from './declarations';
 import { CType, pointerType, structLayout, typeAlignment, typeSize, unionLayout } from './types';
-import { IRBlock, IRFunction, IRInstruction, Merc32Module } from './ir';
+import { IRBlock, IRFunction, IRGlobal, IRInstruction, Merc32Module } from './ir';
 
 export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32Module {
   const unit = 'unit' in program ? program.unit : program;
@@ -14,10 +14,15 @@ export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32
   }
   const occupiedLabels = new Set(occupiedSymbols);
   const globalTypes = new Map<string, CType>();
+  const globals: IRGlobal[] = [];
   for (const declaration of unit.declarations) {
     for (const declarator of declaration.declarators) {
       if (declarator.name && declarator.type.kind !== 'function' && declaration.kind !== 'typedef') {
         globalTypes.set(declarator.name, declarator.type);
+        const initializer = declarator.initializer && declarator.initializer.kind !== 'initializer'
+          ? encodeScalarInitializer(declarator.type, evaluateIntegerConstantExpression(declarator.initializer))
+          : undefined;
+        globals.push({ name: declarator.name, type: declarator.type, ...(initializer ? { initializer } : {}) });
       }
     }
   }
@@ -47,10 +52,55 @@ export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32
       });
     }
   }
+  const initializerName = '__merc32_init_globals';
+  if (occupiedSymbols.has(initializerName)) throw new Error(`reserved compiler symbol '${initializerName}' is already defined`);
+  functions.push(createGlobalInitializer(initializerName, globals));
   return {
     abi: 'merc32-c-v1',
     functions,
-    globals: [...globalTypes].map(([name, type]) => ({ name, type })),
+    globals,
+  };
+}
+
+function encodeScalarInitializer(type: CType, value: number): readonly number[] {
+  const size = typeSize(type);
+  if (size !== 1 && size !== 2 && size !== 4) {
+    throw new Error(`typed global initializer does not support ${size}-byte objects`);
+  }
+  const bits = value >>> 0;
+  return Array.from({ length: size }, (_, index) => (bits >>> (index * 8)) & 0xff);
+}
+
+function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IRFunction {
+  const instructions: IRInstruction[] = [];
+  let nextValue = 0;
+  for (const global of globals) {
+    const base = nextValue++;
+    instructions.push({ op: 'address-symbol', args: [global.name], dest: base });
+    const bytes = global.initializer ?? Array.from({ length: typeSize(global.type) }, () => 0);
+    for (let offset = 0; offset < bytes.length; offset++) {
+      let address = base;
+      if (offset !== 0) {
+        const offsetValue = nextValue++;
+        instructions.push({ op: 'constant', args: [offset], dest: offsetValue });
+        address = nextValue++;
+        instructions.push({ op: 'binary', args: ['+', base, offsetValue], dest: address });
+      }
+      const value = nextValue++;
+      instructions.push({ op: 'constant', args: [bytes[offset]], dest: value });
+      instructions.push({ op: 'store-memory', args: [address, value, 1] });
+    }
+  }
+  const zero = nextValue++;
+  instructions.push({ op: 'constant', args: [0], dest: zero });
+  instructions.push({ op: 'ret', args: [zero] });
+  return {
+    name,
+    parameters: [],
+    parameterNames: [],
+    localNames: [],
+    localTypes: [],
+    blocks: [{ label: `${name}.entry`, instructions }],
   };
 }
 
