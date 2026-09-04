@@ -176,6 +176,23 @@ assert.doesNotThrow(() => abiHost.analyze(request));
 assert.equal(resolverCalls, 1);
 const lowRequestBytes = { ...request, limits: { ...request.limits, requestBytes: 1 } };
 assert.doesNotThrow(() => abiHost.analyze(lowRequestBytes));
+const lowResultBytes = { ...request, limits: { ...request.limits, resultBytes: 1 } };
+const lowResultHost = new host.AroWasmHost({
+  manifest: { bridgeBuildId: 'test-build', wasmSha256: '00'.repeat(32) },
+  instantiate() {
+    return { exports: fakeExports(Buffer.from('{"protocolVersion":1,"bridgeBuildId":"test-build","status":"diagnostics","diagnostics":[]}')) };
+  },
+});
+assert.equal(lowResultHost.analyze(lowResultBytes).status, 'diagnostics');
+const hardResultHost = new host.AroWasmHost({
+  manifest: { bridgeBuildId: 'test-build', wasmSha256: '00'.repeat(32) },
+  instantiate() {
+    const abi = fakeExports(Buffer.from('{"protocolVersion":1,"bridgeBuildId":"test-build","status":"diagnostics","diagnostics":[]}'));
+    abi.merc32_result_len = () => 64 * 1024 * 1024 + 1;
+    return { exports: abi };
+  },
+});
+assert.throws(() => hardResultHost.analyze(request), validation.CFrontendInternalError);
 
 const missingMemoryHost = new host.AroWasmHost({
   manifest: { bridgeBuildId: 'test-build', wasmSha256: '00'.repeat(32) },

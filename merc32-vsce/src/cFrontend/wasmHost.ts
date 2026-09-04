@@ -252,8 +252,7 @@ export class AroWasmHost {
         this.memorySlice(exports.memory, pointer, requestBytes.length).set(requestBytes);
         exports.merc32_analyze(pointer, requestBytes.length);
         const resultLength = exports.merc32_result_len();
-        if (!Number.isSafeInteger(resultLength) || resultLength > request.limits.resultBytes
-            || resultLength > HARD_C_FRONTEND_LIMITS.resultBytes) {
+        if (!Number.isSafeInteger(resultLength) || resultLength > HARD_C_FRONTEND_LIMITS.resultBytes) {
             throw new CFrontendInternalError('c-frontend result exceeds resultBytes');
         }
         const resultPointer = exports.merc32_result_ptr();
