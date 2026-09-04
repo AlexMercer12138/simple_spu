@@ -121,12 +121,14 @@ export interface AggregateMemberRecord {
 
 export interface StructTypeRecord extends TypedTypeBase<'struct'> {
     readonly name?: string;
+    readonly nominalId?: TypeId;
     readonly complete: boolean;
     readonly members: readonly AggregateMemberRecord[];
 }
 
 export interface UnionTypeRecord extends TypedTypeBase<'union'> {
     readonly name?: string;
+    readonly nominalId?: TypeId;
     readonly complete: boolean;
     readonly members: readonly AggregateMemberRecord[];
 }
@@ -139,6 +141,7 @@ export interface EnumValueRecord {
 
 export interface EnumTypeRecord extends TypedTypeBase<'enum'> {
     readonly name?: string;
+    readonly nominalId?: TypeId;
     readonly underlyingType: TypeId;
     readonly enumerators: readonly EnumValueRecord[];
 }

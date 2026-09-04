@@ -242,6 +242,8 @@ pub const Store = struct {
         kind: []const u8,
     ) !void {
         try store.writeBase(output, id, kind, null, qt, false);
+        try output.add(",\"nominalId\":");
+        try output.integer(nominalRecordId(record, store.tree.comp));
         if (!record.isAnonymous(store.tree.comp)) {
             try output.add(",\"name\":");
             try output.string(record.name.lookup(store.tree.comp));
@@ -291,6 +293,8 @@ pub const Store = struct {
         if (enumeration.incomplete) return error.UnsupportedType;
         const underlying = enumeration.tag orelse aro.QualType.int;
         try store.writeBase(output, id, "enum", null, qt, false);
+        try output.add(",\"nominalId\":");
+        try output.integer(nominalId(enumeration.decl_node));
         if (!enumeration.isAnonymous(store.tree.comp)) {
             try output.add(",\"name\":");
             try output.string(enumeration.name.lookup(store.tree.comp));
@@ -311,6 +315,16 @@ pub const Store = struct {
             try output.byte('}');
         }
         try output.add("]}");
+    }
+
+    fn nominalRecordId(record: aro.Type.Record, comp: *const aro.Compilation) u64 {
+        if (record.decl_node.unpack()) |node| return nominalId(node);
+        const hash = std.hash.Wyhash.hash(0, record.name.lookup(comp)) & 0x001f_ffff_ffff_ffff;
+        return if (hash == 0) 1 else hash;
+    }
+
+    fn nominalId(node: aro.Tree.Node.Index) u64 {
+        return @as(u64, @intCast(@backingInt(node))) + 1;
     }
 
     fn writeBase(

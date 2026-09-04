@@ -130,7 +130,9 @@ test "node golden serializes C17 control expressions conversions and macro locat
     try expectMemberValueCategories(nodes);
     try expectPointerConversions(nodes);
     try expectAutomaticAggregateInitializers(nodes);
+    try expectNestedAutomaticAggregateInitializers(nodes);
     try expectLocalFunctionLink(nodes, arrayField(unit, "symbols"));
+    try expectUnnamedPrototype(unit, nodes, arrayField(unit, "symbols"));
     try expectGenericValueContext(nodes);
     const symbols = arrayField(unit, "symbols");
     try expectLocalSymbols(symbols);
@@ -166,6 +168,20 @@ fn expectAutomaticAggregateInitializers(nodes: std.json.Array) !void {
     try std.testing.expect(saw_array and saw_struct);
 }
 
+fn expectNestedAutomaticAggregateInitializers(nodes: std.json.Array) !void {
+    var saw_nested = false;
+    for (nodes.items) |value| {
+        const node = value.object;
+        if (!stringEquals(node, "kind", "compound-literal")) continue;
+        for (arrayField(node, "children").items) |child| {
+            if (stringEquals(findId(nodes, child.integer), "kind", "compound-literal")) {
+                saw_nested = true;
+            }
+        }
+    }
+    try std.testing.expect(saw_nested);
+}
+
 fn expectLocalFunctionLink(nodes: std.json.Array, symbols: std.json.Array) !void {
     const helper = findString(symbols, "name", "later_helper") orelse return error.TestExpectedEqual;
     try expectString(helper, "kind", "function");
@@ -178,6 +194,25 @@ fn expectLocalFunctionLink(nodes: std.json.Array, symbols: std.json.Array) !void
         }
     }
     try std.testing.expect(saw_local_declaration);
+}
+
+fn expectUnnamedPrototype(unit: std.json.ObjectMap, nodes: std.json.Array, symbols: std.json.Array) !void {
+    const symbol = findString(symbols, "name", "unnamed_prototype") orelse return error.TestExpectedEqual;
+    try expectString(symbol, "kind", "function");
+    const symbol_id = integerField(symbol, "id");
+    var declaration: ?std.json.ObjectMap = null;
+    for (nodes.items) |value| {
+        const node = value.object;
+        if (stringEquals(node, "kind", "function-declaration") and integerField(node, "symbol") == symbol_id) {
+            declaration = node;
+            break;
+        }
+    }
+    try std.testing.expect(declaration != null);
+    try std.testing.expectEqual(@as(usize, 0), arrayField(declaration.?, "children").items.len);
+    const function_type = findId(arrayField(unit, "types"), integerField(symbol, "type"));
+    try expectString(function_type, "kind", "function");
+    try std.testing.expectEqual(@as(usize, 1), arrayField(function_type, "parameters").items.len);
 }
 
 fn expectGenericValueContext(nodes: std.json.Array) !void {
@@ -355,8 +390,8 @@ fn expectNestedMacroRanges(nodes: std.json.Array) !void {
     const macro_add = findMacroBinary(nodes) orelse return error.TestExpectedEqual;
     const range = objectField(macro_add, "range");
     const spelling = objectField(macro_add, "spellingRange");
-    try expectPosition(objectField(range, "start"), 46, 13, 1189);
-    try expectPosition(objectField(range, "end"), 46, 22, 1198);
+    try expectPosition(objectField(range, "start"), 53, 13, 1281);
+    try expectPosition(objectField(range, "end"), 53, 22, 1290);
     try expectPosition(objectField(spelling, "start"), 1, 30, 29);
     try expectPosition(objectField(spelling, "end"), 1, 31, 30);
 }

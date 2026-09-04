@@ -49,7 +49,7 @@ pub const Store = struct {
                 .function => |decl| if (store.types.isSourceToken(decl.name_tok)) {
                     const owner = try store.add(.function, node_index, decl.qt, 0, decl.definition);
                     const function = decl.qt.get(store.tree.comp, .func) orelse return error.UnsupportedType;
-                    for (function.params) |param| if (param.node.unpack()) |param_node| {
+                    for (function.params) |param| if (param.name != .empty) if (param.node.unpack()) |param_node| {
                         _ = try store.add(.parameter, param_node, param.qt, owner, null);
                     };
                 },
@@ -148,7 +148,7 @@ pub const Store = struct {
             .function => |decl| if (store.types.isSourceToken(decl.name_tok)) {
                 _ = try store.add(.function, node_index, decl.qt, 0, decl.definition);
                 const function = decl.qt.get(store.tree.comp, .func) orelse return error.UnsupportedType;
-                for (function.params) |param| if (param.node.unpack()) |param_node| {
+                for (function.params) |param| if (param.name != .empty) if (param.node.unpack()) |param_node| {
                     _ = try store.add(.parameter, param_node, param.qt, store.by_node.get(node_index) orelse return error.MissingSymbol, null);
                 };
             },

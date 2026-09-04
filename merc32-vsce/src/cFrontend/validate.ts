@@ -164,16 +164,19 @@ const typeRecordSchema: JsonSchema = {
         }, ['returnType', 'parameters', 'variadic']),
         typeSchema('struct', {
             name: { type: 'string' },
+            nominalId: idSchema,
             complete: { type: 'boolean' },
             members: { type: 'array', items: aggregateMemberSchema },
         }, ['complete', 'members']),
         typeSchema('union', {
             name: { type: 'string' },
+            nominalId: idSchema,
             complete: { type: 'boolean' },
             members: { type: 'array', items: aggregateMemberSchema },
         }, ['complete', 'members']),
         typeSchema('enum', {
             name: { type: 'string' },
+            nominalId: idSchema,
             underlyingType: idSchema,
             enumerators: { type: 'array', items: enumValueSchema },
         }, ['underlyingType', 'enumerators']),
@@ -1342,7 +1345,7 @@ function validateConversion(
         case 'assignment':
         case 'argument':
         case 'return':
-            assertInvariant(isImplicitConversionPair(source, target), 'NODE_CONVERSION',
+            assertInvariant(isImplicitConversionPair(source, target, types), 'NODE_CONVERSION',
                 `${node.conversion} conversion ${node.id} has incompatible source and target types`);
             break;
     }
@@ -1485,7 +1488,7 @@ function sameUnqualifiedType(
     right: TypedTypeRecord,
     types: ReadonlyMap<number, TypedTypeRecord>,
 ): boolean {
-    return sameTypeShape(left, right, types, true);
+    return sameTypeShape(left, right, types, true, new Set<string>());
 }
 
 function sameTypeShape(
@@ -1493,6 +1496,7 @@ function sameTypeShape(
     right: TypedTypeRecord,
     types: ReadonlyMap<number, TypedTypeRecord>,
     ignoreQualifiers: boolean,
+    seen: Set<string>,
 ): boolean {
     const leftType = unaliasType(left, types);
     const rightType = unaliasType(right, types);
@@ -1501,33 +1505,80 @@ function sameTypeShape(
         return false;
     }
     if (leftType.kind !== rightType.kind) return false;
+    const pair = `${leftType.id}:${rightType.id}`;
+    if (seen.has(pair)) return true;
+    seen.add(pair);
     switch (leftType.kind) {
         case 'builtin':
             return rightType.kind === 'builtin' && leftType.name === rightType.name;
         case 'pointer':
             return rightType.kind === 'pointer'
                 && sameTypeShape(requireType(types, leftType.pointee, 'pointer source pointee'),
-                    requireType(types, rightType.pointee, 'pointer target pointee'), types, false);
+                    requireType(types, rightType.pointee, 'pointer target pointee'), types, true, seen);
         case 'array':
             return rightType.kind === 'array' && leftType.count === rightType.count
                 && sameTypeShape(requireType(types, leftType.element, 'array source element'),
-                    requireType(types, rightType.element, 'array target element'), types, false);
+                    requireType(types, rightType.element, 'array target element'), types, true, seen);
         case 'function':
             return rightType.kind === 'function'
                 && leftType.variadic === rightType.variadic
                 && leftType.parameters.length === rightType.parameters.length
                 && sameTypeShape(requireType(types, leftType.returnType, 'function source return'),
-                    requireType(types, rightType.returnType, 'function target return'), types, false)
+                    requireType(types, rightType.returnType, 'function target return'), types, true, seen)
                 && leftType.parameters.every((parameter, index) => sameTypeShape(
                     requireType(types, parameter, 'function source parameter'),
-                    requireType(types, rightType.parameters[index]!, 'function target parameter'), types, false));
+                    requireType(types, rightType.parameters[index]!, 'function target parameter'), types, true, seen));
         case 'struct':
         case 'union':
+            if (rightType.kind !== leftType.kind) return false;
+            return sameAggregateShape(leftType, rightType, types, seen);
         case 'enum':
-            return leftType.id === rightType.id;
+            if (rightType.kind !== 'enum') return false;
+            return sameNominalIdentity(leftType, rightType)
+                && leftType.name === rightType.name
+                && leftType.size === rightType.size
+                && leftType.alignment === rightType.alignment
+                && leftType.enumerators.length === rightType.enumerators.length
+                && sameTypeShape(requireType(types, leftType.underlyingType, 'enum source underlying'),
+                    requireType(types, rightType.underlyingType, 'enum target underlying'), types, true, seen)
+                && leftType.enumerators.every((enumerator, index) => {
+                    const other = rightType.enumerators[index]!;
+                    return enumerator.name === other.name && enumerator.value === other.value;
+                });
         case 'typedef':
             return leftType.id === rightType.id;
     }
+}
+
+function sameAggregateShape(
+    left: Extract<TypedTypeRecord, { kind: 'struct' | 'union' }>,
+    right: Extract<TypedTypeRecord, { kind: 'struct' | 'union' }>,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+    seen: Set<string>,
+): boolean {
+    return sameNominalIdentity(left, right)
+        && left.name === right.name
+        && left.complete === right.complete
+        && left.size === right.size
+        && left.alignment === right.alignment
+        && left.members.length === right.members.length
+        && left.members.every((member, index) => {
+            const other = right.members[index]!;
+            return member.name === other.name
+                && member.offset === other.offset
+                && member.bitOffset === other.bitOffset
+                && member.bitWidth === other.bitWidth
+                && sameTypeShape(requireType(types, member.type, `${left.kind} source member`),
+                    requireType(types, other.type, `${right.kind} target member`), types, true, seen);
+        });
+}
+
+function sameNominalIdentity(
+    left: Extract<TypedTypeRecord, { kind: 'struct' | 'union' | 'enum' }>,
+    right: Extract<TypedTypeRecord, { kind: 'struct' | 'union' | 'enum' }>,
+): boolean {
+    if (left.nominalId === undefined && right.nominalId === undefined) return left.id === right.id;
+    return left.nominalId !== undefined && left.nominalId === right.nominalId;
 }
 
 function integerRepresentation(
@@ -1850,8 +1901,12 @@ function isFloatingType(type: TypedTypeRecord): boolean {
     return type.kind === 'builtin' && isFloatingBuiltin(type.name);
 }
 
-function isImplicitConversionPair(source: TypedTypeRecord, target: TypedTypeRecord): boolean {
-    if (sameResolvedType(source, target) || (isArithmeticType(source) && isArithmeticType(target))) {
+function isImplicitConversionPair(
+    source: TypedTypeRecord,
+    target: TypedTypeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): boolean {
+    if (sameUnqualifiedType(source, target, types) || (isArithmeticType(source) && isArithmeticType(target))) {
         return true;
     }
     if (target.kind === 'pointer') {

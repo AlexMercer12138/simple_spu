@@ -429,6 +429,90 @@ pointerConversions.unit.nodes.push({
 assert.doesNotThrow(() => validateEnvelope(pointerConversions, 'test-build'),
     'pointer and null implicit conversions must retain their source and target kinds');
 
+const qualifiedAggregateConversions = clone(validFixture);
+qualifiedAggregateConversions.unit.types.push({
+    id: 2, kind: 'struct', name: 'QualifiedPair', complete: true,
+    nominalId: 10,
+    members: [{ name: 'value', type: 1, offset: 0, range: nodeRange }],
+    qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 3, kind: 'struct', name: 'QualifiedPair', complete: true,
+    nominalId: 10,
+    members: [{ name: 'value', type: 1, offset: 0, range: nodeRange }],
+    qualifiers: ['const'], size: 4, alignment: 4,
+}, {
+    id: 4, kind: 'builtin', name: 'int', qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 5, kind: 'pointer', pointee: 4, qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 6, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
+});
+qualifiedAggregateConversions.unit.symbols.push({
+    id: 1, kind: 'variable', name: 'qualified', type: 3, range: nodeRange,
+    linkage: 'none', storage: 'automatic', definition: true,
+}, {
+    id: 2, kind: 'variable', name: 'pointer', type: 5, range: nodeRange,
+    linkage: 'none', storage: 'automatic', definition: true,
+});
+qualifiedAggregateConversions.unit.nodes.push({
+    id: 1, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 2, valueCategory: 'rvalue', children: [2],
+    conversion: 'lvalue-to-rvalue', targetType: 2,
+}, {
+    id: 2, category: 'expression', kind: 'declaration-reference', range: nodeRange,
+    type: 3, valueCategory: 'lvalue', children: [], symbol: 1,
+}, {
+    id: 3, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 2, valueCategory: 'rvalue', children: [4],
+    conversion: 'assignment', targetType: 2,
+}, {
+    id: 4, category: 'expression', kind: 'declaration-reference', range: nodeRange,
+    type: 3, valueCategory: 'lvalue', children: [], symbol: 1,
+}, {
+    id: 5, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 6, valueCategory: 'rvalue', children: [6],
+    conversion: 'no-op', targetType: 6,
+}, {
+    id: 6, category: 'expression', kind: 'declaration-reference', range: nodeRange,
+    type: 5, valueCategory: 'lvalue', children: [], symbol: 2,
+});
+assert.doesNotThrow(() => validateEnvelope(qualifiedAggregateConversions, 'test-build'),
+    'qualified aggregate and pointer conversions must compare nominal type shape');
+
+const unrelatedQualifiedAggregate = clone(qualifiedAggregateConversions);
+unrelatedQualifiedAggregate.unit.types.find((type) => type.id === 3).nominalId = 11;
+expectContractFailure(unrelatedQualifiedAggregate, 'NODE_CONVERSION',
+    'same-shaped aggregates from different declarations must not compare as equivalent');
+
+const recursiveQualifiedAggregate = clone(validFixture);
+recursiveQualifiedAggregate.unit.types.push({
+    id: 2, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true,
+    members: [{ name: 'next', type: 3, offset: 0, range: nodeRange }],
+    qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 3, kind: 'pointer', pointee: 2, qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 4, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true,
+    members: [{ name: 'next', type: 5, offset: 0, range: nodeRange }],
+    qualifiers: ['const'], size: 4, alignment: 4,
+}, {
+    id: 5, kind: 'pointer', pointee: 4, qualifiers: [], size: 4, alignment: 4,
+});
+recursiveQualifiedAggregate.unit.symbols.push({
+    id: 1, kind: 'variable', name: 'recursive', type: 4, range: nodeRange,
+    linkage: 'none', storage: 'automatic', definition: true,
+});
+recursiveQualifiedAggregate.unit.nodes.push({
+    id: 1, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 2, valueCategory: 'rvalue', children: [2],
+    conversion: 'lvalue-to-rvalue', targetType: 2,
+}, {
+    id: 2, category: 'expression', kind: 'declaration-reference', range: nodeRange,
+    type: 4, valueCategory: 'lvalue', children: [], symbol: 1,
+});
+assert.doesNotThrow(() => validateEnvelope(recursiveQualifiedAggregate, 'test-build'),
+    'recursive aggregate qualifier comparisons must terminate at repeated type pairs');
+
 const definedPrototype = clone(validFixture);
 definedPrototype.unit.types.push({
     id: 2, kind: 'function', returnType: 1, parameters: [], variadic: false,

@@ -119,7 +119,7 @@ pub const Store = struct {
                 });
                 _ = try store.types.intern(decl.qt);
                 const function = decl.qt.get(store.tree.comp, .func) orelse return error.UnsupportedType;
-                for (function.params) |param| if (param.node.unpack()) |param_node| {
+                for (function.params) |param| if (param.name != .empty) if (param.node.unpack()) |param_node| {
                     if (!store.types.isSourceToken(param_node.get(store.tree).param.name_tok)) continue;
                     try store.addChild(id, try store.serializeDeclaration(param_node, false));
                 };
@@ -801,13 +801,27 @@ pub const Store = struct {
         switch (initializer.get(store.tree)) {
             .array_init_expr, .struct_init_expr => |container| for (container.items) |item| switch (item.get(store.tree)) {
                 .array_filler_expr, .default_init_expr => {},
-                else => try store.addChild(parent, try store.serializeExpression(item)),
+                else => try store.addChild(parent, try store.serializeInitializerValue(item)),
             },
             .union_init_expr => |union_init| if (union_init.initializer) |item| {
-                try store.addChild(parent, try store.serializeExpression(item));
+                try store.addChild(parent, try store.serializeInitializerValue(item));
             },
-            else => try store.addChild(parent, try store.serializeExpression(initializer)),
+            else => try store.addChild(parent, try store.serializeInitializerValue(initializer)),
         }
+    }
+
+    fn serializeInitializerValue(store: *Store, node: aro.Tree.Node.Index) anyerror!u32 {
+        return switch (node.get(store.tree)) {
+            .array_init_expr, .struct_init_expr => |initializer| store.serializeAggregateInitializer(
+                node,
+                initializer.container_qt,
+            ),
+            .union_init_expr => |initializer| store.serializeAggregateInitializer(
+                node,
+                initializer.union_qt,
+            ),
+            else => store.serializeExpression(node),
+        };
     }
 
     fn symbolId(store: *const Store, node: aro.Tree.Node.Index) !u32 {

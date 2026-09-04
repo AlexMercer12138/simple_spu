@@ -6,6 +6,13 @@ struct Pair {
     int second;
 };
 
+struct Outer {
+    struct Pair pair;
+    int matrix[2][2];
+};
+
+int unnamed_prototype(int);
+
 typedef int (*BinaryOperation)(int, int);
 
 int add(int lhs, int rhs) {
@@ -104,6 +111,11 @@ char automatic_aggregates(char value) {
     struct Pair pair = { .first = value, .second = 1 };
     values[0] += 1;
     return values[0] + pair.first;
+}
+
+int nested_aggregates(int value) {
+    struct Outer outer = { { value, 1 }, { { value, 2 }, { 3, 4 } } };
+    return outer.pair.first + outer.matrix[1][1];
 }
 
 struct Pair global_pair = { 1, 2 };
