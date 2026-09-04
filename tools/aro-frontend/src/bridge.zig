@@ -96,7 +96,7 @@ fn analyze(json: []const u8) !void {
     try comp.initSearchPath(include_records, false);
 
     const main_source = try comp.addSourceFromBuffer(parsed.main_path, parsed.source);
-    sources.bindMain(main_source);
+    try sources.bindMain(main_source);
     const builtin_source = try comp.generateBuiltinMacros(.include_system_defines);
     var command_line_text: std.ArrayList(u8) = .empty;
     for (parsed.defines) |define| {

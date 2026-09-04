@@ -38,6 +38,8 @@ pub const Location = struct {
 };
 
 pub const ExpandedLocation = struct {
+    source_id: Id,
+    byte_offset: u32,
     path: []const u8,
     line: []const u8,
     line_no: u32,
@@ -52,6 +54,8 @@ const Source = @This();
 path: []const u8,
 buf: [:0]const u8,
 id: Id,
+/// Stable identity shared by aliases of the same physical source.
+canonical_id: ?Id = null,
 /// each entry represents a byte position within `buf` where a backslash+newline was deleted
 /// from the original raw buffer. The same position can appear multiple times if multiple
 /// consecutive splices happened. Guaranteed to be non-decreasing
@@ -60,6 +64,10 @@ kind: Kind,
 
 // Path of the umbrella framework. Slice of `path`.
 umbrella_framework_path: ?[]const u8 = null,
+
+pub fn canonicalId(source: Source) Id {
+    return source.canonical_id orelse source.id;
+}
 
 pub fn lineCol(source: Source, loc: Location) ExpandedLocation {
     var start: usize = 0;
@@ -110,6 +118,8 @@ pub fn lineCol(source: Source, loc: Location) ExpandedLocation {
         nl = source.splice_locs[splice_index];
     }
     return .{
+        .source_id = loc.id,
+        .byte_offset = loc.byte_offset,
         .path = source.path,
         .line = source.buf[start..nl],
         .line_no = loc.line,

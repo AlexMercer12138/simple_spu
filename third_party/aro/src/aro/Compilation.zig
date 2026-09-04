@@ -2232,6 +2232,7 @@ pub fn addSourceFromFile(comp: *Compilation, file: std.Io.File, path: []const u8
 
 pub fn addSourceAlias(comp: *Compilation, source: Source.Id, new_path: []const u8, new_kind: Source.Kind) !Source.Id {
     var aliased_source = comp.getSource(source);
+    aliased_source.canonical_id = aliased_source.canonicalId();
     aliased_source.path = new_path;
     aliased_source.id = .{ .index = @fromBackingInt(@intCast(comp.source_aliases.items.len)), .alias = true };
     aliased_source.kind = new_kind;

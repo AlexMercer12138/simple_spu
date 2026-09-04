@@ -40,7 +40,7 @@ fn deinit(pragma: *Pragma, comp: *Compilation) void {
 
 fn beforeInclude(pragma: *Pragma, _: *Preprocessor, source: Source) Pragma.BeforeIncludeError!void {
     var self: *Once = @fieldParentPtr("pragma", pragma);
-    if (self.pragma_once.contains(source.id)) return error.SkipInclude;
+    if (self.pragma_once.contains(source.canonicalId())) return error.SkipInclude;
 }
 
 fn preprocessorHandler(pragma: *Pragma, pp: *Preprocessor, start_idx: TokenIndex) Pragma.Error!void {
@@ -66,7 +66,8 @@ fn preprocessorHandler(pragma: *Pragma, pp: *Preprocessor, start_idx: TokenIndex
         }, pp.expansionSlice(start_idx + 1), true);
     }
     const seen = self.preprocess_count == pp.preprocess_count;
-    const prev = try self.pragma_once.fetchPut(pp.comp.gpa, name_tok.loc.id, {});
+    const source = pp.comp.getSource(name_tok.loc.id);
+    const prev = try self.pragma_once.fetchPut(pp.comp.gpa, source.canonicalId(), {});
     if (prev != null and !seen) {
         return error.StopPreprocessing;
     }

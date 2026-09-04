@@ -251,8 +251,9 @@ include_depth: u8 = 0,
 counter: u32 = 0,
 expansion_source_loc: Source.Location = undefined,
 poisoned_identifiers: std.StringHashMapUnmanaged(void) = .empty,
-/// Map from Source.Id to macro name in the `#ifndef` condition which guards the source, if any
+/// Map from canonical Source.Id to macro name in the `#ifndef` condition which guards the source, if any
 include_guards: std.AutoHashMapUnmanaged(Source.Id, []const u8) = .empty,
+/// Canonical sources currently being preprocessed.
 active_sources: std.AutoHashMapUnmanaged(Source.Id, void) = .empty,
 
 /// Store `keyword_define` and `keyword_undef` tokens.
@@ -581,9 +582,10 @@ fn findIncludeGuard(pp: *Preprocessor, source: Source) ?[]const u8 {
 
 fn preprocessExtra(pp: *Preprocessor, source: Source) MacroError!TokenWithExpansionLocs {
     const gpa = pp.comp.gpa;
-    const active = try pp.active_sources.getOrPut(gpa, source.id);
+    const canonical_id = source.canonicalId();
+    const active = try pp.active_sources.getOrPut(gpa, canonical_id);
     if (active.found_existing) return error.StopPreprocessing;
-    defer _ = pp.active_sources.remove(source.id);
+    defer _ = pp.active_sources.remove(canonical_id);
     var guard_name = pp.findIncludeGuard(source);
 
     pp.preprocess_count += 1;
@@ -982,7 +984,7 @@ fn preprocessExtra(pp: *Preprocessor, source: Source) MacroError!TokenWithExpans
                     try pp.err(tok, .newline_eof, .{});
                 }
                 if (guard_name) |name| {
-                    if (try pp.include_guards.fetchPut(pp.comp.gpa, source.id, name)) |prev| {
+                    if (try pp.include_guards.fetchPut(pp.comp.gpa, source.canonicalId(), name)) |prev| {
                         assert(mem.eql(u8, name, prev.value));
                     }
                 }
@@ -3480,7 +3482,7 @@ fn include(pp: *Preprocessor, tokenizer: *Tokenizer, which: Compilation.WhichInc
     };
     const gpa = pp.comp.gpa;
 
-    if (pp.active_sources.contains(new_source.id)) {
+    if (pp.active_sources.contains(new_source.canonicalId())) {
         const loc: Source.Location = .{ .id = first.source, .byte_offset = first.start, .line = first.line };
         try pp.err(loc, .too_many_includes, .{});
         return error.StopPreprocessing;
@@ -3495,7 +3497,7 @@ fn include(pp: *Preprocessor, tokenizer: *Tokenizer, which: Compilation.WhichInc
         return error.StopPreprocessing;
     }
 
-    if (pp.include_guards.get(new_source.id)) |guard| {
+    if (pp.include_guards.get(new_source.canonicalId())) |guard| {
         if (pp.defines.contains(guard)) return;
     }
 

@@ -21,21 +21,29 @@ pub const SourceFile = struct {
     aro_id: ?aro.Source.Id,
 };
 
-pub const IncludeEvent = struct {
-    source_id: u32,
-    diagnostic_index: usize,
-    site: aro.Source.ExpandedLocation,
+pub const SourceInstance = struct {
+    aro_id: aro.Source.Id,
+    canonical_file_id: u32,
+    parent_instance: ?usize,
+    included_from: ?aro.Source.ExpandedLocation,
 };
 
 pub const State = struct {
     allocator: std.mem.Allocator,
     limits: request.Limits,
     files: std.ArrayList(SourceFile) = .empty,
-    include_events: std.ArrayList(IncludeEvent) = .empty,
+    instances: std.ArrayList(SourceInstance) = .empty,
+    instance_lookup: std.AutoHashMapUnmanaged(aro.Source.Id, usize) = .empty,
     total_source_bytes: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, limits: request.Limits) State {
         return .{ .allocator = allocator, .limits = limits };
+    }
+
+    pub fn deinit(state: *State) void {
+        state.files.deinit(state.allocator);
+        state.instances.deinit(state.allocator);
+        state.instance_lookup.deinit(state.allocator);
     }
 
     pub fn recordMain(state: *State, path: []const u8, source: []const u8) !void {
@@ -66,10 +74,11 @@ pub const State = struct {
         }
     }
 
-    pub fn bindMain(state: *State, source: aro.Source) void {
+    pub fn bindMain(state: *State, source: aro.Source) std.mem.Allocator.Error!void {
         std.debug.assert(state.files.items.len != 0);
         std.debug.assert(std.mem.eql(u8, state.files.items[0].path, source.path));
         state.files.items[0].aro_id = source.id;
+        try state.addInstance(source.id, state.files.items[0].id, null, null);
     }
 
     pub fn provider(state: *State) aro.Compilation.SourceProvider {
@@ -84,6 +93,25 @@ pub const State = struct {
             if (std.mem.eql(u8, file.path, path)) return file;
         }
         return null;
+    }
+
+    pub fn fileById(state: *const State, id: u32) ?SourceFile {
+        if (id == 0 or id > state.files.items.len) return null;
+        return state.files.items[id - 1];
+    }
+
+    pub fn fileForAroId(state: *const State, id: aro.Source.Id) ?SourceFile {
+        if (state.instance_lookup.get(id)) |instance_index| {
+            return state.fileById(state.instances.items[instance_index].canonical_file_id);
+        }
+        for (state.files.items) |file| {
+            if (file.aro_id == id) return file;
+        }
+        return null;
+    }
+
+    pub fn instanceIndex(state: *const State, id: aro.Source.Id) ?usize {
+        return state.instance_lookup.get(id);
     }
 
     fn findIndex(state: *const State, path: []const u8) ?usize {
@@ -101,33 +129,40 @@ pub const State = struct {
         include_site: ?aro.Source.ExpandedLocation,
     ) std.mem.Allocator.Error!Resolution {
         const file = &state.files.items[index];
-        if (file.aro_id) |id| {
-            try state.recordInclusion(file.id, comp.diagnostics.total, include_site);
-            return .{ .source = comp.getSource(id) };
-        }
-
-        const aro_source = comp.addSourceFromBuffer(file.path, file.source) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return .{ .failure = .invalid_record },
+        const canonical_source = if (file.aro_id) |id|
+            comp.getSource(id)
+        else source: {
+            const aro_source = comp.addSourceFromBuffer(file.path, file.source) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .{ .failure = .invalid_record },
+            };
+            file.aro_id = aro_source.id;
+            break :source aro_source;
         };
-        file.aro_id = aro_source.id;
-        try state.recordInclusion(file.id, comp.diagnostics.total, include_site);
-        _ = kind;
-        return .{ .source = aro_source };
+        const site = include_site orelse return .{ .source = canonical_source };
+        const alias_id = try comp.addSourceAlias(canonical_source.id, canonical_source.path, kind);
+        const parent_instance = state.instanceIndex(site.source_id);
+        try state.addInstance(alias_id, file.id, parent_instance, site);
+        return .{ .source = comp.getSource(alias_id) };
     }
 
-    fn recordInclusion(
+    fn addInstance(
         state: *State,
-        source_id: u32,
-        diagnostic_index: usize,
-        include_site: ?aro.Source.ExpandedLocation,
+        aro_id: aro.Source.Id,
+        canonical_file_id: u32,
+        parent_instance: ?usize,
+        included_from: ?aro.Source.ExpandedLocation,
     ) std.mem.Allocator.Error!void {
-        const site = include_site orelse return;
-        try state.include_events.append(state.allocator, .{
-            .source_id = source_id,
-            .diagnostic_index = diagnostic_index,
-            .site = site,
+        try state.instances.ensureUnusedCapacity(state.allocator, 1);
+        try state.instance_lookup.ensureUnusedCapacity(state.allocator, 1);
+        const index = state.instances.items.len;
+        state.instances.appendAssumeCapacity(.{
+            .aro_id = aro_id,
+            .canonical_file_id = canonical_file_id,
+            .parent_instance = parent_instance,
+            .included_from = included_from,
         });
+        state.instance_lookup.putAssumeCapacityNoClobber(aro_id, index);
     }
 
     fn resolveSource(

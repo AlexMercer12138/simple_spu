@@ -10,8 +10,8 @@
     {
       "path": "src/aro/Compilation.zig",
       "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
-      "sha256": "e568a48d5150c80e9f102b75f8f38ac43bc5cbcd34bfa5c4e2b6c897a669451e",
-      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary with typed failures and include-site propagation, and freestanding I/O guards."
+      "sha256": "69fa9c6149898c41878bbfdf562a9491143335ba8241c60378fcc28820f9c24b",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary with typed failures and include-site propagation, canonical identity propagation for source aliases, and freestanding I/O guards."
     },
     {
       "path": "src/aro/DataModel.zig",
@@ -28,8 +28,8 @@
     {
       "path": "src/aro/Preprocessor.zig",
       "upstreamSha256": "b514f987592d5113598c88c1ceb8361ac9a432fd8d455b63a202357a0704d29f",
-      "sha256": "6c8ff0c88f44881069a0ce95a533f14a621ab81d22261f6ad7593081dee9aff5",
-      "reason": "Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, and compile out verbose stderr logging for freestanding builds."
+      "sha256": "51035be4ff9c513fa245135490fb8f0e46a1c6974817aa44d89f4edfbf7441b6",
+      "reason": "Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, preserve canonical alias semantics for active-source and include-guard tracking, and compile out verbose stderr logging for freestanding builds."
     },
     {
       "path": "src/aro/Preprocessor/Parser.zig",
@@ -38,10 +38,22 @@
       "reason": "Validate preprocessor intmax width through the selected compilation model."
     },
     {
+      "path": "src/aro/Source.zig",
+      "upstreamSha256": "d481a94b93257a0447423fff8e1c2d508d7e638d5ff8baaaebf46e24c73f7478",
+      "sha256": "4131888d35da4758dc2f50639e40cec2778aafe43c0135ed0ab91608c30ffa34",
+      "reason": "Preserve original source IDs and byte offsets in expanded diagnostic locations and expose canonical identity across source aliases."
+    },
+    {
       "path": "src/aro/TypeStore.zig",
       "upstreamSha256": "833dde83ca478b21c2fcf316644658bce55bdd07e1d38c54b6d3ce7bd654e10d",
       "sha256": "c766caab91260c43f57f5f4390e4d57f207e773bbf7ba15cfcdb92c6bef411b5",
       "reason": "Use compilation data-model queries for C type sizes, alignments, aliases, pointers, and functions."
+    },
+    {
+      "path": "src/aro/pragmas/once.zig",
+      "upstreamSha256": "85298236f559d6eea06e4870f0645e58cd1e506099a900522f8c1c7e8aa60b2a",
+      "sha256": "5334f081ec6c1f1312fca1612d39453493f881c47aa52a56a618cc6a9edc9b3d",
+      "reason": "Key pragma-once state by canonical source identity so per-inclusion aliases retain one-file semantics."
     },
     {
       "path": "src/aro/record_layout.zig",

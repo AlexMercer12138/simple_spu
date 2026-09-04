@@ -195,7 +195,7 @@ const Buffer = struct {
 
 test "serialized result one byte over the hard cap fails without retaining its partial buffer" {
     var sources = source_provider.State.init(std.testing.allocator, @import("request.zig").hard_limits);
-    defer sources.files.deinit(std.testing.allocator);
+    defer sources.deinit();
     try sources.recordMain("main.c", "");
 
     const oversized_message = try std.testing.allocator.alloc(u8, (64 * 1024 * 1024) + 1);

@@ -284,6 +284,31 @@ assert.deepStrictEqual(repeatedDiagnostic.includeTrace.map((range) => range.star
 assert.deepStrictEqual(repeatedCanonical.envelope.sourceFiles.map((file) => file.path),
     ['main.c', 'canonical/shared.h'], 'canonical content must remain deduplicated across aliases');
 
+const firstInclusionSource = [
+    '#ifndef SECOND_PASS',
+    'int first_only = + first_bad;',
+    '#endif',
+    '',
+].join('\n');
+const firstInclusion = analyze(makeRequest({
+    source: [
+        '#include "first.h"',
+        '#define SECOND_PASS 1',
+        '#include "second.h"',
+        '',
+    ].join('\n'),
+}), new Resolver(new Map([
+    ['first.h', { path: 'canonical/first-only.h', source: firstInclusionSource }],
+    ['second.h', { path: 'canonical/first-only.h', source: firstInclusionSource }],
+])));
+assert.strictEqual(firstInclusion.envelope.status, 'diagnostics');
+const firstInclusionDiagnostic = firstInclusion.envelope.diagnostics.find((item) => item.range.file === 2);
+assert.ok(firstInclusionDiagnostic, JSON.stringify(firstInclusion.envelope));
+assert.deepStrictEqual(firstInclusionDiagnostic.includeTrace.map((range) => range.start.byteOffset), [9],
+    'a first-inclusion parser diagnostic must retain the first directive after canonical re-inclusion');
+assert.deepStrictEqual(firstInclusion.envelope.sourceFiles.map((file) => file.path),
+    ['main.c', 'canonical/first-only.h'], 'first-inclusion diagnostics must retain canonical deduplication');
+
 const rangedInclude = analyze(makeRequest({
     source: 'int before;\n#include "broken.h"\n',
 }), new Resolver(new Map([
