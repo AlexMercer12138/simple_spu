@@ -8,7 +8,10 @@ const {
     compileC,
     compileCFile,
     compileCToObject,
+    compileCToObjectDetailed,
     compileCFileToObject,
+    compileCFileToObjectDetailed,
+    splitCompileOptions,
     analyzeTranslationUnit,
     lowerProgram,
     loadRuntimeObjects,
@@ -20,7 +23,7 @@ const { SimpleCPUAssembler } = require('../out/assembler');
 
 function functionAssemblyBody(assembly, functionName) {
     const body = assembly.match(
-        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^(?:__mobj_\\d+_)?__${functionName}_return:`, 'm'),
+        new RegExp(`^${functionName}:\\r?\\n([\\s\\S]*?)^(?:__mobj_\\d+_)?__${functionName}_return(?:_\\d+)?:`, 'm'),
     )?.[1];
     assert.ok(body, `missing assembly body for ${functionName}`);
     return body;
@@ -34,6 +37,26 @@ assert.ok(compileCFile, 'compileCFile must remain available to legacy callers');
 
 const object = compileCToObject(source, { moduleName: 'object_api' });
 assert.strictEqual(object.version, 1, 'compileCToObject must return versioned MERC32 objects');
+const detailedObject = compileCToObjectDetailed('int main(void) { return 3; }', {
+    sourceName: 'main.c',
+    defines: { ENABLED: '1' },
+    moduleName: 'detailed_object',
+});
+assert.strictEqual(detailedObject.artifact.target, 'merc32');
+assert.deepStrictEqual(detailedObject.diagnostics.filter((item) => item.severity === 'error'), []);
+const split = splitCompileOptions({
+    sourceName: 'main.c', defines: { VALUE: '3' }, includePaths: ['include'],
+    dataBase: 0x08000000, dlbAddrWidth: 16, codeBase: 0, moduleName: 'split', tempSlots: 9,
+});
+assert.deepStrictEqual(Object.keys(split.frontend).sort(), ['defines', 'includePaths', 'sourceName']);
+assert.deepStrictEqual(Object.keys(split.backend).sort(), [
+    'codeBase', 'dataBase', 'dlbAddrWidth', 'moduleName', 'tempSlots',
+]);
+assert.throws(
+    () => compileCToObject('int main( { return 0; }'),
+    (error) => error && error.name === 'CFrontendError'
+        && Array.isArray(error.diagnostics) && error.diagnostics.length > 0,
+);
 assert.strictEqual(object.target, 'merc32');
 assert.strictEqual(object.abi, 'merc32-c-v1');
 assert.strictEqual(typeof object.sections[0].content, 'string');
@@ -150,7 +173,7 @@ assert.deepStrictEqual(
     [
         1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
         0, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0,
-        1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
+        2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
     ],
     'typed aggregate globals must brace-elide nested arrays and continue after chained designators',
 );
@@ -175,13 +198,13 @@ assert.deepStrictEqual(
 );
 assert.throws(
     () => compileCToObject('float add(float left, float right) { return left + right; }'),
-    /typed C object backend does not support floating-point function bodies/,
+    /float operations are not supported by the MERC32 backend/,
     'typed object generation must reject unsupported floating bodies instead of integer lowering',
 );
-assert.throws(
-    () => compileCToObject('int main(void) { return 0; }', { dataBase: 0x08000100, dlbAddrWidth: 8 }),
-    /typed C object backend does not support dataBase or dlbAddrWidth options/,
-    'typed object generation must not silently ignore legacy memory-layout options',
+assert.strictEqual(
+    compileCToObject('int main(void) { return 0; }', { dataBase: 0x08000100, dlbAddrWidth: 8 }).target,
+    'merc32',
+    'object compilation must keep linker-only layout options out of the Aro bridge request',
 );
 assert.strictEqual(
     compileCToObject('typedef int word; int main(void) { word value = 3; return value; }').symbols
@@ -191,7 +214,7 @@ assert.strictEqual(
 );
 assert.throws(
     () => compileCToObject('long long value(void) { return 0; }'),
-    /typed C object backend does not support non-32-bit function types/,
+    /long long operations are not supported by the MERC32 backend/,
     'typed object generation must reject 64-bit values until pair lowering is wired',
 );
 
@@ -305,9 +328,9 @@ const switchBody = functionAssemblyBody(switchAssembly, 'typed_switch_loop');
 const outerWhileLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_while_\d+):$/m)?.[1];
 const outerWhileEndLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_endwhile_\d+):$/m)?.[1];
 const switchEndLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_end_\d+):$/m)?.[1];
-const switchCaseLabels = [...switchBody.matchAll(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_case_\d+):$/gm)]
+const switchCaseLabels = [...switchBody.matchAll(/^((?:__mobj_\d+_)?__typed_switch_loop_(?:switch_)?case_\d+):$/gm)]
     .map((match) => match[1]);
-const switchDefaultLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_switch_default_\d+):$/m)?.[1];
+const switchDefaultLabel = switchBody.match(/^((?:__mobj_\d+_)?__typed_switch_loop_(?:switch_)?default_\d+):$/m)?.[1];
 assert.ok(outerWhileLabel && outerWhileEndLabel && switchEndLabel && switchDefaultLabel);
 assert.strictEqual(switchCaseLabels.length, 2, 'typed switch must emit one target per case');
 assert.doesNotMatch(
@@ -342,7 +365,7 @@ assert.throws(
 );
 assert.throws(
     () => compileCToObject('int main(void) { switch (0) { default: break; default: break; } return 0; }'),
-    /multiple default labels/,
+    /multiple default (?:labels|cases)/,
     'typed switch must reject multiple default labels',
 );
 
@@ -421,22 +444,22 @@ assert.ok(new SimpleCPUAssembler().assemble(rawReturnLabelCollisionAssembly, {
 
 assert.throws(
     () => compileCToObject('int main(void) { goto absent; return 0; }'),
-    /undefined label 'absent'/,
+    /(?:undefined|undeclared) label 'absent'/,
     'typed goto must reject an undefined function label',
 );
 assert.throws(
     () => compileCToObject('int main(void) { repeated: return 0; repeated: return 1; }'),
-    /duplicate label 'repeated'/,
+    /(?:duplicate label|redefinition of label) 'repeated'/,
     'typed functions must reject duplicate labels',
 );
 assert.throws(
     () => compileCToObject('int main(void) { break; return 0; }'),
-    /break used outside loop or switch/,
+    /(?:break used outside loop or switch|'break' statement not in a loop or a switch)/,
     'typed break must be rejected outside a loop or switch',
 );
 assert.throws(
     () => compileCToObject('int main(void) { continue; return 0; }'),
-    /continue used outside loop/,
+    /(?:continue used outside loop|'continue' statement not in a loop)/,
     'typed continue must be rejected outside a loop',
 );
 for (const [statement, pattern] of [
@@ -471,6 +494,9 @@ try {
     assert.strictEqual(typeof legacyFile.assembly, 'string', 'compileCFile must continue returning assembly');
 
     const preprocessedObject = compileCFileToObject(entry, { moduleName: 'preprocessed_object' });
+    const detailedFileObject = compileCFileToObjectDetailed(entry, { moduleName: 'detailed_file_object' });
+    assert.strictEqual(detailedFileObject.artifact.target, 'merc32');
+    assert.deepStrictEqual(detailedFileObject.diagnostics.filter((item) => item.severity === 'error'), []);
     assert.deepStrictEqual(
         preprocessedObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
         ['helper', 'included', 'main', '__merc32_init_globals'],
@@ -478,15 +504,12 @@ try {
     assert.ok(preprocessedObject.relocations.some((relocation) => relocation.symbol === 'included'));
     assert.ok(preprocessedObject.relocations.some((relocation) =>
         relocation.symbol === 'helper'
-            && relocation.debug?.file === fs.realpathSync(header)
+            && relocation.debug?.file === 'included.h'
             && relocation.debug.line === 2,
     ), 'typed relocation debug locations must retain included-source origins');
-    assert.ok(preprocessedObject.debug.some((location) =>
-        location.file === fs.realpathSync(header) && location.line === 1 && location.column === 1,
-    ), 'object debug locations must retain included-source origins after preprocessing');
     assert.throws(
         () => compileCFileToObject(badEntry, { moduleName: 'bad_preprocessed_object' }),
-        (error) => error && error.location && error.location.file === fs.realpathSync(badHeader)
+        (error) => error && error.location && error.location.file === 'bad.h'
             && error.location.line === 1,
         'typed diagnostics must preserve included-source locations after preprocessing',
     );

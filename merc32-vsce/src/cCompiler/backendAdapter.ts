@@ -146,6 +146,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                 if (isUnsupportedBuiltin(record.name)) fail(`${record.name} operations are not supported by the MERC32 backend`, findRange(record, unit), files);
                 break;
         }
+    }
+    for (const record of unit.types) {
+        const shell = shells.get(Number(record.id)) as CType;
         const functionShape = unwrapType(shell);
         if (functionShape.kind === 'function') {
             if (functionShape.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
@@ -180,7 +183,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const node = nodeRecords.get(id); if (!node || node.category !== 'expression') throw new CFrontendInternalError(`node ${id} is not an expression`);
         const typed = node as Extract<TypedNodeRecord, { category: 'expression' }>;
         const type = shells.get(Number(typed.type)); if (!type) throw new CFrontendInternalError(`expression ${id} references unknown type`);
-        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'conditional' || typed.kind === 'string-literal') {
+        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'string-literal') {
             fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
         }
         const operands = Object.freeze(typed.children.map((child) => adaptExpression(Number(child))));
@@ -205,8 +208,12 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*'].includes(typed.operator))) {
             fail(`operator '${'operator' in typed ? typed.operator : String((typed as { kind: string }).kind)}' is not supported by the MERC32 backend`, typed.range, files);
         }
-        if (typed.kind === 'conversion' && !['lvalue-to-rvalue', 'array-to-pointer', 'function-to-pointer', 'integer-promotion', 'usual-arithmetic', 'assignment', 'argument', 'return', 'no-op', 'bitcast', 'pointer-to-bool', 'pointer-to-int', 'bool-to-int', 'int-to-bool', 'int-to-pointer', 'to-void', 'null-to-pointer'].includes(typed.conversion)) {
+        if (typed.kind === 'conversion' && !['lvalue-to-rvalue', 'array-to-pointer', 'function-to-pointer', 'integer-promotion', 'usual-arithmetic', 'assignment', 'argument', 'return', 'no-op', 'bitcast', 'int-cast', 'pointer-to-bool', 'pointer-to-int', 'bool-to-int', 'int-to-bool', 'int-to-pointer', 'to-void', 'null-to-pointer'].includes(typed.conversion)) {
             fail(`conversion '${typed.conversion}' is not supported by the MERC32 backend`, typed.range, files);
+        }
+        if (typed.kind === 'conversion' && typed.conversion === 'int-cast'
+            && typeSize(type) !== typeSize(operands[0].type)) {
+            fail('narrowing or widening integer casts are not supported by the MERC32 backend', typed.range, files);
         }
         if (typed.kind !== 'declaration-reference' && typed.kind !== 'member' && typeSize(type) > 4) {
             fail('aggregate-valued operations are not supported by the MERC32 backend', typed.range, files);
@@ -265,7 +272,10 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         if (symbol.storage === 'automatic' || !symbol.definition) continue;
         if (functionScopedVariables.has(Number(symbol.id))) fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
         const type = shells.get(Number(symbol.type)); if (!type) throw new CFrontendInternalError(`global ${symbol.name} references unknown type`);
-        globals.push({ name: symbol.name, type, ...(symbol.initializer ? { initializer: adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range) } : {}), location: rangeLocation(symbol.range, files) });
+        const initializer = symbol.initializer?.writes.length
+            ? adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range)
+            : undefined;
+        globals.push({ name: symbol.name, type, ...(initializer ? { initializer } : {}), location: rangeLocation(symbol.range, files) });
     }
     const functions: LoweringFunction[] = [];
     for (const symbol of unit.symbols) {

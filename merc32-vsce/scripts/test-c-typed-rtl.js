@@ -5,7 +5,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
-const { compileCToObject, loadRuntimeObjects } = require('../out/cCompiler');
+const { compileCToObjectDetailed, loadRuntimeObjects } = require('../out/cCompiler');
 const { assembleToObject, linkObjects } = require('../out/linker');
 const { SimpleCPUAssembler } = require('../out/assembler');
 
@@ -52,9 +52,14 @@ test_pass:
   mov r9, 0x600D
   cmp r10, r7 == r9
   bz r10, r0 + typed_fail
+  mov r7, 0x600D
   sw [r8], r7
   jmp typed_halt
 typed_fail:
+  mov r6, 0x0800
+  mov r6, r6 << 16
+  mov r6, r6 + 0x03C4
+  sw [r6], r7
   mov r7, 0x0BAD
   sw [r8], r7
 typed_halt:
@@ -63,10 +68,16 @@ typed_halt:
 const startupObject = loadRuntimeObjects().find((object) =>
     object.symbols.some((symbol) => symbol.name === 'startup' && symbol.defined));
 assert(startupObject, 'runtime catalog must provide startup');
+const typedCompile = compileCToObjectDetailed(source, {
+    moduleName: 'typed_rtl', sourceName: 'typed_rtl.c',
+});
+assert.deepStrictEqual(typedCompile.diagnostics.filter((item) => item.severity === 'error'), [],
+    'the Aro object path must reach RTL without frontend diagnostics');
+assert(typedCompile.artifact, 'the detailed Aro object path must produce an artifact');
 const linked = linkObjects([
     startupObject,
     observerObject,
-    compileCToObject(source, { moduleName: 'typed_rtl' }),
+    typedCompile.artifact,
 ], { entrySymbol: 'startup', dataBase: 0x08000000 });
 assert.strictEqual(linked.entryAddress, 0, 'the linked startup wrapper must remain at the reset address');
 const firstUserAddress = startupObject.sections[0].size + observerObject.sections[0].size;

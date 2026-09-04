@@ -1,14 +1,20 @@
-import { CPreprocessOptions, preprocessCFile } from '../cPreprocessor';
-import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResult } from './tinyc';
-import { DebugLocation, Merc32Object } from '../linker/objectFormat';
-import { CFrontendError, SourceLocation } from './source';
-import { CType } from './types';
-import { CInitializer, Expression, Statement, TranslationUnit } from './declarations';
-import { tokenizeC } from './lexer';
-import { parseTranslationUnit } from './parser';
-import { analyzeTranslationUnit } from './sema';
-import { lowerProgram } from './lower';
+import type { CPreprocessOptions } from '../cPreprocessor';
+import type {
+    CCompileDetailedResult,
+    SourceFileRecord,
+    TypedCEnvelopeV1,
+} from '../cFrontend/contract';
+import {
+    CFrontendOptions,
+    getAroFrontend,
+} from '../cFrontend/frontend';
+import { hasErrors, normalizeDiagnostics } from '../cFrontend/validate';
+import { Merc32Object } from '../linker/objectFormat';
+import { adaptTypedUnit, CBackendCapabilityError } from './backendAdapter';
 import { generateObject } from './codegen';
+import { lowerProgram } from './lower';
+import { CFrontendError } from './source';
+import { compileC as compileLegacyC, CompilerError, CompileResult } from './tinyc';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -27,221 +33,125 @@ export * from './codegen';
 export * from './registers';
 export * from '../runtime/runtimeCatalog';
 
-export interface CompileFileOptions extends CompileOptions {
-    preprocess?: CPreprocessOptions;
+export interface BackendCompileOptions {
+    readonly dataBase?: number;
+    readonly dlbAddrWidth?: number;
+    readonly codeBase?: number;
+    readonly moduleName?: string;
+    readonly tempSlots?: number;
 }
 
+export interface CompileOptions extends BackendCompileOptions, CFrontendOptions {}
+
+export interface CompileFileOptions extends CompileOptions {
+    readonly preprocess?: CPreprocessOptions;
+}
+
+export function splitCompileOptions(options: CompileOptions = {}): Readonly<{
+    frontend: CFrontendOptions;
+    backend: BackendCompileOptions;
+}> {
+    const frontend: Record<string, unknown> = {};
+    const backend: Record<string, unknown> = {};
+    copyDefined(options, frontend, [
+        'standard', 'sourceName', 'defines', 'includePaths', 'virtualFiles', 'limits',
+    ] as const);
+    copyDefined(options, backend, [
+        'dataBase', 'dlbAddrWidth', 'codeBase', 'moduleName', 'tempSlots',
+    ] as const);
+    return Object.freeze({
+        frontend: Object.freeze(frontend) as CFrontendOptions,
+        backend: Object.freeze(backend) as BackendCompileOptions,
+    });
+}
+
+function copyDefined<T extends object>(source: T, target: Record<string, unknown>,
+    keys: readonly (keyof T)[]): void {
+    for (const key of keys) {
+        const value = source[key];
+        if (value !== undefined) target[String(key)] = value;
+    }
+}
+
+/** Task 11 switches this assembly-oriented API after the object cutover is gated. */
 export function compileCFile(sourceFile: string, options: CompileFileOptions = {}): CompileResult {
     const { preprocess, ...compileOptions } = options;
+    const { preprocessCFile } = require('../cPreprocessor') as typeof import('../cPreprocessor');
     const preprocessed = preprocessCFile(sourceFile, preprocess);
     try {
         return compileLegacyC(preprocessed.code, compileOptions);
     } catch (error) {
-        throw remapPreprocessedError(error, preprocessed.lineMap);
+        if (!(error instanceof CompilerError) || error.line === undefined) throw error;
+        const location = preprocessed.lineMap[error.line - 1];
+        if (!location) throw error;
+        throw new CompilerError(error.detail, location.line, error.column, location.file);
     }
 }
 
-/** Compile through the typed lexer, parser, semantic analysis, IR, and object backend. */
-export function compileCToObject(source: string, _options: CompileOptions = {}): Merc32Object {
-    const options = _options;
-    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
-        throw new CFrontendError(
-            'typed C object backend does not support dataBase or dlbAddrWidth options',
-            { file: '', line: 1, column: 1 },
-        );
-    }
-    const tokens = tokenizeC(source);
-    rejectUnsupportedTypedLiterals(tokens);
-    const unit = parseTranslationUnit(tokens);
-    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
-    const program = analyzeTranslationUnit(unit);
-    return generateObject(lowerProgram(program));
+export function compileCToObjectDetailed(
+    source: string,
+    options: CompileOptions = {},
+): CCompileDetailedResult<Merc32Object> {
+    const { frontend } = splitCompileOptions(options);
+    return compileEnvelope(getAroFrontend().analyzeSource(source, frontend));
+}
+
+export function compileCFileToObjectDetailed(
+    sourceFile: string,
+    options: CompileFileOptions = {},
+): CCompileDetailedResult<Merc32Object> {
+    const { preprocess, ...compileOptions } = options;
+    const { frontend } = splitCompileOptions(compileOptions);
+    return compileEnvelope(getAroFrontend().analyzeFile(sourceFile, frontend, preprocess));
+}
+
+export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
+    return requireArtifact(compileCToObjectDetailed(source, options));
 }
 
 export function compileCFileToObject(sourceFile: string, options: CompileFileOptions = {}): Merc32Object {
-    const { preprocess, ...compileOptions } = options;
-    const preprocessed = preprocessCFile(sourceFile, preprocess);
+    return requireArtifact(compileCFileToObjectDetailed(sourceFile, options));
+}
+
+function compileEnvelope(envelope: TypedCEnvelopeV1): CCompileDetailedResult<Merc32Object> {
+    const diagnostics = normalizeDiagnostics(envelope.diagnostics);
+    if (envelope.unit === undefined || hasErrors(diagnostics)) {
+        return attachDiagnosticSources({ diagnostics }, envelope.sourceFiles);
+    }
     try {
-        const object = compileCToObjectWithSourceMap(preprocessed.code, compileOptions, preprocessed.lineMap);
-        return {
-            ...object,
-            debug: preprocessed.lineMap.map((location): DebugLocation => ({ ...location, column: 1 })),
-        };
+        const artifact = generateObject(lowerProgram(adaptTypedUnit(envelope.unit)));
+        return attachDiagnosticSources({ artifact, diagnostics }, envelope.unit.sourceFiles);
     } catch (error) {
-        throw remapPreprocessedError(error, preprocessed.lineMap);
+        if (!(error instanceof CBackendCapabilityError)) throw error;
+        const combined = normalizeDiagnostics([...diagnostics, ...error.diagnostics]);
+        return attachDiagnosticSources({ diagnostics: combined }, envelope.unit.sourceFiles);
     }
 }
 
-function compileCToObjectWithSourceMap(
-    source: string,
-    options: CompileOptions,
-    sourceMap: readonly { readonly file: string; readonly line: number }[],
-): Merc32Object {
-    if (options.dataBase !== undefined || options.dlbAddrWidth !== undefined) {
-        throw new CFrontendError(
-            'typed C object backend does not support dataBase or dlbAddrWidth options',
-            { file: sourceMap[0]?.file ?? '', line: sourceMap[0]?.line ?? 1, column: 1 },
-        );
+const diagnosticSources = Symbol('c-frontend diagnostic sources');
+type DetailedWithSources<T> = CCompileDetailedResult<T> & {
+    readonly [diagnosticSources]?: readonly SourceFileRecord[];
+};
+
+function attachDiagnosticSources<T>(result: CCompileDetailedResult<T>,
+    sources: readonly SourceFileRecord[] | undefined): CCompileDetailedResult<T> {
+    if (sources !== undefined) {
+        Object.defineProperty(result, diagnosticSources, { value: sources, enumerable: false });
     }
-    const tokens = tokenizeC(source, sourceMap);
-    rejectUnsupportedTypedLiterals(tokens);
-    const unit = parseTranslationUnit(tokens);
-    validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
-    const program = analyzeTranslationUnit(unit);
-    return generateObject(lowerProgram(program));
+    return Object.freeze(result);
 }
 
-function rejectUnsupportedTypedLiterals(tokens: readonly { readonly kind: string; readonly text: string; readonly location: SourceLocation }[]): void {
-    for (const token of tokens) {
-        if (token.kind !== 'number') continue;
-        if (/[.]/.test(token.text)
-            || /[eE][+-]?\d/.test(token.text)
-            || /[pP][+-]?\d/.test(token.text)
-            || (/[fF]$/.test(token.text) && !/^0[xX]/.test(token.text))) {
-            throw new CFrontendError('typed C object backend does not support floating-point function bodies', token.location);
-        }
-    }
-}
-
-function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocation): void {
-    for (const declaration of unit.declarations) {
-        for (const declarator of declaration.declarators) {
-            if (!declarator.name) continue;
-            if (declaration.kind === 'typedef') continue;
-            if (declarator.type.kind !== 'function') {
-                if (!isSupportedObjectType(declarator.type)) {
-                    throw new CFrontendError(
-                        'typed C object backend does not support this global object type',
-                        declaration.location ?? fallback,
-                    );
-                }
-                if (declarator.initializer) validateTypedInitializer(declarator.initializer, fallback, declarator.type);
-                continue;
-            }
-            if (!declarator.body) continue;
-            if (!isSupportedFunctionType(declarator.type.returnType)
-                || declarator.type.parameters.some(parameter => !isSupportedFunctionType(parameter))) {
-                throw new CFrontendError(
-                    unsupportedTypeMessage(declarator.type.returnType, declarator.type.parameters),
-                    declaration.location ?? fallback,
-                );
-            }
-            validateTypedStatements(declarator.body.statements, fallback);
-        }
-    }
-}
-
-function isSupportedFunctionType(type: CType): boolean {
-    if (type.kind === 'builtin') {
-        return type.name === 'void'
-            || ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
-    }
-    if (type.kind === 'enum') return true;
-    if (type.kind === 'pointer') {
-        return type.pointee.kind === 'function'
-            ? isSupportedFunctionType(type.pointee.returnType)
-                && type.pointee.parameters.every(isSupportedFunctionType)
-            : isSupportedObjectType(type.pointee) || type.pointee.kind === 'builtin' && type.pointee.name === 'void';
-    }
-    return type.kind === 'typedef' && type.target !== undefined && isSupportedFunctionType(type.target);
-}
-
-function isSupportedObjectType(type: CType): boolean {
-    if (type.kind === 'builtin') {
-        return ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long'].includes(type.name);
-    }
-    if (type.kind === 'enum' || type.kind === 'pointer') return true;
-    if (type.kind === 'array') return type.length !== null && isSupportedObjectType(type.element);
-    if (type.kind === 'struct' || type.kind === 'union') return type.fields.length > 0 && type.fields.every(field => isSupportedObjectType(field.type));
-    return type.kind === 'typedef' && type.target !== undefined && isSupportedObjectType(type.target);
-}
-
-function validateTypedStatements(statements: readonly Statement[], fallback: SourceLocation): void {
-    for (const statement of statements) {
-        switch (statement.kind) {
-            case 'compound': validateTypedStatements(statement.statements, statement.location ?? fallback); break;
-            case 'local-declaration':
-                if (!isSupportedObjectType(statement.type)) {
-                    throw new CFrontendError(
-                        isFloatingType(statement.type)
-                            ? 'typed C object backend does not support floating-point function bodies'
-                            : 'typed C object backend does not support non-32-bit function types',
-                        statement.location ?? fallback,
-                    );
-                }
-                if (statement.initializer) validateTypedInitializer(statement.initializer, fallback, statement.type);
-                break;
-            case 'if': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.thenBranch, fallback); if (statement.elseBranch) validateTypedStatement(statement.elseBranch, fallback); break;
-            case 'while': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
-            case 'do-while': validateTypedStatement(statement.body, fallback); validateTypedExpression(statement.test, fallback); break;
-            case 'switch': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
-            case 'case': if (statement.value) validateTypedExpression(statement.value, fallback); validateTypedStatement(statement.statement, fallback); break;
-            case 'for': if (statement.init && 'kind' in statement.init && typeof statement.init.kind === 'string') { if (statement.init.kind === 'local-declaration') validateTypedStatement(statement.init as Statement, fallback); else validateTypedExpression(statement.init as Expression, fallback); } if (statement.test) validateTypedExpression(statement.test, fallback); if (statement.step) validateTypedExpression(statement.step, fallback); validateTypedStatement(statement.body, fallback); break;
-            case 'return': if (statement.expression) validateTypedExpression(statement.expression, fallback); break;
-            case 'expression': validateTypedExpression(statement.expression, fallback); break;
-            case 'label': validateTypedStatement(statement.statement, fallback); break;
-            case 'break': case 'continue': case 'goto': case 'empty': break;
-        }
-    }
-}
-
-function validateTypedInitializer(initializer: CInitializer, fallback: SourceLocation, type?: CType): void {
-    if (initializer.kind === 'string-literal' && type?.kind === 'array'
-        && type.element.kind === 'builtin' && (type.element.name === 'char' || type.element.name === 'unsigned char')) return;
-    if (initializer.kind !== 'initializer') {
-        validateTypedExpression(initializer, fallback);
-        return;
-    }
-    for (const entry of initializer.entries) {
-        for (const designator of entry.designators) {
-            if (designator.kind === 'index-designator') validateTypedExpression(designator.index, fallback);
-        }
-        validateTypedInitializer(entry.value, fallback);
-    }
-}
-
-function unsupportedTypeMessage(returnType: CType, parameters: readonly CType[]): string {
-    return [returnType, ...parameters].some(isFloatingType)
-        ? 'typed C object backend does not support floating-point function bodies'
-        : 'typed C object backend does not support non-32-bit function types';
-}
-
-function isFloatingType(type: CType): boolean {
-    if (type.kind === 'builtin') return type.name === 'float' || type.name === 'double' || type.name === 'long double';
-    return type.kind === 'typedef' && type.target !== undefined && isFloatingType(type.target);
-}
-
-function validateTypedStatement(statement: Statement, fallback: SourceLocation): void {
-    if (statement.kind === 'compound') validateTypedStatements(statement.statements, statement.location ?? fallback);
-    else validateTypedStatements([statement], fallback);
-}
-
-function validateTypedExpression(expression: Expression, fallback: SourceLocation): void {
-    switch (expression.kind) {
-        case 'integer-literal': case 'character-literal': case 'identifier': case 'alignof': break;
-        case 'floating-literal': throw new CFrontendError('typed C object backend does not support floating-point function bodies', expression.location ?? fallback);
-        case 'string-literal': throw new CFrontendError('typed C object backend does not support string literals yet', expression.location ?? fallback);
-        case 'unary': validateTypedExpression(expression.operand, fallback); break;
-        case 'call': validateTypedExpression(expression.callee, fallback); expression.arguments.forEach(argument => validateTypedExpression(argument, fallback)); break;
-        case 'subscript': validateTypedExpression(expression.object, fallback); validateTypedExpression(expression.index, fallback); break;
-        case 'member': validateTypedExpression(expression.object, fallback); break;
-        case 'sizeof': if (expression.expressionOperand) validateTypedExpression(expression.expressionOperand, fallback); break;
-        case 'binary': validateTypedExpression(expression.left, fallback); validateTypedExpression(expression.right, fallback); break;
-        case 'conditional': validateTypedExpression(expression.condition, fallback); validateTypedExpression(expression.consequent, fallback); validateTypedExpression(expression.alternate, fallback); break;
-        case 'assignment': validateTypedExpression(expression.target, fallback); validateTypedExpression(expression.value, fallback); break;
-    }
-}
-
-function remapPreprocessedError(error: unknown, lineMap: readonly { file: string; line: number }[]): unknown {
-    if (!(error instanceof CompilerError) || error.line === undefined) return error;
-    const sourceLocation = lineMap[error.line - 1];
-    if (!sourceLocation) return error;
-    return new CompilerError(error.detail, sourceLocation.line, error.column, sourceLocation.file);
+function requireArtifact<T>(result: CCompileDetailedResult<T>): T {
+    if (result.artifact !== undefined) return result.artifact;
+    const sources = (result as DetailedWithSources<T>)[diagnosticSources];
+    throw new CFrontendError(result.diagnostics, sources);
 }
 
 export { compileLegacyC as compileC };
 export {
     CompilerError,
-    type CompileOptions,
     type CompileResult,
 } from './tinyc';
+
+export type { CCompileDetailedResult, CFrontendDiagnostic } from '../cFrontend/contract';
+export type { CFrontendOptions } from '../cFrontend/frontend';
