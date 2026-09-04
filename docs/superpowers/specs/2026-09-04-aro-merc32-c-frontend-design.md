@@ -198,6 +198,7 @@ The profile is:
 | C type or property | MERC32 definition |
 |---|---:|
 | `CHAR_BIT` | 8 |
+| `_Bool` | 8-bit, align 1 |
 | plain `char` | signed, 8-bit, align 1 |
 | `signed char`, `unsigned char` | 8-bit, align 1 |
 | `short`, `unsigned short` | 16-bit, align 2 |
@@ -211,7 +212,12 @@ The profile is:
 | `enum` | `int` unless a later ABI revision states otherwise |
 | `size_t` | `unsigned int` |
 | `ptrdiff_t` | `int` |
+| `intptr_t`, `uintptr_t` | signed and unsigned `int` |
 | `intmax_t`, `uintmax_t` | signed and unsigned `long long` |
+| `wchar_t` | `int` |
+| `wint_t` | `unsigned int` |
+| `sig_atomic_t` | `int` |
+| `max_align_t` alignment | 4 bytes |
 | byte order | little-endian |
 | maximum natural aggregate alignment | 4 bytes |
 | default function alignment | 4 bytes |
