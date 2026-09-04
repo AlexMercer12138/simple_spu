@@ -39,12 +39,20 @@ interface WasmInstance {
     readonly invoke?: (request: CFrontendRequest) => unknown;
 }
 
+export type HostSourceResolver = (
+    memory: WasmMemory,
+    candidatePointer: number,
+    candidateLength: number,
+    resultPointer: number,
+    resultCapacity: number,
+) => number;
+
 export interface AroWasmHostOptions {
     readonly resourceRoot?: string;
     readonly manifest?: BridgeManifest;
     readonly wasmBytes?: Uint8Array;
     readonly sourceProvider?: SourceProvider;
-    readonly instantiate?: () => WasmInstance;
+    readonly instantiate?: (resolve: HostSourceResolver) => WasmInstance;
 }
 
 const EXPECTED_IMPORTS = Object.freeze([
@@ -101,22 +109,32 @@ function auditModule(module: any): void {
 }
 
 function hasExport(exports: Partial<WasmExports>, name: keyof WasmExports): boolean {
-    return typeof exports[name] === 'function' || name === 'memory';
+    if (name === 'memory') {
+        const memory = exports.memory as { readonly buffer?: unknown } | undefined;
+        const buffer = memory?.buffer as { readonly byteLength?: unknown } | undefined;
+        return typeof buffer?.byteLength === 'number' && Number.isSafeInteger(buffer.byteLength)
+            && buffer.byteLength >= 0;
+    }
+    return typeof exports[name] === 'function';
 }
 
-export type HostSourceResolver = (
-    memory: WasmMemory,
-    candidatePointer: number,
-    candidateLength: number,
-    resultPointer: number,
-    resultCapacity: number,
-) => number;
+function assertExports(value: unknown): asserts value is WasmExports {
+    if (value === null || typeof value !== 'object') {
+        throw new CFrontendInternalError('c-frontend WASM exports are unavailable');
+    }
+    const exports = value as Partial<WasmExports>;
+    for (const name of EXPECTED_EXPORTS) {
+        if (!hasExport(exports, name as keyof WasmExports)) {
+            throw new CFrontendInternalError(`c-frontend WASM export is missing: ${name}`);
+        }
+    }
+}
 
 export class AroWasmHost {
     private readonly resourceRoot: string;
     private readonly suppliedManifest?: BridgeManifest;
     private readonly suppliedWasmBytes?: Uint8Array;
-    private readonly suppliedInstantiate?: () => WasmInstance;
+    private readonly suppliedInstantiate?: (resolve: HostSourceResolver) => WasmInstance;
     private readonly defaultProvider?: SourceProvider;
     private instance?: WasmInstance;
     private active = false;
@@ -141,6 +159,7 @@ export class AroWasmHost {
         this.activeLimits = request.limits;
         try {
             const instance = this.instance ?? (this.instance = this.instantiate());
+            if (instance.invoke === undefined) assertExports(instance.exports);
             const raw = instance.invoke !== undefined
                 ? instance.invoke(request)
                 : this.invoke(instance.exports, request);
@@ -169,7 +188,11 @@ export class AroWasmHost {
     }
 
     private instantiate(): WasmInstance {
-        if (this.suppliedInstantiate !== undefined) return this.suppliedInstantiate();
+        if (this.suppliedInstantiate !== undefined) {
+            return this.suppliedInstantiate((memory, candidatePointer, candidateLength,
+                resultPointer, resultCapacity) => this.resolveSource(
+                memory, candidatePointer, candidateLength, resultPointer, resultCapacity));
+        }
         const manifest = this.manifestValue();
         const wasmPath = path.join(this.resourceRoot, 'aro-merc32.wasm');
         let bytes = this.suppliedWasmBytes;
@@ -205,11 +228,7 @@ export class AroWasmHost {
         }
         if (wasm === undefined) throw new CFrontendInternalError('c-frontend WASM instance is unavailable');
         const exports = wasm.exports as unknown as Partial<WasmExports>;
-        for (const name of EXPECTED_EXPORTS) {
-            if (!hasExport(exports, name as keyof WasmExports)) {
-                throw new CFrontendInternalError(`c-frontend WASM export is missing: ${name}`);
-            }
-        }
+        assertExports(exports);
         const actualBuildId = this.readBuildId(exports as WasmExports);
         if (actualBuildId !== manifest.bridgeBuildId) {
             throw new CFrontendInternalError('c-frontend bridge build ID does not match the build manifest');
@@ -222,8 +241,7 @@ export class AroWasmHost {
 
     private invoke(exports: WasmExports, request: CFrontendRequest): unknown {
         const requestBytes = encoder.encode(JSON.stringify(request));
-        if (requestBytes.length > request.limits.requestBytes
-            || requestBytes.length > HARD_C_FRONTEND_LIMITS.requestBytes) {
+        if (requestBytes.length > HARD_C_FRONTEND_LIMITS.requestBytes) {
             throw new CFrontendInternalError('encoded c-frontend request exceeds requestBytes');
         }
         exports.merc32_reset();
@@ -239,7 +257,12 @@ export class AroWasmHost {
             throw new CFrontendInternalError('c-frontend result exceeds resultBytes');
         }
         const resultPointer = exports.merc32_result_ptr();
-        const result = this.memorySlice(exports.memory, resultPointer, resultLength);
+        let result: Uint8Array;
+        try {
+            result = this.memorySlice(exports.memory, resultPointer, resultLength);
+        } catch (error) {
+            throw new CFrontendInternalError(`c-frontend result buffer is invalid: ${String(error)}`);
+        }
         let text: string;
         try {
             text = decoder.decode(result);
@@ -273,6 +296,7 @@ export class AroWasmHost {
     private resolveSource(memory: WasmMemory, candidatePointer: number, candidateLength: number,
         resultPointer: number, resultCapacity: number): number {
         if (!this.provider) return -1;
+        if (!Number.isSafeInteger(resultCapacity) || resultCapacity < 0) return -2;
         let candidatePath: string;
         try {
             candidatePath = decoder.decode(this.memorySlice(memory, candidatePointer, candidateLength));
@@ -282,7 +306,9 @@ export class AroWasmHost {
         let resolution: SourceResolution;
         try {
             resolution = this.provider.resolve({ path: candidatePath, includeKind: 'quoted' });
-        } catch {
+        } catch (error) {
+            if (error instanceof CFrontendInternalError
+                && error.message === 'Aro frontend call is reentrant') throw error;
             return -2;
         }
         if (resolution.status === 'not-found') return -1;
@@ -292,10 +318,14 @@ export class AroWasmHost {
         if (sourceBytes.length > (this.activeLimits?.fileBytes ?? HARD_C_FRONTEND_LIMITS.fileBytes)) return -2;
         const length = 4 + pathBytes.length + sourceBytes.length;
         if (length > resultCapacity || length > HARD_C_FRONTEND_LIMITS.fileBytes + 4 + pathBytes.length) return -2;
-        const result = this.memorySlice(memory, resultPointer, length);
-        new DataView(result.buffer, result.byteOffset, 4).setUint32(0, pathBytes.length, true);
-        result.set(pathBytes, 4);
-        result.set(sourceBytes, 4 + pathBytes.length);
-        return length;
+        try {
+            const result = this.memorySlice(memory, resultPointer, length);
+            new DataView(result.buffer, result.byteOffset, 4).setUint32(0, pathBytes.length, true);
+            result.set(pathBytes, 4);
+            result.set(sourceBytes, 4 + pathBytes.length);
+            return length;
+        } catch {
+            return -2;
+        }
     }
 }

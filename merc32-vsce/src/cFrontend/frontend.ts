@@ -48,12 +48,21 @@ function normalizeLimit(name: keyof CFrontendLimits, value: number): number {
     return value;
 }
 
+const C_FRONTEND_LIMIT_KEYS: readonly (keyof CFrontendLimits)[] = Object.freeze([
+    'fileBytes', 'totalSourceBytes', 'fileCount', 'includeDepth',
+    'requestBytes', 'resultBytes', 'memoryBytes',
+]);
+
 function normalizeLimits(partial: Partial<CFrontendLimits> | undefined): CFrontendLimits {
     const result = { ...HARD_C_FRONTEND_LIMITS };
     if (partial !== undefined) {
-        for (const key of Object.keys(partial) as (keyof CFrontendLimits)[]) {
-            const value = partial[key];
-            if (value !== undefined) result[key] = normalizeLimit(key, value);
+        for (const key of Object.keys(partial)) {
+            if (!(C_FRONTEND_LIMIT_KEYS as readonly string[]).includes(key)) {
+                throw new CFrontendInternalError(`unknown c-frontend limit: ${key}`);
+            }
+            const limitKey = key as keyof CFrontendLimits;
+            const value = partial[limitKey];
+            if (value !== undefined) result[limitKey] = normalizeLimit(limitKey, value);
         }
     }
     return Object.freeze(result);
@@ -103,10 +112,6 @@ export function makeRequest(source: string, options: CFrontendOptions = {}): CFr
     const includePaths = normalizeIncludePaths(options.includePaths);
     const virtualFiles = normalizeVirtualFiles(options.virtualFiles);
     const limits = normalizeLimits(options.limits);
-    const totalBytes = utf8Length(source) + virtualFiles.reduce((total, file) => total + utf8Length(file.source), 0);
-    if (utf8Length(source) > limits.fileBytes) throw new CFrontendInternalError('source exceeds fileBytes');
-    if (totalBytes > limits.totalSourceBytes) throw new CFrontendInternalError('sources exceed totalSourceBytes');
-    if (virtualFiles.length + 1 > limits.fileCount) throw new CFrontendInternalError('sources exceed fileCount');
     if (virtualFiles.some((file) => file.path === mainPath)) {
         throw new SourceProviderError(`virtual file duplicates main path: ${mainPath}`);
     }
@@ -170,7 +175,12 @@ export class AroFrontendService implements AroFrontend {
             if (!Number.isSafeInteger(depth) || depth < 1 || depth > HARD_C_FRONTEND_LIMITS.includeDepth) {
                 throw new SourceProviderError('maxIncludeDepth must be a finite safe integer in range 1..32');
             }
-            if (mergedLimits.includeDepth === undefined) mergedLimits.includeDepth = depth;
+            if (mergedLimits.includeDepth !== undefined) {
+                normalizeLimit('includeDepth', mergedLimits.includeDepth);
+                mergedLimits.includeDepth = Math.min(mergedLimits.includeDepth, depth);
+            } else {
+                mergedLimits.includeDepth = depth;
+            }
         }
         const request = makeRequest(source, {
             ...options,
@@ -197,6 +207,8 @@ export class AroFrontendService implements AroFrontend {
         }
     }
 }
+
+export const AroFrontend = AroFrontendService;
 
 let singleton: AroFrontend | undefined;
 
