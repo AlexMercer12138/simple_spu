@@ -6,7 +6,11 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { compileCToObject, loadRuntimeObjects } = require('../out/cCompiler');
+const {
+  adaptTypedUnit, compileCToObject, generateObject, loadRuntimeObjects, lowerProgram,
+  structLayout, unionLayout,
+} = require('../out/cCompiler');
+const { getAroFrontend } = require('../out/cFrontend/frontend');
 const legacyFrontend = require('../out/cCompiler/legacyFrontend');
 const { SimpleCPUAssembler } = require('../out/assembler');
 const { assembleToObject, linkObjects } = require('../out/linker');
@@ -80,6 +84,138 @@ function stableObjectView(object) {
     relocations: normalized.relocations,
     ...(normalized.debug === undefined ? {} : { debug: normalized.debug }),
   };
+}
+
+function typeView(type, active = new Set()) {
+  if (!type) return null;
+  if (type.kind === 'typedef') return type.target ? typeView(type.target, active) : { kind: 'unresolved-typedef' };
+  if (active.has(type)) return { kind: 'recursive', type: type.kind, name: type.name };
+  const nested = new Set(active).add(type);
+  const qualifiers = type.qualifiers === undefined ? undefined : { ...type.qualifiers };
+  switch (type.kind) {
+    case 'builtin': return { kind: type.kind, name: type.name, qualifiers };
+    case 'pointer': return { kind: type.kind, pointee: typeView(type.pointee, nested), qualifiers };
+    case 'array': return { kind: type.kind, length: type.length, element: typeView(type.element, nested), qualifiers };
+    case 'function': return {
+      kind: type.kind, returnType: typeView(type.returnType, nested),
+      parameters: type.parameters.map((parameter) => typeView(parameter, nested)),
+      variadic: type.variadic, qualifiers,
+    };
+    case 'struct':
+    case 'union': {
+      const fields = (type.kind === 'struct' ? structLayout(type.fields) : unionLayout(type.fields)).fields;
+      return {
+        kind: type.kind, name: type.name, qualifiers,
+        fields: fields.map((field) => ({
+          name: field.name, offset: field.offset, bitOffset: field.bitOffset, bitWidth: field.bitWidth,
+          type: typeView(field.type, nested),
+        })),
+      };
+    }
+    case 'enum': return {
+      kind: type.kind, name: type.name, qualifiers,
+      values: Object.entries(type.values).sort(([left], [right]) => left === right ? 0 : left < right ? -1 : 1),
+    };
+    default: throw new Error(`cannot canonicalize type '${type.kind}'`);
+  }
+}
+
+function functionSemanticView(func) {
+  const variables = new Map();
+  (func.parameterNames ?? []).forEach((name, index) => variables.set(name, `$parameter${index}`));
+  (func.localNames ?? []).forEach((name, index) => variables.set(name, `$local${index}`));
+  const values = new Map();
+  const labels = new Map();
+  const value = (id) => {
+    if (!values.has(id)) values.set(id, `$value${values.size}`);
+    return values.get(id);
+  };
+  const label = (name) => {
+    if (!labels.has(name)) labels.set(name, `$label${labels.size}`);
+    return labels.get(name);
+  };
+  const variable = (name) => variables.get(name) ?? name;
+  if (func.returnLabel !== undefined) label(func.returnLabel);
+  func.blocks.forEach((block) => label(block.label));
+  const instruction = (item) => {
+    const dest = item.dest === undefined ? undefined : value(item.dest);
+    let args;
+    switch (item.op) {
+      case 'label': args = [label(String(item.args[0]))]; break;
+      case 'jump': args = [label(String(item.args[0]))]; break;
+      case 'branch-zero':
+      case 'branch-nonzero': args = [value(Number(item.args[0])), label(String(item.args[1]))]; break;
+      case 'constant': args = [item.args[0]]; break;
+      case 'load':
+      case 'address-local': args = [variable(String(item.args[0]))]; break;
+      case 'store': args = [variable(String(item.args[0])), value(Number(item.args[1]))]; break;
+      case 'address-symbol': args = [item.args[0]]; break;
+      case 'load-memory': args = [
+        value(Number(item.args[0])), item.args[1], Number(item.args[1]) === 4 ? 0 : item.args[2],
+      ]; break;
+      case 'store-memory': args = [
+        value(Number(item.args[0])), value(Number(item.args[1])), item.args[2],
+      ]; break;
+      case 'move-value': args = [value(Number(item.args[0]))]; break;
+      case 'binary': args = [
+        item.args[0], value(Number(item.args[1])), value(Number(item.args[2])),
+      ]; break;
+      case 'call':
+      case 'runtime-call': args = [item.args[0], ...item.args.slice(1).map((argument) => value(Number(argument)))]; break;
+      case 'call-indirect': args = item.args.map((argument) => value(Number(argument))); break;
+      case 'ret': args = item.args.map((argument) => value(Number(argument))); break;
+      default: throw new Error(`cannot canonicalize IR operation '${item.op}'`);
+    }
+    return { op: item.op, args, ...(dest === undefined ? {} : { dest }) };
+  };
+  return {
+    name: func.name,
+    returnType: typeView(func.returnType),
+    parameters: func.parameters.map((parameter) => typeView(parameter)),
+    localTypes: (func.localTypes ?? []).map((type) => typeView(type)),
+    returnLabel: func.returnLabel === undefined ? undefined : label(func.returnLabel),
+    blocks: func.blocks.map((block) => ({
+      label: label(block.label), instructions: block.instructions.map(instruction),
+    })),
+  };
+}
+
+function moduleSemanticView(module) {
+  return {
+    abi: module.abi,
+    functions: module.functions.map(functionSemanticView),
+    globals: module.globals.map((global) => ({ name: global.name, type: typeView(global.type) })),
+  };
+}
+
+function classifyObjectDifference(legacyCompilation, aroCompilation) {
+  const legacy = normalizeObject(legacyCompilation.object);
+  const aro = normalizeObject(aroCompilation.object);
+  try {
+    assert.deepStrictEqual(aro, legacy);
+    return { equal: true, requiresExecution: false, mode: 'object', details: 'normalized objects match' };
+  } catch {}
+  try {
+    assert.deepStrictEqual(legacyCompilation.object, generateObject(legacyCompilation.module));
+    assert.deepStrictEqual(aroCompilation.object, generateObject(aroCompilation.module));
+    assert.deepStrictEqual(stableObjectView(aroCompilation.object), stableObjectView(legacyCompilation.object));
+    assert.deepStrictEqual(moduleSemanticView(aroCompilation.module), moduleSemanticView(legacyCompilation.module));
+    return {
+      equal: true, requiresExecution: true, mode: 'allocation-only',
+      details: 'text differs only after canonical IR value, local binding, and label allocation',
+    };
+  } catch (error) {
+    return { equal: false, requiresExecution: false, mode: 'object', details: String(error) };
+  }
+}
+
+function compileAroForDifferential(source, sourceName) {
+  const object = compileCToObject(source, { sourceName });
+  const envelope = getAroFrontend().analyzeSource(source, { sourceName });
+  if (!envelope.unit) {
+    throw new Error(`Aro witness compilation failed: ${envelope.diagnostics.map((item) => item.message).join('\n')}`);
+  }
+  return { object, module: lowerProgram(adaptTypedUnit(envelope.unit)) };
 }
 
 function createRtlRunner() {
@@ -163,17 +299,17 @@ function compareOverlapCorpus() {
     return fixtures.map((fixture) => {
     const source = fs.readFileSync(path.join(overlapRoot, fixture), 'utf8');
     legacyFrontend.resetLegacyFrontendInvocationCount();
-    let legacyObject;
-    let aroObject;
+    let legacyCompilation;
+    let aroCompilation;
     let legacyFailure;
     let aroFailure;
     try {
-      legacyObject = legacyFrontend.compileLegacyCToObject(source);
+      legacyCompilation = legacyFrontend.compileLegacyCForDifferential(source);
     } catch (error) {
       legacyFailure = error;
     }
     try {
-      aroObject = compileCToObject(source, { sourceName: fixture });
+      aroCompilation = compileAroForDifferential(source, fixture);
     } catch (error) {
       aroFailure = error;
     }
@@ -184,23 +320,19 @@ function compareOverlapCorpus() {
         details: `legacy: ${legacyFailure?.stack ?? 'ok'}\nAro: ${aroFailure?.stack ?? 'ok'}`,
       };
     }
-    const legacy = normalizeObject(legacyObject);
-    const aro = normalizeObject(aroObject);
-    try {
-      assert.deepStrictEqual(aro, legacy);
-      return { fixture, equal: true, legacyInvocations, mode: 'object', details: 'normalized objects match' };
-    } catch (error) {
-      try {
-        assert.deepStrictEqual(stableObjectView(aroObject), stableObjectView(legacyObject));
-      } catch (shapeError) {
-        return { fixture, equal: false, legacyInvocations, mode: 'object', details: String(shapeError) };
-      }
+    const classification = classifyObjectDifference(legacyCompilation, aroCompilation);
+    if (!classification.equal) {
+      return { fixture, legacyInvocations, ...classification };
+    }
+    if (!classification.requiresExecution) {
+      return { fixture, legacyInvocations, ...classification };
+    }
       const expected = expectedResults[fixture];
       if (expected === undefined) {
         return { fixture, equal: false, legacyInvocations, mode: 'rtl', details: 'missing expected result' };
       }
-      const legacyWords = linkFixture(legacyObject, expected, `${fixture}-legacy`);
-      const aroWords = linkFixture(aroObject, expected, `${fixture}-aro`);
+      const legacyWords = linkFixture(legacyCompilation.object, expected, `${fixture}-legacy`);
+      const aroWords = linkFixture(aroCompilation.object, expected, `${fixture}-aro`);
       if (JSON.stringify(legacyWords) === JSON.stringify(aroWords)) {
         return { fixture, equal: true, legacyInvocations, mode: 'machine-words', details: 'linked machine words match' };
       }
@@ -216,7 +348,6 @@ function compareOverlapCorpus() {
           ? `text differs; both frontends produced RTL result ${expected}`
           : `legacy: ${legacyRun.output}\nAro: ${aroRun.output}`,
       };
-    }
     });
   } finally {
     runner?.close();
@@ -234,4 +365,6 @@ if (require.main === module) {
   else console.log(`${results.length} overlap fixtures matched (${results.map((result) => result.mode).join(', ')})`);
 }
 
-module.exports = { compareOverlapCorpus, normalizeObject, stableObjectView };
+module.exports = {
+  classifyObjectDifference, compareOverlapCorpus, moduleSemanticView, normalizeObject, stableObjectView,
+};

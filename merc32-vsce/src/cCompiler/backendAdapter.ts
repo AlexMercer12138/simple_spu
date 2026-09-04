@@ -12,6 +12,8 @@ import { CFrontendInternalError } from '../cFrontend/validate';
 import { SourceLocation } from './source';
 import {
     CType,
+    isIntegerType,
+    isScalarType,
     typeAlignment,
     typeSize,
 } from './types';
@@ -205,8 +207,16 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         };
         if ((typed.kind === 'binary' && !['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(typed.operator))
             || (typed.kind === 'assignment' && typed.operator !== '=')
-            || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*'].includes(typed.operator))) {
+            || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*', 'parentheses', 'cast'].includes(typed.operator))) {
             fail(`operator '${'operator' in typed ? typed.operator : String((typed as { kind: string }).kind)}' is not supported by the MERC32 backend`, typed.range, files);
+        }
+        if (typed.kind === 'unary' && typed.operator === 'parentheses'
+            && (type !== operands[0].type || typed.valueCategory !== operands[0].valueCategory)) {
+            fail('parenthesized expressions must preserve type and value category', typed.range, files);
+        }
+        if (typed.kind === 'unary' && typed.operator === 'cast'
+            && !isSupportedIdentityCast(operands[0].type, type)) {
+            fail('narrowing or widening explicit casts are not supported by the MERC32 backend', typed.range, files);
         }
         if (typed.kind === 'conversion' && !['lvalue-to-rvalue', 'array-to-pointer', 'function-to-pointer', 'integer-promotion', 'usual-arithmetic', 'assignment', 'argument', 'return', 'no-op', 'bitcast', 'int-cast', 'pointer-to-bool', 'pointer-to-int', 'bool-to-int', 'int-to-bool', 'int-to-pointer', 'to-void', 'null-to-pointer'].includes(typed.conversion)) {
             fail(`conversion '${typed.conversion}' is not supported by the MERC32 backend`, typed.range, files);
@@ -342,6 +352,21 @@ function unwrapType(type: CType): CType {
         current = current.target;
     }
     return current;
+}
+
+function isSupportedIdentityCast(source: CType, target: CType): boolean {
+    source = unwrapType(source);
+    target = unwrapType(target);
+    if (!isScalarType(source) || !isScalarType(target)) return false;
+    if (typeSize(source) > 4 || typeSize(source) !== typeSize(target)) return false;
+    if (target.kind === 'builtin' && target.name === '_Bool'
+        && !(source.kind === 'builtin' && source.name === '_Bool')) return false;
+    const sourceInteger = isIntegerType(source);
+    const targetInteger = isIntegerType(target);
+    return sourceInteger && targetInteger
+        || sourceInteger && target.kind === 'pointer'
+        || source.kind === 'pointer' && targetInteger
+        || source.kind === 'pointer' && target.kind === 'pointer';
 }
 
 function localBinding(symbol: TypedSymbolRecord): string | undefined {

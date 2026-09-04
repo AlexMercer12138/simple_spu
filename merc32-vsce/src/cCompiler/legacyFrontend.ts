@@ -8,19 +8,28 @@ import { parseTranslationUnit } from './parser';
 import { analyzeTranslationUnit } from './sema';
 import { lowerProgram } from './lower';
 import { generateObject } from './codegen';
+import { Merc32Module } from './ir';
 import type { CompileOptions } from './tinyc';
 
 let invocationCount = 0;
 
 /** Temporary handwritten frontend entry point for the explicit differential harness only. */
 export function compileLegacyCToObject(source: string, options: CompileOptions = {}): Merc32Object {
+    return compileLegacyCForDifferential(source, options).object;
+}
+
+export function compileLegacyCForDifferential(source: string, options: CompileOptions = {}): Readonly<{
+    object: Merc32Object;
+    module: Merc32Module;
+}> {
     invocationCount += 1;
     rejectObjectLayoutOptions(options, { file: '', line: 1, column: 1 });
     const tokens = tokenizeC(source);
     rejectUnsupportedTypedLiterals(tokens);
     const unit = parseTranslationUnit(tokens);
     validateTypedObjectSubset(unit, tokens[0]?.location ?? { file: '', line: 1, column: 1 });
-    return generateObject(lowerProgram(analyzeTranslationUnit(unit)));
+    const module = lowerProgram(analyzeTranslationUnit(unit));
+    return Object.freeze({ object: generateObject(module), module });
 }
 
 /** Temporary handwritten file entry point for differential diagnostics only. */

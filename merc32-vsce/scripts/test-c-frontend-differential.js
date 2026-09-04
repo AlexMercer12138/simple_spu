@@ -8,6 +8,40 @@ const { spawnSync } = require('child_process');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const differential = require('./c-frontend-differential');
+const { generateObject } = require('../out/cCompiler');
+
+const intType = Object.freeze({
+  kind: 'builtin', name: 'int',
+  qualifiers: Object.freeze({ const: false, volatile: false, restrict: false, atomic: false }),
+});
+const witness = Object.freeze({
+  abi: 'merc32-c-v1', globals: Object.freeze([]),
+  functions: Object.freeze([Object.freeze({
+    name: 'tamper_probe', returnType: intType, parameters: Object.freeze([]),
+    parameterNames: Object.freeze([]), localNames: Object.freeze([]), localTypes: Object.freeze([]),
+    blocks: Object.freeze([Object.freeze({
+      label: 'tamper_probe.entry', instructions: Object.freeze([
+        Object.freeze({ op: 'constant', args: Object.freeze([3]), dest: 0 }),
+        Object.freeze({ op: 'ret', args: Object.freeze([0]) }),
+      ]),
+    })]),
+  })]),
+});
+const untampered = generateObject(witness);
+const tampered = JSON.parse(JSON.stringify(untampered));
+const textSection = tampered.sections.find((section) => section.name === 'text');
+textSection.content = textSection.content.replace('mov r4, 3', 'mov r4, 4');
+assert.notStrictEqual(textSection.content,
+  untampered.sections.find((section) => section.name === 'text').content,
+  'the corruption probe must alter one non-label instruction');
+const corruption = differential.classifyObjectDifference(
+  { object: untampered, module: witness },
+  { object: tampered, module: witness },
+);
+assert.strictEqual(corruption.equal, false,
+  'non-label instruction drift must not reach result-only RTL comparison');
+assert.strictEqual(corruption.requiresExecution, false,
+  'a corrupted object must be rejected before either RTL execution');
 
 const results = differential.compareOverlapCorpus();
 assert.deepStrictEqual(results.map((result) => result.fixture), [

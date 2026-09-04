@@ -38,8 +38,15 @@ int pointer_distance(void) {
     int values[4];
     return &values[3] - values;
 }
+int parenthesized_expression(void) {
+    return (1 + 2);
+}
+unsigned int cast_identity(int value) {
+    return (unsigned int)value;
+}
 int main(void) {
-    test_pass(five(1, 2, 3, 4, 5) + scalar_expression(3) + memory_expression(4) + pointer_distance() + 24561);
+    test_pass(five(1, 2, 3, 4, 5) + scalar_expression(3) + memory_expression(4)
+        + pointer_distance() + parenthesized_expression() + cast_identity(7) + 24551);
     return 0;
 }
 `;

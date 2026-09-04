@@ -44,6 +44,25 @@ const detailedObject = compileCToObjectDetailed('int main(void) { return 3; }', 
 });
 assert.strictEqual(detailedObject.artifact.target, 'merc32');
 assert.deepStrictEqual(detailedObject.diagnostics.filter((item) => item.severity === 'error'), []);
+for (const [name, expression] of [
+    ['parentheses', '(1 + 2)'],
+    ['same-width explicit cast', '(unsigned int)value'],
+]) {
+    const parameters = name === 'parentheses' ? 'void' : 'int value';
+    const result = compileCToObjectDetailed(`unsigned int probe(${parameters}) { return ${expression}; }`, {
+        sourceName: `${name.replaceAll(' ', '-')}.c`,
+    });
+    assert(result.artifact, `${name} must compile through the real Aro WASM object path`);
+    assert.deepStrictEqual(result.diagnostics.filter((item) => item.severity === 'error'), []);
+}
+const narrowingCast = compileCToObjectDetailed(
+    'unsigned char probe(int value) { return (unsigned char)value; }',
+    { sourceName: 'narrowing-cast.c' },
+);
+assert.strictEqual(narrowingCast.artifact, undefined);
+assert(narrowingCast.diagnostics.some((item) => item.code === 'C_BACKEND_CAPABILITY'
+    && /narrowing or widening explicit casts/u.test(item.message)),
+    'unsupported-width explicit casts must return a backend capability diagnostic');
 const split = splitCompileOptions({
     sourceName: 'main.c', defines: { VALUE: '3' }, includePaths: ['include'],
     dataBase: 0x08000000, dlbAddrWidth: 16, codeBase: 0, moduleName: 'split', tempSlots: 9,
