@@ -12,17 +12,23 @@ export function generateObject(module: Merc32Module): Merc32Object {
     { name: 'text', alignment: 4, size: emitted.size, content: emitted.assembly },
   ];
   const symbols = [...emitted.symbols];
+  const emittedDataRelocations: Relocation[] = [];
   const data: number[] = [];
   let dataAlignment = 1;
   let bssSize = 0;
   let bssAlignment = 1;
   for (const global of module.globals) {
     const alignment = typeAlignment(global.type);
-    if (global.initializer) {
+    const initializer = global.initializerBytes ?? global.initializer;
+    if (initializer) {
       dataAlignment = Math.max(dataAlignment, alignment);
       while (data.length < alignUp(data.length, alignment)) data.push(0);
-      symbols.push({ name: global.name, binding: 'global', section: 'data', offset: data.length, defined: true });
-      data.push(...global.initializer);
+      const dataOffset = data.length;
+      symbols.push({ name: global.name, binding: 'global', section: 'data', offset: dataOffset, defined: true });
+      data.push(...initializer);
+      for (const relocation of global.initializerRelocations ?? []) {
+        emittedDataRelocations.push({ ...relocation, section: 'data', offset: dataOffset + relocation.offset });
+      }
     } else {
       bssAlignment = Math.max(bssAlignment, alignment);
       bssSize = alignUp(bssSize, alignment);
@@ -38,7 +44,7 @@ export function generateObject(module: Merc32Module): Merc32Object {
     abi: module.abi,
     sections,
     symbols,
-    relocations: emitted.relocations,
+    relocations: [...emitted.relocations, ...emittedDataRelocations],
   };
 }
 

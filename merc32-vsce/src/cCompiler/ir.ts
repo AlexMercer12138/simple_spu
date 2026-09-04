@@ -1,9 +1,16 @@
 import { CType } from './types';
+import { DebugLocation, Relocation } from '../linker/objectFormat';
 import { SourceLocation } from './source';
 
 export type IRValue = number | string;
 export interface IRInstruction { readonly op: string; readonly args: readonly IRValue[]; readonly dest?: number; readonly location?: SourceLocation; }
 export interface IRBlock { readonly label: string; readonly instructions: readonly IRInstruction[]; }
 export interface IRFunction { readonly name: string; readonly returnType?: CType; readonly parameters: readonly CType[]; readonly parameterNames?: readonly string[]; readonly localNames?: readonly string[]; readonly localTypes?: readonly CType[]; readonly returnLabel?: string; readonly blocks: readonly IRBlock[]; }
-export interface IRGlobal { readonly name: string; readonly type: CType; readonly initializer?: readonly number[]; }
+export interface IRGlobal {
+    readonly name: string;
+    readonly type: CType;
+    readonly initializer?: readonly number[];
+    readonly initializerBytes?: readonly number[];
+    readonly initializerRelocations?: readonly Readonly<Relocation & { debug?: DebugLocation }>[];
+}
 export interface Merc32Module { readonly abi: 'merc32-c-v1'; readonly functions: readonly IRFunction[]; readonly globals: readonly IRGlobal[]; }

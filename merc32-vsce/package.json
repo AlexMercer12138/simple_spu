@@ -342,6 +342,7 @@
     "test:c:preprocessor": "npm run compile && node scripts/test-c-preprocessor.js",
     "test:c:frontend-contract": "npm run compile && node scripts/test-c-frontend-contract.js",
     "test:c:frontend-host": "npm run compile && node scripts/test-c-frontend-host.js",
+    "test:c:frontend-backend": "npm run compile && node scripts/test-c-frontend-backend.js",
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
     "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
     "test:flash-image": "npm run compile && node scripts/test-flash-image.js",

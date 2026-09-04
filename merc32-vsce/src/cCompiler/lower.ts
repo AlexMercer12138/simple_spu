@@ -1,496 +1,157 @@
-import { AnalyzedProgram, evaluateIntegerConstantExpression } from './sema';
-import { CInitializer, Expression, Statement, TranslationUnit } from './declarations';
-import { CType, pointerType, structLayout, typeAlignment, typeSize, unionLayout } from './types';
+import { Relocation } from '../linker/objectFormat';
 import { IRBlock, IRFunction, IRGlobal, IRInstruction, Merc32Module } from './ir';
-import { lowerInitializer } from './initializers';
+import { CType, pointerType, typeAlignment, typeSize } from './types';
+import { LoweringExpression, LoweringFunction, LoweringGlobal, LoweringProgram, LoweringStatement } from './loweringModel';
+import { lowerProgram as lowerLegacyProgram } from './legacyLower';
 
-export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32Module {
-  const unit = 'unit' in program ? program.unit : program;
-  const expressionTypes = 'expressionTypes' in program ? program.expressionTypes : new Map<Expression, CType>();
-  const occupiedSymbols = new Set<string>();
-  for (const declaration of unit.declarations) {
-    for (const declarator of declaration.declarators) {
-      if (declarator.name) occupiedSymbols.add(declarator.name);
-    }
-  }
-  const occupiedLabels = new Set(occupiedSymbols);
-  const globalTypes = new Map<string, CType>();
-  const globals: IRGlobal[] = [];
-  for (const declaration of unit.declarations) {
-    for (const declarator of declaration.declarators) {
-      if (declarator.name && declarator.type.kind !== 'function' && declaration.kind !== 'typedef') {
-        globalTypes.set(declarator.name, declarator.type);
-        const initializer = declarator.initializer
-          ? encodeStaticInitializer(declarator.type, declarator.initializer)
-          : undefined;
-        globals.push({ name: declarator.name, type: declarator.type, ...(initializer ? { initializer } : {}) });
-      }
-    }
-  }
-  const functions: IRFunction[] = [];
-  for (const declaration of unit.declarations) {
-    for (const declarator of declaration.declarators) {
-      if (!declarator.name || declarator.type.kind !== 'function' || !declarator.body) continue;
-      const parameters = new Map((declarator.parameters ?? [])
-        .filter(parameter => parameter.name)
-        .map(parameter => [parameter.name!, parameter.type]));
-      const lowerer = new FunctionLowerer(declarator.name, occupiedLabels, expressionTypes, globalTypes, parameters);
-      declarator.body.statements.forEach(statement => lowerer.lowerStatement(statement));
-      if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') {
-        const zero = lowerer.constant(0);
-        lowerer.instructions.push({ op: 'ret', args: [zero] });
-      }
-      const block: IRBlock = { label: `${declarator.name}.entry`, instructions: lowerer.instructions };
-      functions.push({
-        name: declarator.name,
-        returnType: declarator.type.returnType,
-        parameters: declarator.type.parameters,
-        parameterNames: (declarator.parameters ?? []).map(parameter => parameter.name ?? ''),
-        localNames: lowerer.localNames,
-        localTypes: lowerer.localTypes,
-        returnLabel: lowerer.returnLabel(),
-        blocks: [block],
-      });
-    }
-  }
-  const initializerName = '__merc32_init_globals';
-  if (occupiedSymbols.has(initializerName)) throw new Error(`reserved compiler symbol '${initializerName}' is already defined`);
-  functions.push(createGlobalInitializer(initializerName, globals));
-  return {
-    abi: 'merc32-c-v1',
-    functions,
-    globals,
-  };
+export function lowerProgram(program: LoweringProgram): Merc32Module;
+export function lowerProgram(program: unknown): Merc32Module;
+export function lowerProgram(program: unknown): Merc32Module {
+    if (isLoweringProgram(program)) return lowerTypedProgram(program);
+    return lowerLegacyProgram(program as never);
 }
 
-function encodeStaticInitializer(type: CType, initializer: CInitializer): readonly number[] {
-  const normalized = lowerInitializer(type, initializer, evaluateIntegerConstantExpression);
-  const bytes = new Uint8Array(normalized.size);
-  for (const write of normalized.writes) {
-    const size = typeSize(write.type);
-    if (size !== 1 && size !== 2 && size !== 4) {
-      throw new Error(`typed global initializer does not support ${size}-byte values`);
+function isLoweringProgram(value: unknown): value is LoweringProgram {
+    return !!value && typeof value === 'object' && (value as { abi?: unknown }).abi === 'merc32-c-v1'
+        && Array.isArray((value as { functions?: unknown }).functions);
+}
+
+function lowerTypedProgram(program: LoweringProgram): Merc32Module {
+    const globals = program.globals.map(lowerGlobal);
+    const functions = program.functions.map((func) => lowerFunction(func));
+    if ([...globals, ...functions].some((item) => item.name === '__merc32_init_globals')) {
+        throw new Error("reserved compiler symbol '__merc32_init_globals' is already defined");
     }
-    const bits = evaluateIntegerConstantExpression(write.value) >>> 0;
-    for (let index = 0; index < size; index++) {
-      bytes[write.offset + index] = (bits >>> (index * 8)) & 0xff;
+    functions.push(createGlobalInitializer('__merc32_init_globals', globals));
+    return { abi: program.abi, functions, globals };
+}
+
+function lowerGlobal(global: LoweringGlobal): IRGlobal {
+    if (!global.initializer) return { name: global.name, type: global.type };
+    const bytes = new Uint8Array(global.initializer.size);
+    const relocations: Relocation[] = [];
+    for (const write of global.initializer.writes) {
+        const size = typeSize(write.type);
+        if (write.offset < 0 || write.offset + size > bytes.length) throw new Error(`initializer write for '${global.name}' is out of bounds`);
+        if (typeof write.value === 'bigint') {
+            if (![1, 2, 4].includes(size)) throw new Error(`initializer does not support ${size}-byte integer values`);
+            let value = write.value; const modulus = 1n << BigInt(size * 8); if (value < 0) value = (value + modulus) % modulus;
+            for (let i = 0; i < size; i++) bytes[write.offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
+        } else if ('symbol' in write.value) {
+            if (size !== 4) throw new Error(`address initializer requires a 4-byte pointer, got ${size}`);
+            relocations.push({ section: 'data', offset: write.offset, kind: 'ABS32', symbol: write.value.symbol, addend: Number(write.value.addend), debug: write.location });
+        } else {
+            if (write.offset + write.value.bytes.length > bytes.length) throw new Error(`string initializer for '${global.name}' is out of bounds`);
+            write.value.bytes.forEach((value, index) => { bytes[write.offset + index] = value; });
+        }
     }
-  }
-  return [...bytes];
+    return { name: global.name, type: global.type, initializerBytes: [...bytes], initializerRelocations: relocations };
 }
 
 function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IRFunction {
-  const instructions: IRInstruction[] = [];
-  let nextValue = 0;
-  for (const global of globals) {
-    const base = nextValue++;
-    instructions.push({ op: 'address-symbol', args: [global.name], dest: base });
-    const bytes = global.initializer ?? Array.from({ length: typeSize(global.type) }, () => 0);
-    for (let offset = 0; offset < bytes.length; offset++) {
-      let address = base;
-      if (offset !== 0) {
-        const offsetValue = nextValue++;
-        instructions.push({ op: 'constant', args: [offset], dest: offsetValue });
-        address = nextValue++;
-        instructions.push({ op: 'binary', args: ['+', base, offsetValue], dest: address });
-      }
-      const value = nextValue++;
-      instructions.push({ op: 'constant', args: [bytes[offset]], dest: value });
-      instructions.push({ op: 'store-memory', args: [address, value, 1] });
+    const instructions: IRInstruction[] = []; let nextValue = 0;
+    for (const global of globals) {
+        const base = nextValue++; instructions.push({ op: 'address-symbol', args: [global.name], dest: base });
+        const bytes = global.initializerBytes ?? global.initializer ?? Array.from({ length: typeSize(global.type) }, () => 0);
+        bytes.forEach((byte, offset) => {
+            let address = base;
+            if (offset !== 0) { const off = nextValue++; instructions.push({ op: 'constant', args: [offset], dest: off }); address = nextValue++; instructions.push({ op: 'binary', args: ['+', base, off], dest: address }); }
+            const value = nextValue++; instructions.push({ op: 'constant', args: [byte], dest: value }, { op: 'store-memory', args: [address, value, 1] });
+        });
     }
-  }
-  const zero = nextValue++;
-  instructions.push({ op: 'constant', args: [0], dest: zero });
-  instructions.push({ op: 'ret', args: [zero] });
-  return {
-    name,
-    parameters: [],
-    parameterNames: [],
-    localNames: [],
-    localTypes: [],
-    blocks: [{ label: `${name}.entry`, instructions }],
-  };
+    const zero = nextValue++; instructions.push({ op: 'constant', args: [0], dest: zero }, { op: 'ret', args: [zero] });
+    return { name, parameters: [], parameterNames: [], localNames: [], localTypes: [], blocks: [{ label: `${name}.entry`, instructions }] };
+}
+
+function lowerFunction(func: LoweringFunction): IRFunction {
+    const lowerer = new FunctionLowerer(func);
+    lowerer.lowerStatement(func.body);
+    if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') lowerer.instructions.push({ op: 'ret', args: [lowerer.constant(0)] });
+    return { name: func.name, returnType: func.returnType, parameters: func.parameters, parameterNames: func.parameterNames, localNames: lowerer.localNames, localTypes: lowerer.localTypes, returnLabel: lowerer.returnLabel(), blocks: [{ label: `${func.name}.entry`, instructions: lowerer.instructions }] };
 }
 
 class FunctionLowerer {
-  readonly instructions: IRInstruction[] = [];
-  readonly localNames: string[] = [];
-  readonly localTypes: CType[] = [];
-  private nextValue = 0;
-  private nextLabel = 0;
-  private breakLabels: string[] = [];
-  private continueLabels: string[] = [];
-  private switchCaseLabels: Map<Extract<Statement, { kind: 'case' }>, string>[] = [];
-  private readonly userLabels = new Map<string, string>();
-  constructor(
-    private readonly functionName: string,
-    private readonly occupiedLabels: Set<string>,
-    private readonly expressionTypes: ReadonlyMap<Expression, CType>,
-    private readonly globalTypes: ReadonlyMap<string, CType>,
-    private readonly parameterTypes: ReadonlyMap<string, CType>,
-  ) {}
-
-  lowerStatement(statement: Statement): void {
-    switch (statement.kind) {
-      case 'compound':
-        statement.statements.forEach(child => this.lowerStatement(child));
-        return;
-      case 'local-declaration': {
-        this.localNames.push(statement.name);
-        this.localTypes.push(statement.type);
-        if (statement.initializer) {
-          if (statement.initializer.kind === 'initializer') {
-            throw new Error('typed code generation does not yet support local initializer lists');
-          }
-          this.instructions.push({ op: 'store', args: [statement.name, this.lowerExpression(statement.initializer)], location: statement.location });
-        }
-        return;
-      }
-      case 'expression':
-        this.lowerExpression(statement.expression);
-        return;
-      case 'return':
-        this.instructions.push({ op: 'ret', args: [statement.expression ? this.lowerExpression(statement.expression) : this.constant(0)], location: statement.location });
-        return;
-      case 'if': {
-        const elseLabel = this.label('else'); const endLabel = this.label('endif');
-        const test = this.lowerExpression(statement.test); this.instructions.push({ op:'branch-zero', args:[test, elseLabel], location:statement.location });
-        this.lowerStatement(statement.thenBranch); this.instructions.push({ op:'jump', args:[endLabel] }); this.instructions.push({ op:'label', args:[elseLabel] });
-        if (statement.elseBranch) this.lowerStatement(statement.elseBranch); this.instructions.push({ op:'label', args:[endLabel] }); return;
-      }
-      case 'while': {
-        const start = this.label('while'); const end = this.label('endwhile');
-        this.instructions.push({ op:'label', args:[start] }); const test = this.lowerExpression(statement.test); this.instructions.push({ op:'branch-zero', args:[test, end] });
-        this.breakLabels.push(end); this.continueLabels.push(start); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
-        this.instructions.push({ op:'jump', args:[start] }, { op:'label', args:[end] }); return;
-      }
-      case 'do-while': {
-        const body = this.label('do_body'); const condition = this.label('do_condition'); const end = this.label('enddo');
-        this.instructions.push({ op:'label', args:[body] });
-        this.breakLabels.push(end); this.continueLabels.push(condition); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
-        this.instructions.push({ op:'label', args:[condition] }); const test = this.lowerExpression(statement.test); this.instructions.push({ op:'branch-nonzero', args:[test, body] }, { op:'label', args:[end] }); return;
-      }
-      case 'switch': {
-        const end = this.label('switch_end');
-        const entries = this.collectSwitchCases(statement.body);
-        const labels = new Map(entries.map(entry => [entry.statement, entry.label]));
-        const defaultEntry = entries.find(entry => entry.statement.value === undefined);
-        const test = this.lowerExpression(statement.test);
-        for (const entry of entries) {
-          if (entry.statement.value === undefined) continue;
-          const value = this.constant(evaluateIntegerConstantExpression(entry.statement.value), entry.statement.location);
-          const matches = this.allocateValue();
-          this.instructions.push({ op:'binary', args:['==', test, value], dest:matches, location:entry.statement.location });
-          this.instructions.push({ op:'branch-nonzero', args:[matches, entry.label], location:entry.statement.location });
-        }
-        this.instructions.push({ op:'jump', args:[defaultEntry?.label ?? end] });
-        this.breakLabels.push(end); this.switchCaseLabels.push(labels); this.lowerStatement(statement.body); this.switchCaseLabels.pop(); this.breakLabels.pop();
-        this.instructions.push({ op:'label', args:[end] }); return;
-      }
-      case 'case': {
-        const label = this.switchCaseLabels[this.switchCaseLabels.length - 1]?.get(statement);
-        if (!label) throw new Error(`${statement.value ? 'case' : 'default'} label used outside switch`);
-        this.instructions.push({ op:'label', args:[label] }); this.lowerStatement(statement.statement); return;
-      }
-      case 'goto':
-        this.instructions.push({ op:'jump', args:[this.userLabel(statement.label)], location:statement.location }); return;
-      case 'label':
-        this.instructions.push({ op:'label', args:[this.userLabel(statement.label)], location:statement.location }); this.lowerStatement(statement.statement); return;
-      case 'empty':
-        return;
-      case 'for': {
-        if (statement.init) (statement.init as Statement).kind === 'local-declaration' ? this.lowerStatement(statement.init as Statement) : this.lowerExpression(statement.init as Expression);
-        const start = this.label('for'); const step = this.label('for_step'); const end = this.label('endfor'); this.instructions.push({ op:'label', args:[start] });
-        if (statement.test) { const test = this.lowerExpression(statement.test); this.instructions.push({ op:'branch-zero', args:[test, end] }); }
-        this.breakLabels.push(end); this.continueLabels.push(step); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop();
-        this.instructions.push({ op:'label', args:[step] }); if (statement.step) this.lowerExpression(statement.step); this.instructions.push({ op:'jump', args:[start] }, { op:'label', args:[end] }); return;
-      }
-      case 'break': {
-        const label = this.breakLabels[this.breakLabels.length - 1];
-        if (!label) throw new Error('break used outside loop or switch');
-        this.instructions.push({ op:'jump', args:[label] }); return;
-      }
-      case 'continue': {
-        const label = this.continueLabels[this.continueLabels.length - 1];
-        if (!label) throw new Error('continue used outside loop');
-        this.instructions.push({ op:'jump', args:[label] }); return;
-      }
+    readonly instructions: IRInstruction[] = [];
+    readonly localNames: string[] = [];
+    readonly localTypes: CType[] = [];
+    private nextValue = 0;
+    private nextLabel = 0;
+    private readonly breakLabels: string[] = [];
+    private readonly continueLabels: string[] = [];
+    private readonly switchCases: Array<Map<LoweringStatement, string>> = [];
+    private readonly userLabels = new Map<string, string>();
+    private readonly variables = new Map<string, CType>();
+    public constructor(private readonly func: LoweringFunction) {
+        func.parameterNames.forEach((name, index) => { if (name) this.variables.set(name, func.parameters[index]); });
     }
-  }
-
-  private collectSwitchCases(statement: Statement): { statement: Extract<Statement, { kind: 'case' }>; label: string }[] {
-    const entries: { statement: Extract<Statement, { kind: 'case' }>; label: string }[] = [];
-    const collect = (current: Statement): void => {
-      switch (current.kind) {
-        case 'compound': current.statements.forEach(collect); return;
-        case 'if': collect(current.thenBranch); if (current.elseBranch) collect(current.elseBranch); return;
-        case 'while': case 'do-while': case 'for': collect(current.body); return;
-        case 'switch': return;
-        case 'label': collect(current.statement); return;
-        case 'case':
-          entries.push({ statement: current, label: this.label(current.value ? 'switch_case' : 'switch_default') });
-          collect(current.statement);
-          return;
-        case 'local-declaration': case 'expression': case 'return': case 'break': case 'continue': case 'goto': case 'empty': return;
-      }
-    };
-    collect(statement);
-    return entries;
-  }
-
-  private lowerExpression(expression: Expression): number {
-    switch (expression.kind) {
-      case 'integer-literal':
-      case 'character-literal':
-        return this.constant(expression.value, expression.location);
-      case 'identifier': {
-        const type = this.typeOf(expression);
-        if (this.unwrapped(type).kind === 'array' || this.unwrapped(type).kind === 'function') {
-          return this.lowerLValueAddress(expression);
+    public lowerStatement(statement: LoweringStatement): void {
+        switch (statement.kind) {
+            case 'compound': statement.statements.forEach((child) => this.lowerStatement(child)); return;
+            case 'declaration': this.localNames.push(statement.name); this.localTypes.push(statement.type); this.variables.set(statement.name, statement.type); if (statement.initializer && !('size' in statement.initializer)) this.instructions.push({ op: 'store', args: [statement.name, this.lowerExpression(statement.initializer)], location: statement.location }); return;
+            case 'expression': this.lowerExpression(statement.expression); return;
+            case 'return': this.instructions.push({ op: 'ret', args: [statement.expression ? this.lowerExpression(statement.expression) : this.constant(0)], location: statement.location }); return;
+            case 'if': { const other = this.label('else'); const end = this.label('endif'); const test = this.lowerExpression(statement.test); this.instructions.push({ op: 'branch-zero', args: [test, other], location: statement.location }); this.lowerStatement(statement.thenBranch); this.instructions.push({ op: 'jump', args: [end] }, { op: 'label', args: [other] }); if (statement.elseBranch) this.lowerStatement(statement.elseBranch); this.instructions.push({ op: 'label', args: [end] }); return; }
+            case 'while': { const start = this.label('while'); const end = this.label('endwhile'); this.instructions.push({ op: 'label', args: [start] }); const test = this.lowerExpression(statement.test); this.instructions.push({ op: 'branch-zero', args: [test, end] }); this.breakLabels.push(end); this.continueLabels.push(start); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop(); this.instructions.push({ op: 'jump', args: [start] }, { op: 'label', args: [end] }); return; }
+            case 'do-while': { const body = this.label('do_body'); const condition = this.label('do_condition'); const end = this.label('enddo'); this.instructions.push({ op: 'label', args: [body] }); this.breakLabels.push(end); this.continueLabels.push(condition); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop(); this.instructions.push({ op: 'label', args: [condition] }); const test = this.lowerExpression(statement.test); this.instructions.push({ op: 'branch-nonzero', args: [test, body] }, { op: 'label', args: [end] }); return; }
+            case 'for': { if (statement.init) isStatement(statement.init) ? this.lowerStatement(statement.init) : this.lowerExpression(statement.init); const start = this.label('for'); const step = this.label('for_step'); const end = this.label('endfor'); this.instructions.push({ op: 'label', args: [start] }); if (statement.test) { const test = this.lowerExpression(statement.test); this.instructions.push({ op: 'branch-zero', args: [test, end] }); } this.breakLabels.push(end); this.continueLabels.push(step); this.lowerStatement(statement.body); this.continueLabels.pop(); this.breakLabels.pop(); this.instructions.push({ op: 'label', args: [step] }); if (statement.step) this.lowerExpression(statement.step); this.instructions.push({ op: 'jump', args: [start] }, { op: 'label', args: [end] }); return; }
+            case 'switch': { const end = this.label('switch_end'); const entries = collectCases(statement.body, (prefix) => this.label(prefix)); const labels = new Map(entries.map((entry) => [entry.statement, entry.label])); const test = this.lowerExpression(statement.test); entries.filter((entry) => entry.statement.kind === 'case').forEach((entry) => { const value = this.constant(Number((entry.statement as Extract<LoweringStatement, { kind: 'case' }>).value)); const match = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['==', test, value], dest: match }, { op: 'branch-nonzero', args: [match, entry.label] }); }); this.instructions.push({ op: 'jump', args: [entries.find((entry) => entry.statement.kind === 'default')?.label ?? end] }); this.breakLabels.push(end); this.switchCases.push(labels); this.lowerStatement(statement.body); this.switchCases.pop(); this.breakLabels.pop(); this.instructions.push({ op: 'label', args: [end] }); return; }
+            case 'case': case 'default': { const label = this.switchCases[this.switchCases.length - 1]?.get(statement); if (!label) throw new Error('case/default label used outside switch'); this.instructions.push({ op: 'label', args: [label] }); this.lowerStatement(statement.statement); return; }
+            case 'goto': this.instructions.push({ op: 'jump', args: [this.userLabel(statement.label)], location: statement.location }); return;
+            case 'label': this.instructions.push({ op: 'label', args: [this.userLabel(statement.label)], location: statement.location }); this.lowerStatement(statement.statement!); return;
+            case 'break': { const target = this.breakLabels[this.breakLabels.length - 1]; if (!target) throw new Error('break used outside loop or switch'); this.instructions.push({ op: 'jump', args: [target] }); return; }
+            case 'continue': { const target = this.continueLabels[this.continueLabels.length - 1]; if (!target) throw new Error('continue used outside loop'); this.instructions.push({ op: 'jump', args: [target] }); return; }
+            case 'empty': return;
         }
-        return this.loadLValue(expression, type);
-      }
-      case 'assignment': {
-        const value = this.lowerExpression(expression.value);
-        const targetType = this.typeOf(expression.target);
-        if (expression.target.kind === 'identifier' && !this.globalTypes.has(expression.target.name)) {
-          this.instructions.push({ op: 'store', args: [expression.target.name, value], location: expression.location });
-        } else {
-          const address = this.lowerLValueAddress(expression.target);
-          this.instructions.push({ op: 'store-memory', args: [address, value, typeSize(targetType)], location: expression.location });
-        }
-        return value;
-      }
-      case 'binary': {
-        if (expression.operator === '&&' || expression.operator === '||') return this.lowerLogical(expression);
-        let left = this.lowerExpression(expression.left);
-        let right = this.lowerExpression(expression.right);
-        const leftType = this.decayedType(this.typeOf(expression.left));
-        const rightType = this.decayedType(this.typeOf(expression.right));
-        if (expression.operator === '-' && leftType.kind === 'pointer' && rightType.kind === 'pointer') {
-          const byteDifference = this.allocateValue();
-          this.instructions.push({ op: 'binary', args: ['-', left, right], dest: byteDifference, location: expression.location });
-          const elementSize = typeSize(leftType.pointee);
-          if (elementSize === 1) return byteDifference;
-          const scale = this.constant(elementSize, expression.location);
-          const elementDifference = this.allocateValue();
-          this.instructions.push({ op: 'binary', args: ['/', byteDifference, scale], dest: elementDifference, location: expression.location });
-          return elementDifference;
-        }
-        if ((expression.operator === '+' || expression.operator === '-') && leftType.kind === 'pointer') {
-          right = this.scalePointerOffset(right, typeSize(leftType.pointee), expression.location);
-        } else if (expression.operator === '+' && rightType.kind === 'pointer') {
-          left = this.scalePointerOffset(left, typeSize(rightType.pointee), expression.location);
-        }
-        const dest = this.allocateValue();
-        this.instructions.push({ op: 'binary', args: [expression.operator, left, right], dest, location: expression.location });
-        return dest;
-      }
-      case 'call': {
-        const args = expression.arguments.map(argument => this.lowerExpression(argument));
-        const dest = this.allocateValue();
-        const calleeType = this.unwrapped(this.typeOf(expression.callee));
-        if (expression.callee.kind === 'identifier' && calleeType.kind === 'function') {
-          this.instructions.push({ op: 'call', args: [expression.callee.name, ...args], dest, location: expression.location });
-        } else {
-          const callee = this.lowerExpression(expression.callee);
-          this.instructions.push({ op: 'call-indirect', args: [callee, ...args], dest, location: expression.location });
-        }
-        return dest;
-      }
-      case 'unary': {
-        if (expression.operator === '&') return this.lowerLValueAddress(expression.operand);
-        if (expression.operator === '*') return this.loadLValue(expression, this.typeOf(expression));
-        const operand = this.lowerExpression(expression.operand);
-        if (expression.operator === '+') return operand;
-        const right = expression.operator === '~' ? this.constant(-1, expression.location) : operand;
-        const left = expression.operator === '-' ? this.constant(0, expression.location) : operand;
-        const operator = expression.operator === '-' ? '-'
-          : expression.operator === '!' ? '=='
-            : expression.operator === '~' ? '^' : undefined;
-        if (!operator) throw new Error(`typed code generation does not yet support unary '${expression.operator}'`);
-        const comparisonRight = expression.operator === '!' ? this.constant(0, expression.location) : right;
-        const dest = this.allocateValue();
-        this.instructions.push({ op: 'binary', args: [operator, left, comparisonRight], dest, location: expression.location });
-        return dest;
-      }
-      case 'sizeof': {
-        if (!expression.typeOperand) throw new Error('typed code generation does not yet support sizeof expressions');
-        return this.constant(typeSize(expression.typeOperand), expression.location);
-      }
-      case 'alignof':
-        return this.constant(typeAlignment(expression.typeOperand), expression.location);
-      case 'subscript':
-      case 'member':
-        return this.loadLValue(expression, this.typeOf(expression));
-      case 'conditional': {
-        const result = this.allocateValue();
-        const alternateLabel = this.label('conditional_alternate');
-        const endLabel = this.label('conditional_end');
-        const condition = this.lowerExpression(expression.condition);
-        this.instructions.push({ op: 'branch-zero', args: [condition, alternateLabel], location: expression.location });
-        const consequent = this.lowerExpression(expression.consequent);
-        this.instructions.push({ op: 'move-value', args: [consequent], dest: result, location: expression.consequent.location });
-        this.instructions.push({ op: 'jump', args: [endLabel] });
-        this.instructions.push({ op: 'label', args: [alternateLabel] });
-        const alternate = this.lowerExpression(expression.alternate);
-        this.instructions.push({ op: 'move-value', args: [alternate], dest: result, location: expression.alternate.location });
-        this.instructions.push({ op: 'label', args: [endLabel] });
-        return result;
-      }
-      case 'floating-literal':
-      case 'string-literal':
-        throw new Error(`typed code generation does not yet support '${expression.kind}' expressions`);
     }
-  }
-
-  private typeOf(expression: Expression): CType {
-    const type = this.expressionTypes.get(expression);
-    if (type) return type;
-    if (expression.kind === 'identifier') {
-      const known = this.parameterTypes.get(expression.name) ?? this.globalTypes.get(expression.name);
-      if (known) return known;
-    }
-    throw new Error(`typed lowering is missing the type of '${expression.kind}' expression`);
-  }
-
-  private unwrapped(type: CType): CType {
-    let current = type;
-    const seen = new Set<CType>();
-    while (current.kind === 'typedef' && current.target && !seen.has(current)) {
-      seen.add(current);
-      current = current.target;
-    }
-    return current;
-  }
-
-  private decayedType(type: CType): CType {
-    const unwrapped = this.unwrapped(type);
-    if (unwrapped.kind === 'array') return pointerType(unwrapped.element);
-    if (unwrapped.kind === 'function') return pointerType(unwrapped);
-    return unwrapped;
-  }
-
-  private loadLValue(expression: Expression, type: CType): number {
-    const unwrapped = this.unwrapped(type);
-    if (unwrapped.kind === 'array' || unwrapped.kind === 'function') return this.lowerLValueAddress(expression);
-    const size = typeSize(unwrapped);
-    if (size > 4) throw new Error('typed code generation does not yet support aggregate values');
-    const address = this.lowerLValueAddress(expression);
-    const dest = this.allocateValue();
-    const signed = unwrapped.kind === 'builtin' && (unwrapped.name === 'char' || unwrapped.name === 'short');
-    this.instructions.push({ op: 'load-memory', args: [address, size, signed ? 1 : 0], dest, location: expression.location });
-    return dest;
-  }
-
-  private lowerLValueAddress(expression: Expression): number {
-    switch (expression.kind) {
-      case 'identifier': {
-        const dest = this.allocateValue();
-        if (this.globalTypes.has(expression.name) || this.unwrapped(this.typeOf(expression)).kind === 'function') {
-          this.instructions.push({ op: 'address-symbol', args: [expression.name], dest, location: expression.location });
-        } else {
-          this.instructions.push({ op: 'address-local', args: [expression.name], dest, location: expression.location });
+    private lowerExpression(expression: LoweringExpression): number {
+        if (expression.constant !== undefined) { if (typeof expression.constant === 'bigint') return this.constant(Number(expression.constant), expression.location); if ('symbol' in expression.constant) { const address = this.addressSymbol(expression.constant.symbol); if (expression.constant.addend !== 0n) return this.addAddressOffset(address, this.constant(Number(expression.constant.addend), expression.location), expression.location); return address; } throw new Error('string expression constants are not scalar values'); }
+        switch (expression.kind) {
+            case 'declaration-reference': case 'identifier': if (expression.valueCategory === 'function' || expression.type.kind === 'function') return this.addressSymbol(expression.symbol ?? ''); return this.loadLValue(expression);
+            case 'conversion': { const value = this.lowerExpression(expression.operands[0]); if (expression.conversion === 'pointer-to-bool' || expression.conversion === 'int-to-bool') { const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['!=', value, this.constant(0, expression.location)], dest: result, location: expression.location }); return result; } return value; }
+            case 'unary': if (expression.operator === '&') return this.lowerLValueAddress(expression.operands[0]); if (expression.operator === '*') return this.loadLValue(expression); { const value = this.lowerExpression(expression.operands[0]); if (expression.operator === '+') return value; const result = this.allocateValue(); const operator = expression.operator === '-' ? '-' : expression.operator === '!' ? '==' : '^'; const right = expression.operator === '~' ? this.constant(-1, expression.location) : expression.operator === '!' ? this.constant(0, expression.location) : value; const left = expression.operator === '-' ? this.constant(0, expression.location) : value; this.instructions.push({ op: 'binary', args: [operator, left, right], dest: result, location: expression.location }); return result; }
+            case 'binary': if (expression.operator === '&&' || expression.operator === '||') return this.lowerLogical(expression); { let left = this.lowerExpression(expression.operands[0]); let right = this.lowerExpression(expression.operands[1]); const leftType = decay(expression.operands[0].type); const rightType = decay(expression.operands[1].type); if ((expression.operator === '+' || expression.operator === '-') && leftType.kind === 'pointer') right = this.scalePointerOffset(right, typeSize(leftType.pointee), expression.location); else if (expression.operator === '+' && rightType.kind === 'pointer') left = this.scalePointerOffset(left, typeSize(rightType.pointee), expression.location); if (expression.operator === '-' && leftType.kind === 'pointer' && rightType.kind === 'pointer') { const difference = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['-', left, right], dest: difference, location: expression.location }); const size = typeSize(leftType.pointee); if (size !== 1) return this.divideBy(difference, size, expression.location); return difference; } const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: [expression.operator ?? '', left, right], dest: result, location: expression.location }); return result; }
+            case 'assignment': { const value = this.lowerExpression(expression.operands[1]); const target = expression.operands[0]; this.instructions.push({ op: 'store-memory', args: [this.lowerLValueAddress(target), value, typeSize(target.type)], location: expression.location }); return value; }
+            case 'call': { const callee = expression.operands[0]; const args = expression.operands.slice(1).map((operand) => this.lowerExpression(operand)); const dest = this.allocateValue(); if (callee.symbol) this.instructions.push({ op: 'call', args: [callee.symbol, ...args], dest, location: expression.location }); else this.instructions.push({ op: 'call-indirect', args: [this.lowerExpression(callee), ...args], dest, location: expression.location }); return dest; }
+            case 'subscript': case 'member': return this.loadLValue(expression);
+            case 'sizeof': case 'alignof': return this.constant(Number(expression.constant ?? 0n), expression.location);
+            default: throw new Error(`typed lowering does not support '${expression.kind}'`);
         }
-        return dest;
-      }
-      case 'unary':
-        if (expression.operator === '*') return this.lowerExpression(expression.operand);
-        break;
-      case 'subscript': {
-        const object = this.lowerExpression(expression.object);
-        const index = this.lowerExpression(expression.index);
-        const offset = this.scalePointerOffset(index, typeSize(this.typeOf(expression)), expression.location);
-        return this.addAddressOffset(object, offset, expression.location);
-      }
-      case 'member': {
-        let base = expression.indirect ? this.lowerExpression(expression.object) : this.lowerLValueAddress(expression.object);
-        const objectType = this.unwrapped(this.typeOf(expression.object));
-        const aggregate = expression.indirect && objectType.kind === 'pointer' ? this.unwrapped(objectType.pointee) : objectType;
-        if (aggregate.kind !== 'struct' && aggregate.kind !== 'union') throw new Error('member address requires an aggregate type');
-        const layout = aggregate.kind === 'struct' ? structLayout(aggregate.fields) : unionLayout(aggregate.fields);
-        const field = layout.fields.find(candidate => candidate.name === expression.member);
-        if (!field) throw new Error(`aggregate has no member '${expression.member}'`);
-        if (field.offset !== 0) base = this.addAddressOffset(base, this.constant(field.offset, expression.location), expression.location);
-        return base;
-      }
     }
-    throw new Error(`typed code generation cannot take the address of '${expression.kind}'`);
-  }
-
-  private scalePointerOffset(value: number, size: number, location?: IRInstruction['location']): number {
-    if (size === 1) return value;
-    const scale = this.constant(size, location);
-    const dest = this.allocateValue();
-    this.instructions.push({ op: 'binary', args: ['*', value, scale], dest, location });
-    return dest;
-  }
-
-  private addAddressOffset(base: number, offset: number, location?: IRInstruction['location']): number {
-    const dest = this.allocateValue();
-    this.instructions.push({ op: 'binary', args: ['+', base, offset], dest, location });
-    return dest;
-  }
-
-  private lowerLogical(expression: Extract<Expression, { kind:'binary' }>): number {
-    const result = this.allocateValue(); const trueLabel = this.label('logic_true'); const falseLabel = this.label('logic_false'); const endLabel = this.label('logic_end');
-    const left = this.lowerExpression(expression.left);
-    if (expression.operator === '&&') { this.instructions.push({ op:'branch-zero', args:[left, falseLabel] }); const right = this.lowerExpression(expression.right); this.instructions.push({ op:'branch-zero', args:[right, falseLabel] }, { op:'jump', args:[trueLabel] }); }
-    else { this.instructions.push({ op:'branch-nonzero', args:[left, trueLabel] }); const right = this.lowerExpression(expression.right); this.instructions.push({ op:'branch-nonzero', args:[right, trueLabel] }, { op:'jump', args:[falseLabel] }); }
-    this.instructions.push({ op:'label', args:[trueLabel] }, { op:'constant', args:[1], dest:result }, { op:'jump', args:[endLabel] }, { op:'label', args:[falseLabel] }, { op:'constant', args:[0], dest:result }, { op:'label', args:[endLabel] });
-    return result;
-  }
-
-  returnLabel(): string { return this.generatedLabel('return'); }
-
-  private label(prefix: string): string { return this.generatedLabel(`${prefix}_${this.nextLabel++}`); }
-
-  private userLabel(label: string): string {
-    const existing = this.userLabels.get(label);
-    if (existing) return existing;
-    const generated = this.allocateLabel(`__${this.functionName.length}_${this.functionName}_user_${label.length}_${label}`);
-    this.userLabels.set(label, generated);
-    return generated;
-  }
-
-  private generatedLabel(suffix: string): string {
-    return this.allocateLabel(`__${this.functionName}_${suffix}`);
-  }
-
-  private allocateLabel(base: string): string {
-    let candidate = base;
-    let serial = 0;
-    while (this.occupiedLabels.has(candidate)) {
-      candidate = `${base}_generated_${serial++}`;
-    }
-    this.occupiedLabels.add(candidate);
-    return candidate;
-  }
-
-  constant(value: number, location?: IRInstruction['location']): number {
-    const dest = this.allocateValue();
-    this.instructions.push({ op: 'constant', args: [value], dest, location });
-    return dest;
-  }
-
-  private allocateValue(): number {
-    return this.nextValue++;
-  }
+    private loadLValue(expression: LoweringExpression): number { const result = this.allocateValue(); const type = expression.type; const size = typeSize(type); this.instructions.push({ op: 'load-memory', args: [this.lowerLValueAddress(expression), size, isSigned(type) ? 1 : 0], dest: result, location: expression.location }); return result; }
+    private lowerLValueAddress(expression: LoweringExpression): number { if (expression.kind === 'declaration-reference' || expression.kind === 'identifier') return expression.symbol && this.variables.has(expression.symbol) ? this.addressLocal(expression.symbol) : this.addressSymbol(expression.symbol ?? ''); if (expression.kind === 'unary' && expression.operator === '*') return this.lowerExpression(expression.operands[0]); if (expression.kind === 'subscript') { const element = expression.type; return this.addAddressOffset(this.lowerExpression(expression.operands[0]), this.scalePointerOffset(this.lowerExpression(expression.operands[1]), typeSize(element), expression.location), expression.location); } if (expression.kind === 'member') { const base = expression.operands[0].type.kind === 'pointer' ? this.lowerExpression(expression.operands[0]) : this.lowerLValueAddress(expression.operands[0]); return expression.memberOffset ? this.addAddressOffset(base, this.constant(expression.memberOffset, expression.location), expression.location) : base; } throw new Error(`typed lowering cannot take the address of '${expression.kind}'`); }
+    private addressLocal(name: string): number { const result = this.allocateValue(); this.instructions.push({ op: 'address-local', args: [name], dest: result }); return result; }
+    private addressSymbol(name: string): number { const result = this.allocateValue(); this.instructions.push({ op: 'address-symbol', args: [name], dest: result }); return result; }
+    private addAddressOffset(base: number, offset: number, location: IRInstruction['location']): number { const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['+', base, offset], dest: result, location }); return result; }
+    private scalePointerOffset(value: number, size: number, location: IRInstruction['location']): number { if (size === 1) return value; const scale = this.constant(size, location); const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['*', value, scale], dest: result, location }); return result; }
+    private divideBy(value: number, size: number, location: IRInstruction['location']): number { if (size === 1) return value; const scale = this.constant(size, location); const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['/', value, scale], dest: result, location }); return result; }
+    private lowerLogical(expression: LoweringExpression): number { const result = this.allocateValue(); const yes = this.label('logic_true'); const no = this.label('logic_false'); const end = this.label('logic_end'); const left = this.lowerExpression(expression.operands[0]); if (expression.operator === '&&') { this.instructions.push({ op: 'branch-zero', args: [left, no] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-zero', args: [right, no] }, { op: 'jump', args: [yes] }); } else { this.instructions.push({ op: 'branch-nonzero', args: [left, yes] }); const right = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'branch-nonzero', args: [right, yes] }, { op: 'jump', args: [no] }); } this.instructions.push({ op: 'label', args: [yes] }, { op: 'constant', args: [1], dest: result }, { op: 'jump', args: [end] }, { op: 'label', args: [no] }, { op: 'constant', args: [0], dest: result }, { op: 'label', args: [end] }); return result; }
+    public returnLabel(): string { return this.label('return'); }
+    private label(prefix: string): string { return `__${this.func.name}_${prefix}_${this.nextLabel++}`; }
+    private allocateValue(): number { return this.nextValue++; }
+    public constant(value: number, location?: IRInstruction['location']): number { const dest = this.allocateValue(); this.instructions.push({ op: 'constant', args: [value], dest, location }); return dest; }
+    private userLabel(label: string): string { const existing = this.userLabels.get(label); if (existing) return existing; const generated = `__${this.func.name}_user_${label}`; this.userLabels.set(label, generated); return generated; }
 }
 
+function isStatement(value: LoweringExpression | LoweringStatement): value is LoweringStatement {
+    return ['compound', 'declaration', 'expression', 'return', 'if', 'while', 'do-while', 'for', 'switch', 'case', 'default', 'break', 'continue', 'goto', 'label', 'empty'].includes(value.kind);
+}
+function collectCases(statement: LoweringStatement, makeLabel: (prefix: string) => string): Array<{ statement: LoweringStatement; label: string }> { const entries: Array<{ statement: LoweringStatement; label: string }> = []; const visit = (current: LoweringStatement): void => { if (current.kind === 'compound') current.statements.forEach(visit); else if (current.kind === 'case' || current.kind === 'default') { entries.push({ statement: current, label: makeLabel(current.kind) }); visit(current.statement); } else if (current.kind === 'if') { visit(current.thenBranch); if (current.elseBranch) visit(current.elseBranch); } else if ('body' in current && current.body) visit(current.body); }; visit(statement); return entries; }
+function isSigned(type: CType): boolean { return type.kind === 'builtin' && ['_Bool', 'char', 'signed char', 'short', 'int', 'long'].includes(type.name); }
+function decay(type: CType): CType { return type.kind === 'array' ? pointerType(type.element) : type.kind === 'function' ? pointerType(type) : type; }
+
 export function lowerAggregateArgument(type: CType, source: string, destination: string) {
-  return { op: 'copy', args: [source, destination, type.kind] as const };
+    return { op: 'copy', args: [source, destination, type.kind] as const };
 }
 
 const FLOAT_SUFFIX: Record<'float' | 'double', string> = { float: 'sf3', double: 'df3' };
 const FLOAT_OPS: Record<string, string> = { add: 'add', sub: 'sub', mul: 'mul', div: 'div', compare: 'cmp' };
 
 export function lowerFloatOperation(operation: keyof typeof FLOAT_OPS, precision: 'float' | 'double' = 'float') {
-  const op = FLOAT_OPS[operation];
-  if (!op) throw new Error(`unsupported floating operation '${String(operation)}'`);
-  return { op: 'runtime-call', args: [`__${op}${FLOAT_SUFFIX[precision]}`] as const };
+    const op = FLOAT_OPS[operation];
+    if (!op) throw new Error(`unsupported floating operation '${String(operation)}'`);
+    return { op: 'runtime-call', args: [`__${op}${FLOAT_SUFFIX[precision]}`] as const };
 }
 
 export function lowerAggregateReturn(type: CType) {
-  return { op: 'sret-return', type, hiddenParameter: 'sret' as const };
+    return { op: 'sret-return', type, hiddenParameter: 'sret' as const };
 }

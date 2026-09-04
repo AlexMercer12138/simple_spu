@@ -21,6 +21,8 @@ export * from './sema';
 export * from './initializers';
 export * from './ir';
 export * from './lower';
+export * from './loweringModel';
+export * from './backendAdapter';
 export * from './codegen';
 export * from './registers';
 export * from '../runtime/runtimeCatalog';

@@ -1,5 +1,5 @@
 export type BuiltinTypeName =
-    | 'void' | 'char' | 'unsigned char' | 'short' | 'unsigned short'
+    | 'void' | '_Bool' | 'char' | 'signed char' | 'unsigned char' | 'short' | 'unsigned short'
     | 'int' | 'unsigned int' | 'long' | 'unsigned long'
     | 'long long' | 'unsigned long long' | 'float' | 'double' | 'long double';
 
@@ -7,6 +7,7 @@ export interface TypeQualifiers {
     readonly const: boolean;
     readonly volatile: boolean;
     readonly restrict: boolean;
+    readonly atomic: boolean;
 }
 
 export interface TypeBase {
@@ -33,21 +34,24 @@ export interface FunctionType extends TypeBase {
     readonly parameters: readonly CType[];
     readonly variadic: boolean;
 }
-export interface StructField { readonly name: string; readonly type: CType; }
+export interface StructField { readonly name: string; readonly type: CType; readonly offset?: number; readonly bitOffset?: number; readonly bitWidth?: number; }
 export interface StructType extends TypeBase {
     readonly kind: 'struct';
     readonly name?: string;
     readonly fields: readonly StructField[];
+    readonly nominalId?: number;
 }
 export interface UnionType extends TypeBase {
     readonly kind: 'union';
     readonly name?: string;
     readonly fields: readonly StructField[];
+    readonly nominalId?: number;
 }
 export interface EnumType extends TypeBase {
     readonly kind: 'enum';
     readonly name?: string;
     readonly values: Readonly<Record<string, number>>;
+    readonly nominalId?: number;
 }
 export interface TypedefType extends TypeBase {
     readonly kind: 'typedef';
@@ -57,13 +61,14 @@ export interface TypedefType extends TypeBase {
 
 export type CType = BuiltinType | PointerType | ArrayType | FunctionType | StructType | UnionType | EnumType | TypedefType;
 
-const noQualifiers: TypeQualifiers = Object.freeze({ const: false, volatile: false, restrict: false });
+const noQualifiers: TypeQualifiers = Object.freeze({ const: false, volatile: false, restrict: false, atomic: false });
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 function qualifiers(value?: Partial<TypeQualifiers>): TypeQualifiers {
     return freeze({
         const: value?.const === true,
         volatile: value?.volatile === true,
         restrict: value?.restrict === true,
+        atomic: value?.atomic === true,
     });
 }
 
@@ -81,10 +86,10 @@ export function functionType(returnType: CType, parameters: readonly CType[] = [
     return freeze({ kind: 'function', returnType, parameters: Object.freeze([...parameters]), variadic, qualifiers: qualifiers(typeQualifiers) }) as FunctionType;
 }
 export function structType(fields: readonly StructField[] = [], name?: string, typeQualifiers?: Partial<TypeQualifiers>): StructType {
-    return freeze({ kind: 'struct', name, fields: Object.freeze(fields.map(field => freeze({ name: field.name, type: field.type }))), qualifiers: qualifiers(typeQualifiers) }) as StructType;
+    return freeze({ kind: 'struct', name, fields: Object.freeze(fields.map(field => freeze({ ...field }))), qualifiers: qualifiers(typeQualifiers) }) as StructType;
 }
 export function unionType(fields: readonly StructField[] = [], name?: string, typeQualifiers?: Partial<TypeQualifiers>): UnionType {
-    return freeze({ kind: 'union', name, fields: Object.freeze(fields.map(field => freeze({ name: field.name, type: field.type }))), qualifiers: qualifiers(typeQualifiers) }) as UnionType;
+    return freeze({ kind: 'union', name, fields: Object.freeze(fields.map(field => freeze({ ...field }))), qualifiers: qualifiers(typeQualifiers) }) as UnionType;
 }
 export function enumType(values: Readonly<Record<string, number>> = {}, name?: string, typeQualifiers?: Partial<TypeQualifiers>): EnumType {
     return freeze({ kind: 'enum', name, values: freeze({ ...values }), qualifiers: qualifiers(typeQualifiers) }) as EnumType;
@@ -111,7 +116,7 @@ export function enumUnderlyingType(_type: EnumType): BuiltinType { return builti
 
 export function typeSize(type: CType): number {
     switch (type.kind) {
-        case 'builtin': return ({ void: 0, char: 1, 'unsigned char': 1, short: 2, 'unsigned short': 2, int: 4, 'unsigned int': 4, long: 4, 'unsigned long': 4, 'long long': 8, 'unsigned long long': 8, float: 4, double: 8, 'long double': 8 } as Record<BuiltinTypeName, number>)[type.name];
+        case 'builtin': return ({ void: 0, _Bool: 1, char: 1, 'signed char': 1, 'unsigned char': 1, short: 2, 'unsigned short': 2, int: 4, 'unsigned int': 4, long: 4, 'unsigned long': 4, 'long long': 8, 'unsigned long long': 8, float: 4, double: 8, 'long double': 8 } as Record<BuiltinTypeName, number>)[type.name];
         case 'pointer': return 4;
         case 'function': throw new Error('function type has no object size');
         case 'array':
@@ -130,10 +135,12 @@ export function typeAlignment(type: CType): number {
     if (type.kind === 'struct') return structLayout(type.fields).alignment;
     if (type.kind === 'union') return unionLayout(type.fields).alignment;
     if (type.kind === 'typedef') return type.target ? typeAlignment(type.target) : 1;
+    if (type.kind === 'builtin' && (type.name === '_Bool' || type.name === 'char' || type.name === 'signed char' || type.name === 'unsigned char')) return 1;
+    if (type.kind === 'builtin' && (type.name === 'short' || type.name === 'unsigned short')) return 2;
     return Math.max(1, Math.min(4, typeSize(type)));
 }
 export function isIntegerType(type: CType): boolean {
-    return type.kind === 'builtin' && ['char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long'].includes(type.name)
+    return type.kind === 'builtin' && ['_Bool', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long'].includes(type.name)
         || type.kind === 'enum' || type.kind === 'typedef' && !!type.target && isIntegerType(type.target);
 }
 export function isScalarType(type: CType): boolean {
@@ -152,6 +159,12 @@ export interface FieldLayout extends StructField { readonly offset: number; }
 export interface AggregateLayout { readonly size: number; readonly alignment: number; readonly fields: readonly FieldLayout[]; }
 const alignUp = (value: number, alignment: number): number => Math.ceil(value / alignment) * alignment;
 export function structLayout(fields: readonly StructField[]): AggregateLayout {
+    if (fields.length > 0 && fields.every(field => field.offset !== undefined)) {
+        const alignment = Math.min(4, Math.max(1, ...fields.map(field => typeAlignment(field.type))));
+        const laidOut = fields.map(field => freeze({ ...field, offset: field.offset! }));
+        const size = alignUp(Math.max(...laidOut.map(field => field.offset + typeSize(field.type))), alignment);
+        return freeze({ size, alignment, fields: Object.freeze(laidOut) });
+    }
     let offset = 0;
     const laidOut: FieldLayout[] = fields.map(field => { const alignment = Math.min(4, typeAlignment(field.type)); offset = alignUp(offset, alignment); const result = { ...field, offset }; offset += typeSize(field.type); return freeze(result); });
     const alignment = Math.min(4, Math.max(1, ...fields.map(field => typeAlignment(field.type))));
