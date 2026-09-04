@@ -1,6 +1,7 @@
 const assert = require('assert');
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { verifyVendoredAro } = require('../../tools/aro-frontend/verify-vendor');
@@ -166,6 +167,41 @@ withFixture('symlink', (root) => {
     const link = path.join(root, 'linked-readme');
     assert.ok(fs.lstatSync(link).isSymbolicLink());
     assert.throws(() => verifyVendoredAro(root), /vendor snapshot contains a symlink: linked-readme/u);
+});
+
+async function testNonRegularFixture() {
+    if (process.platform === 'win32') {
+        assert.strictEqual(process.platform, 'win32');
+        console.log('Non-regular fixture skipped: Windows does not create Unix-domain sockets in vendor directories.');
+        return;
+    }
+
+    const fixtureParent = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-aro-vendor-non-regular-'));
+    const fixtureRoot = path.join(fixtureParent, 'aro');
+    const socketPath = path.join(fixtureRoot, 'non-regular.sock');
+    const server = net.createServer();
+    try {
+        fs.cpSync(vendorRoot, fixtureRoot, { recursive: true, dereference: false });
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(socketPath, resolve);
+        });
+        assert.ok(fs.lstatSync(socketPath).isSocket());
+        assert.throws(
+            () => verifyVendoredAro(fixtureRoot),
+            /vendor snapshot contains a non-file: non-regular\.sock/u,
+        );
+    } finally {
+        if (server.listening) {
+            await new Promise((resolve) => server.close(resolve));
+        }
+        fs.rmSync(fixtureParent, { recursive: true, force: true });
+    }
+}
+
+void testNonRegularFixture().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
 });
 
 console.log(`Aro vendor verified: commit=${receipt.commit} tree=${receipt.tree} files=${receipt.trackedFileCount} digest=${receipt.digest}`);
