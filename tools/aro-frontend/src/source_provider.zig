@@ -19,13 +19,19 @@ pub const SourceFile = struct {
     path: []const u8,
     source: []const u8,
     aro_id: ?aro.Source.Id,
-    included_from: ?aro.Source.ExpandedLocation,
+};
+
+pub const IncludeEvent = struct {
+    source_id: u32,
+    diagnostic_index: usize,
+    site: aro.Source.ExpandedLocation,
 };
 
 pub const State = struct {
     allocator: std.mem.Allocator,
     limits: request.Limits,
     files: std.ArrayList(SourceFile) = .empty,
+    include_events: std.ArrayList(IncludeEvent) = .empty,
     total_source_bytes: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, limits: request.Limits) State {
@@ -38,7 +44,6 @@ pub const State = struct {
             .path = path,
             .source = source,
             .aro_id = null,
-            .included_from = null,
         });
         state.total_source_bytes = source.len;
     }
@@ -56,7 +61,6 @@ pub const State = struct {
                 .path = file.path,
                 .source = file.source,
                 .aro_id = null,
-                .included_from = null,
             });
             state.total_source_bytes += file.source.len;
         }
@@ -97,16 +101,33 @@ pub const State = struct {
         include_site: ?aro.Source.ExpandedLocation,
     ) std.mem.Allocator.Error!Resolution {
         const file = &state.files.items[index];
-        if (file.included_from == null) file.included_from = include_site;
-        if (file.aro_id) |id| return .{ .source = comp.getSource(id) };
+        if (file.aro_id) |id| {
+            try state.recordInclusion(file.id, comp.diagnostics.total, include_site);
+            return .{ .source = comp.getSource(id) };
+        }
 
         const aro_source = comp.addSourceFromBuffer(file.path, file.source) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .{ .failure = .invalid_record },
         };
         file.aro_id = aro_source.id;
+        try state.recordInclusion(file.id, comp.diagnostics.total, include_site);
         _ = kind;
         return .{ .source = aro_source };
+    }
+
+    fn recordInclusion(
+        state: *State,
+        source_id: u32,
+        diagnostic_index: usize,
+        include_site: ?aro.Source.ExpandedLocation,
+    ) std.mem.Allocator.Error!void {
+        const site = include_site orelse return;
+        try state.include_events.append(state.allocator, .{
+            .source_id = source_id,
+            .diagnostic_index = diagnostic_index,
+            .site = site,
+        });
     }
 
     fn resolveSource(
@@ -175,7 +196,6 @@ pub const State = struct {
             .path = canonical_path,
             .source = source,
             .aro_id = null,
-            .included_from = include_site,
         });
         state.total_source_bytes += source.len;
         return state.register(comp, state.files.items.len - 1, kind, include_site);

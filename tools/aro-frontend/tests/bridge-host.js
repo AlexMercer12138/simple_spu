@@ -259,16 +259,44 @@ assert.strictEqual(syntax.envelope.status, 'diagnostics');
 assert.ok(syntax.envelope.diagnostics.some((item) =>
     item.severity === 'error' || item.severity === 'fatal'));
 
+const repeatedCanonicalSource = [
+    '#ifdef SECOND_PASS',
+    'int repeated = + later;',
+    '#endif',
+    '',
+].join('\n');
+const repeatedCanonical = analyze(makeRequest({
+    source: [
+        '#include "first.h"',
+        '#define SECOND_PASS 1',
+        '#include "second.h"',
+        '',
+    ].join('\n'),
+}), new Resolver(new Map([
+    ['first.h', { path: 'canonical/shared.h', source: repeatedCanonicalSource }],
+    ['second.h', { path: 'canonical/shared.h', source: repeatedCanonicalSource }],
+])));
+assert.strictEqual(repeatedCanonical.envelope.status, 'diagnostics');
+const repeatedDiagnostic = repeatedCanonical.envelope.diagnostics.find((item) => item.range.file === 2);
+assert.ok(repeatedDiagnostic, JSON.stringify(repeatedCanonical.envelope));
+assert.deepStrictEqual(repeatedDiagnostic.includeTrace.map((range) => range.start.byteOffset), [50],
+    'a repeated canonical source must trace the inclusion that produced the diagnostic');
+assert.deepStrictEqual(repeatedCanonical.envelope.sourceFiles.map((file) => file.path),
+    ['main.c', 'canonical/shared.h'], 'canonical content must remain deduplicated across aliases');
+
 const rangedInclude = analyze(makeRequest({
     source: 'int before;\n#include "broken.h"\n',
 }), new Resolver(new Map([
-    ['broken.h', { source: 'int broken = + trailing;\n' }],
+    ['broken.h', { source: '/* π */ int broken = + trailing;\n' }],
 ])));
 assert.strictEqual(rangedInclude.envelope.status, 'diagnostics');
 const includedDiagnostic = rangedInclude.envelope.diagnostics.find((item) => item.range.file === 2);
 assert.ok(includedDiagnostic, JSON.stringify(rangedInclude.envelope));
-assert.ok(includedDiagnostic.range.end.byteOffset - includedDiagnostic.range.start.byteOffset > 1,
-    'diagnostic end positions must retain the Aro location width');
+assert.deepStrictEqual(includedDiagnostic.range, {
+    file: 2,
+    start: { line: 1, column: 24, byteOffset: 24 },
+    end: { line: 1, column: 32, byteOffset: 32 },
+}, 'diagnostic ranges must preserve the exact UTF-8 token span, not caret indentation');
 assert.strictEqual(includedDiagnostic.includeTrace[0].file, 1);
 assert.strictEqual(includedDiagnostic.includeTrace[0].start.byteOffset, 21,
     'include traces must point at the actual include filename token');
