@@ -49,9 +49,6 @@ SDCLK = PCLK / (2 * (HALF_PERIOD + 1))
 | `sd_dat_i` | input, 8 | DAT[7:0] 采样值 |
 | `sd_dat_o` | output, 8 | DAT[7:0] 驱动值 |
 | `sd_dat_t` | output, 8 | DAT[7:0] 三态；每位 `1` 高阻、`0` 驱动 |
-| `card_detect_n` | input, 1 | 低有效可插拔卡检测，内部两级同步 |
-| `write_protect` | input, 1 | 写保护输入，内部两级同步 |
-| `emmc_reset_n` | output, 1 | eMMC reset_n 直接由 `HOST_CFG` 控制 |
 | `dma_tx_rd_en` | output, 1 | DMA TX 同步 FIFO 读使能 |
 | `dma_tx_dout` | input, 32 | DMA TX FIFO 同步读数据 |
 | `dma_tx_empty` | input, 1 | DMA TX FIFO 空 |
@@ -59,7 +56,7 @@ SDCLK = PCLK / (2 * (HALF_PERIOD + 1))
 | `dma_rx_din` | output, 32 | DMA RX FIFO 写数据 |
 | `dma_rx_full` | input, 1 | DMA RX FIFO 满 |
 
-CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻辑高以高阻释放，需要板级上拉。TF 通常仅连接 DAT[3:0]；eMMC 可连接 DAT[7:0]。
+CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻辑高以高阻释放，需要板级上拉。TF 仅连接 DAT[3:0]，初始化时使用 1-bit，卡侧切宽成功后将 `BUS_WIDTH` 配置为 4-bit；DAT[7:4] 始终高阻。eMMC 可连接 DAT[7:0] 并选择 1/4/8-bit。卡检测、写保护、设备复位和电源使能等板级辅助信号由外部 GPIO 或复位控制器负责。
 
 ## 3. APB访问行为
 
@@ -69,7 +66,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 
 `TX_DATA` 是特殊写口：所有被选中的 lane 按 lane 0、1、2、3 顺序压缩成连续字节流，而不是保留字节空洞。例如 `PWDATA=32'hccbb_aa99,PSTRB=4'b0101` 入队顺序为 `99,bb`。TX FIFO 满时该次有效写被丢弃并置 `TX_OVERFLOW`。`RX_DATA` 读出的字按小端排列，最低有效字节最先到达。
 
-`CTRL` 同次写的 W1P 优先级为 `SOFT_RESET > ABORT > TX_CLEAR/RX_CLEAR > START`；清 FIFO 同优先级可同时执行。软复位使寄存器、FIFO、状态机和 IRQ 清零，时钟低、CMD/DAT 高阻、`emmc_reset_n=0`。
+`CTRL` 同次写的 W1P 优先级为 `SOFT_RESET > ABORT > TX_CLEAR/RX_CLEAR > START`；清 FIFO 同优先级可同时执行。软复位使寄存器、FIFO、状态机和 IRQ 清零，时钟低、CMD/DAT 高阻。
 
 ## 4. 寄存器总表
 
@@ -116,7 +113,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | [30:5] | 保留 | - | 读 `0` |
 | 31 | `SOFT_RESET` | W1P | 复位整个 IP，读回 `0` |
 
-`START` 被接受的全部条件：写后的 `ENABLE=1`、`CLK_CFG.CLOCK_ENABLE=1`、非忙、有效卡存在（或 `NON_REMOVABLE=1`）、`RESP_TYPE!=3`、`RESP_BUSY` 仅配 48-bit 响应、若 `DATA_PRESENT=1` 则 `BUS_WIDTH!=3` 且 `BLOCK_COUNT!=0`、若 `AUTO_CMD12=1` 则数据存在且块数大于 1。拒绝启动只置 `CONFIG_ERROR`，不产生完成事件。空闲 ABORT、忙时清 FIFO、以及任何不满足条件的 START 都是配置错误。
+`START` 被接受的全部条件：写后的 `ENABLE=1`、`CLK_CFG.CLOCK_ENABLE=1`、非忙、`RESP_TYPE!=3`、`RESP_BUSY` 仅配 48-bit 响应、若 `DATA_PRESENT=1` 则 `BUS_WIDTH!=3` 且 `BLOCK_COUNT!=0`、若 `AUTO_CMD12=1` 则数据存在且块数大于 1。拒绝启动只置 `CONFIG_ERROR`，不产生完成事件。空闲 ABORT、忙时清 FIFO、以及任何不满足条件的 START 都是配置错误。设备是否存在由系统软件通过外部 GPIO 判断。
 
 ### 5.2 `STATUS` (`0x04`)
 
@@ -131,8 +128,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | 9 | `TX_STALLED` | 数据边界等待 TX 字节 |
 | 10 | `RX_STALLED` | 数据边界等待 RX 空间 |
 | 11 | `CARD_BUSY` | 等待 DAT0 释放 |
-| 12 | `CARD_PRESENT` | 有效卡存在 |
-| 13 | `WRITE_PROTECT` | 两级同步后的写保护 |
+| [13:12] | 保留 | 读 `0` |
 | 14 | `SDIO_IRQ_ACTIVE` | 已使能且数据引擎空闲时 DAT1 为低 |
 | [31:15] | 保留 | 读 `0` |
 
@@ -146,8 +142,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | `CLK_CFG[31:18]` | 保留 | 读 `0` |
 | `HOST_CFG[1:0]` | `BUS_WIDTH` | `0=1-bit,1=4-bit,2=8-bit,3=非法` |
 | `HOST_CFG[2]` | `CMD_OPEN_DRAIN` | CMD 高电平高阻、低电平驱动 |
-| `HOST_CFG[3]` | `NON_REMOVABLE` | 忽略 `card_detect_n` 并视作存在 |
-| `HOST_CFG[4]` | `EMMC_RESET_N` | `emmc_reset_n` 输出 |
+| `HOST_CFG[4:3]` | 保留 | 读 `0`，写忽略 |
 | `HOST_CFG[5]` | `SDIO_IRQ_ENABLE` | 空闲数据期监视 DAT1 低 |
 | `HOST_CFG[31:6]` | 保留 | 读 `0` |
 
@@ -200,13 +195,11 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | `TRANSFER_COUNT[15:0]` | `BLOCKS_DONE` | 已完成块数 |
 | `TRANSFER_COUNT[27:16]` | `BYTES_DONE` | 当前块完成字节数 |
 | `TRANSFER_COUNT[31:28]` | 保留 | 读 `0` |
-| `CARD_STATUS[0]` | `CARD_PRESENT` | 有效卡存在 |
-| `CARD_STATUS[1]` | `WRITE_PROTECT` | 同步写保护 |
+| `CARD_STATUS[1:0]` | 保留 | 读 `0` |
 | `CARD_STATUS[2]` | `CMD_LEVEL` | `sd_cmd_i` 实时电平 |
 | `CARD_STATUS[10:3]` | `DAT_LEVEL` | `sd_dat_i[7:0]` 实时电平 |
 | `CARD_STATUS[11]` | `SDIO_IRQ_ACTIVE` | 空闲 DAT1 低 |
-| `CARD_STATUS[12]` | `EMMC_RESET_N` | 输出当前值 |
-| `CARD_STATUS[31:13]` | 保留 | 读 `0` |
+| `CARD_STATUS[31:12]` | 保留 | 读 `0` |
 | `AUTO_CMD12_RESP[31:0]` | - | 自动 CMD12 的 `response[39:8]` |
 
 `FIFO_THRESHOLD` 仅在 PIO 路径生效；复位值为 TX=`0`、RX=`4`。`FIFO_STATUS` 的 PIO level 不含 DMA 数据。全部未列出的字段均为保留位。
@@ -221,9 +214,8 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | 1 | `DATA_DONE` | 数据阶段完成 |
 | 2 | `TRANSFER_DONE` | 已接受事务结束 |
 | 3 | `ERROR` | 任一错误事件 |
-| 4 | `ABORTED` | 软件禁用/ABORT/移卡导致中止 |
-| 5 | `CARD_INSERTED` | 两级同步后检测到插入 |
-| 6 | `CARD_REMOVED` | 两级同步后检测到移除 |
+| 4 | `ABORTED` | 软件禁用或 ABORT 导致中止 |
+| [6:5] | 保留 | 读 `0`，写忽略 |
 | 7 | `SDIO_INTERRUPT` | 空闲数据期 DAT1 低 |
 | 8 | `TX_THRESHOLD` | PIO TX 低水位 |
 | 9 | `RX_THRESHOLD` | PIO RX 高水位 |
@@ -232,7 +224,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 
 ### 5.8 `ERROR_STATUS` (`0x50`)
 
-该寄存器只读，不是 W1C。复位或接受下一笔 `START` 时清零；其后 13 个错误位对当前事务 OR 锁存，`ERROR_PHASE` 和 `ERROR_CMD_INDEX` 仅捕获第一批错误并保持到下次清零。若第一批错误来自 AUTO_CMD12，命令索引记录为 12。`[15:13]` 保留为零。
+该寄存器只读，不是 W1C。复位或接受下一笔 `START` 时清零；有效错误位对当前事务 OR 锁存，`ERROR_PHASE` 和 `ERROR_CMD_INDEX` 仅捕获第一批错误并保持到下次清零。若第一批错误来自 AUTO_CMD12，命令索引记录为 12。`[15:13]` 保留为零。
 
 | 位 | 名称 | 来源 |
 | ---: | --- | --- |
@@ -247,7 +239,7 @@ CMD/DAT 的 `i/o/t` 应在顶层连接 FPGA I/O buffer。开漏 CMD 模式下逻
 | 8 | `BUSY_TIMEOUT` | 命令 R1b 或写后 DAT0 busy 超时 |
 | 9 | `AUTO_CMD12_ERROR` | 自动 CMD12 期间任意命令错误 |
 | 10 | `CONFIG_ERROR` | 控制命令/START 配置被拒绝 |
-| 11 | `CARD_REMOVED` | 活动事务中检测到移卡 |
+| 11 | 保留 | 读 `0` |
 | 12 | `ABORTED` | Host 外部中止事件 |
 | [15:13] | 保留 | 读 `0` |
 | [19:16] | `ERROR_PHASE` | 第一批错误发生时的 `ACTIVE_PHASE` |
@@ -270,7 +262,7 @@ PIO TX FIFO 每条为 35 bit：`{valid_byte_count[2:0], data[31:0]}`，其中 co
 
 DMA 完全绕过 PIO FIFO 和 PIO level/threshold。TX 是同步 FIFO 读：`dma_tx_rd_en` 脉冲后下一拍采样 `dma_tx_dout`，字内以小端顺序输出 `[7:0]`、`[15:8]`、`[23:16]`、`[31:24]`；最后 word 的多余高字节按 `DATA_CFG` 总字节数忽略。RX 满 word 或尾 word 在 `dma_rx_wr_en=1` 同拍给出 `dma_rx_din`，同样小端，尾 word 无效高字节补零。DMA 模式下 `TX_DATA/RX_DATA` PIO 内容不被消费/填充，PIO 阈值也不置位。
 
-错误恢复建议：读取并保存 `ERROR_STATUS`、读取/清除相应 `IRQ_STATUS`，必要时发 `ABORT` 或忙时清 `ENABLE`，等待 `TRANSFER_DONE/ABORTED` 后再清 PIO FIFO、重新配置并发起新 START。命令错误不会进入数据阶段；数据错误在 `AUTO_CMD12=1`、多块且卡仍存在时仍会尝试 CMD12。活动移卡立即停钟并释放 CMD/DAT；不可移动 eMMC 通过事务快照的 `NON_REMOVABLE` 屏蔽检测变化。`card_detect_n` 与 `write_protect` 均为两级同步。DAT1 仅在 `SDIO_IRQ_ENABLE=1` 且数据引擎不活动时监视，软件服务设备并使 DAT1 释放后再 W1C `SDIO_INTERRUPT`。
+错误恢复建议：读取并保存 `ERROR_STATUS`、读取/清除相应 `IRQ_STATUS`，必要时发 `ABORT` 或忙时清 `ENABLE`，等待 `TRANSFER_DONE/ABORTED` 后再清 PIO FIFO、重新配置并发起新 START。命令错误不会进入数据阶段；数据错误在 `AUTO_CMD12=1` 的多块事务中仍会尝试 CMD12。可插拔卡的检测和写保护由外部 GPIO 处理；软件收到拔卡事件后应中止控制器。DAT1 仅在 `SDIO_IRQ_ENABLE=1` 且数据引擎不活动时监视，软件服务设备并使 DAT1 释放后再 W1C `SDIO_INTERRUPT`。
 
 ## 8. TF Card、eMMC、SDIO编程指导
 
@@ -278,14 +270,14 @@ DMA 完全绕过 PIO FIFO 和 PIO level/threshold。TX 是同步 FIFO 读：`dma
 
 ### 8.1 TF Card（SD）
 
-1. 设 `NON_REMOVABLE=0`，确认 `CARD_PRESENT`；使能控制器、`CLOCK_ENABLE` 和连续低速时钟，初始使用 1-bit。
+1. 通过外部 GPIO 确认卡已插入；使能控制器、`CLOCK_ENABLE` 和连续低速时钟，初始使用 1-bit。
 2. 发 CMD0（无响应），CMD8 参数通常 `0x000001aa`、48-bit R7；循环 CMD55 + ACMD41（R3，关闭 CRC 检查）直到 OCR ready。
 3. 发 CMD2(R2)、CMD3(R6)、CMD7(R1b)，用 RCA 选卡；发 CMD55(R1) + ACMD6(ARG=2) 选择 4-bit，再将主机 `BUS_WIDTH=1`。
 4. 依据 CSD/卡状态选择 CMD17/CMD24 单块或 CMD18/CMD25 多块。多块 CMD18/CMD25 通常开启 `AUTO_CMD12`；读写长度通过 `DATA_CFG` 配置为块大小和块数。
 
 ### 8.2 eMMC
 
-1. 设 `NON_REMOVABLE=1`，按板级需要先拉低后释放 `EMMC_RESET_N`；使能低速连续时钟、1-bit，可按设备要求使用开漏 CMD 初始化。
+1. 通过外部 GPIO 或复位控制器按板级要求复位 eMMC；使能低速连续时钟、1-bit，可按设备要求使用开漏 CMD 初始化。
 2. 发 CMD0，循环 CMD1(ARG 常含工作电压窗口，R3，CRC 通常关闭) 至 OCR ready；发 CMD2(R2)、CMD3、CMD7(R1b) 进入 transfer state。
 3. CMD8 读取 512-byte EXT_CSD；通过 CMD6 写 EXT_CSD 的 BUS_WIDTH/HS_TIMING，并在卡确认后同步更新主机到 4-bit 或 8-bit SDR 和目标分频。
 4. 使用 CMD17/CMD24 或 CMD18/CMD25 传输。eMMC 若软件先用 CMD23 指定块数，可关闭 AUTO_CMD12；仍须确保 `DATA_CFG.BLOCK_COUNT` 为准确数值。
@@ -302,10 +294,10 @@ DMA 完全绕过 PIO FIFO 和 PIO level/threshold。TX 是同步 FIFO 读：`dma
 - 仅 SDR-only：不得把 DDR、UHS、HS200/HS400、1.8 V、tuning 或 boot/RPMB/queue 当作硬件功能。
 - `FIFO_DEPTH` 使用 2 的幂，建议 `8..512`；根据最坏 ISR 延迟选择深度及 `FIFO_THRESHOLD`。
 - 所有 command/data/clock/timeout 配置在 START 接受时快照；忙时写寄存器只影响下一笔。
-- 每次 START 前确认 `ENABLE`、`CLOCK_ENABLE`、卡存在、合法响应类型/总线宽度、非零块数，以及 AUTO_CMD12 仅用于多块数据。
+- 每次 START 前由软件确认设备存在，并检查 `ENABLE`、`CLOCK_ENABLE`、合法响应类型/总线宽度、非零块数，以及 AUTO_CMD12 仅用于多块数据。
 - PIO 写尾字必须用正确 PSTRB；PIO/DMA 读尾字的高字节为零，不应作为卡数据。
 - DMA TX 外部 FIFO 必须满足一拍同步读语义；DMA RX 必须在 `dma_rx_wr_en` 同拍接受数据。
 - 对 R3/R4 关闭 CRC7 检查；R1b 配置 `RESP_BUSY` 和足够 `BUSY_TIMEOUT`。
-- 始终处理 12 个 IRQ：`CMD_DONE`、`DATA_DONE`、`TRANSFER_DONE`、`ERROR`、`ABORTED`、`CARD_INSERTED`、`CARD_REMOVED`、`SDIO_INTERRUPT`、`TX_THRESHOLD`、`RX_THRESHOLD`、`TX_OVERFLOW`、`RX_UNDERFLOW`。
-- 读取 13 个错误位：`CMD_TIMEOUT`、`CMD_CRC_ERROR`、`CMD_INDEX_ERROR`、`CMD_END_BIT_ERROR`、`DATA_TIMEOUT`、`DATA_CRC_ERROR`、`DATA_END_BIT_ERROR`、`WRITE_RESPONSE_ERROR`、`BUSY_TIMEOUT`、`AUTO_CMD12_ERROR`、`CONFIG_ERROR`、`CARD_REMOVED`、`ABORTED`，并同时记录 phase/index。
-- 复位、禁用、ABORT 和移卡后先等待终止状态再重配；不要在忙时清 PIO FIFO。
+- 始终处理 10 个 IRQ：`CMD_DONE`、`DATA_DONE`、`TRANSFER_DONE`、`ERROR`、`ABORTED`、`SDIO_INTERRUPT`、`TX_THRESHOLD`、`RX_THRESHOLD`、`TX_OVERFLOW`、`RX_UNDERFLOW`。
+- 读取 12 个错误位：`CMD_TIMEOUT`、`CMD_CRC_ERROR`、`CMD_INDEX_ERROR`、`CMD_END_BIT_ERROR`、`DATA_TIMEOUT`、`DATA_CRC_ERROR`、`DATA_END_BIT_ERROR`、`WRITE_RESPONSE_ERROR`、`BUSY_TIMEOUT`、`AUTO_CMD12_ERROR`、`CONFIG_ERROR`、`ABORTED`，并同时记录 phase/index。
+- 复位、禁用或 ABORT 后先等待终止状态再重配；不要在忙时清 PIO FIFO。外部 GPIO 报告移卡时由软件发起 ABORT。
