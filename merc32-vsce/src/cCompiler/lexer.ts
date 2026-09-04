@@ -41,7 +41,15 @@ export function tokenizeC(
       }
       if (i < source.length && /[eEpP]/.test(source[i])) { advance(); if (source[i] === '+' || source[i] === '-') advance(); while (i < source.length && /\d/.test(source[i])) advance(); }
       while (i < source.length && /[A-Za-z]/.test(source[i])) advance();
-      const text = source.slice(start, i); const value = Number(text); out.push(token('number', text, l, c, Number.isNaN(value) ? undefined : value)); continue;
+      const text = source.slice(start, i);
+      const floating = /\./.test(text) || (/^0[xX]/.test(text) ? /[pP]/.test(text) : /[eE]/.test(text));
+      if (!floating) {
+        const integer = /^0[xX][0-9A-Fa-f]+(?:[uU](?:[lL]{1,2})?|[lL]{1,2}[uU]?)?$/.test(text)
+          || /^(?:0|[1-9][0-9]*)(?:[uU](?:[lL]{1,2})?|[lL]{1,2}[uU]?)?$/.test(text);
+        if (!integer) throw new CFrontendError(`invalid integer literal '${text}'`, location(l, c));
+      }
+      const value = Number(text.replace(/(?:[uU](?:[lL]{1,2})?|[lL]{1,2}[uU]?)$/, ''));
+      out.push(token('number', text, l, c, Number.isNaN(value) ? undefined : value)); continue;
     }
     if (ch === '"' || ch === "'") { const quote = ch; advance(); while (i < source.length) { if (source[i] === '\\') advance(2); else if (source[i] === quote) { advance(); break; } else advance(); } const text = source.slice(start, i); out.push(token(quote === '"' ? 'string' : 'char', text, l, c)); continue; }
     const op = operators.find(x => source.startsWith(x, i)); if (op) { advance(op.length); out.push(token('symbol', op, l, c)); continue; }

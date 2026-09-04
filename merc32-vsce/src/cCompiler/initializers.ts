@@ -57,7 +57,20 @@ function normalizeInto(
     return;
   }
 
-  let cursor = 0;
+  normalizeAggregate(type, initializer, baseOffset, writes, entries, evaluateConstant);
+}
+
+function normalizeAggregate(
+  type: Extract<CType, { kind: 'array' | 'struct' | 'union' }>,
+  initializer: Initializer,
+  baseOffset: number,
+  writes: NormalizedInitializerWrite[],
+  entries: Map<string, number>,
+  evaluateConstant: ConstantEvaluator,
+): void {
+  const leaves = scalarLeaves(type, baseOffset);
+  let directCursor = 0;
+  let leafCursor = 0;
   for (const entry of initializer.entries) {
     let targetType: CType;
     let targetOffset: number;
@@ -66,17 +79,22 @@ function normalizeInto(
       const selection = selectDirectSubobject(type, entry.designators[0], baseOffset, evaluateConstant);
       targetType = selection.type;
       targetOffset = selection.offset;
-      cursor = selection.nextCursor;
+      directCursor = selection.nextCursor;
       remainingDesignators = entry.designators.slice(1);
       if (entry.designators[0].kind === 'field-designator') {
         const scalarValue = literalValue(entry.value);
         if (scalarValue !== undefined) entries.set(entry.designators[0].field, scalarValue);
       }
-    } else {
-      const selection = selectPositionalSubobject(type, cursor, baseOffset, entry.value);
+    } else if (entry.value.kind === 'initializer' || entry.value.kind === 'string-literal') {
+      const selection = selectPositionalSubobject(type, directCursor, baseOffset, entry.value);
       targetType = selection.type;
       targetOffset = selection.offset;
-      cursor = selection.nextCursor;
+      directCursor = selection.nextCursor;
+    } else {
+      if (leafCursor >= leaves.length) throw initializerError('too many aggregate initializer elements', entry);
+      targetType = leaves[leafCursor].type;
+      targetOffset = leaves[leafCursor].offset;
+      leafCursor++;
     }
     if (remainingDesignators.length > 0) {
       const selection = selectDesignatorPath(targetType, remainingDesignators, targetOffset, evaluateConstant);
@@ -84,7 +102,27 @@ function normalizeInto(
       targetOffset = selection.offset;
     }
     normalizeInto(targetType, entry.value, targetOffset, writes, entries, evaluateConstant);
+    const targetLeaves = scalarLeaves(targetType, targetOffset);
+    if (targetLeaves.length > 0) {
+      const nextLeaf = leaves.findIndex(leaf => leaf.offset >= targetLeaves[targetLeaves.length - 1].offset + typeSize(targetLeaves[targetLeaves.length - 1].type));
+      if (nextLeaf >= 0) leafCursor = nextLeaf;
+      else leafCursor = leaves.length;
+    }
   }
+}
+
+interface ScalarLeaf { readonly type: CType; readonly offset: number; }
+
+function scalarLeaves(originalType: CType, baseOffset: number): readonly ScalarLeaf[] {
+  const type = unwrapType(originalType);
+  if (!isAggregate(type)) return [{ type: originalType, offset: baseOffset }];
+  if (type.kind === 'array') {
+    if (type.length === null) throw new Error('incomplete array type has no scalar leaves');
+    return Array.from({ length: type.length }, (_, index) => scalarLeaves(type.element, baseOffset + index * typeSize(type.element))).flat();
+  }
+  const layout = type.kind === 'struct' ? structLayout(type.fields) : unionLayout(type.fields);
+  const fields = type.kind === 'union' ? layout.fields.slice(0, 1) : layout.fields;
+  return fields.flatMap(field => scalarLeaves(field.type, baseOffset + field.offset));
 }
 
 function selectPositionalSubobject(

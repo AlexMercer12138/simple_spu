@@ -22,6 +22,21 @@ assert(literals.some(t => t.text === '1.5e-2'));
 const hexadecimal = parse('unsigned int x = 0x11223344; unsigned int y = 0xDEAD;');
 assert.strictEqual(hexadecimal.declarations[0].declarators[0].initializer.value, 0x11223344);
 assert.strictEqual(hexadecimal.declarations[1].declarators[0].initializer.value, 0xDEAD);
+assert.throws(
+    () => parse('int malformed = 0x1G;'),
+    /invalid integer literal/,
+    'the parser must reject hexadecimal literals with invalid trailing digits',
+);
+assert.throws(
+    () => parse('int malformed = 0x1EG;'),
+    /invalid integer literal/,
+    'the parser must validate hexadecimal spellings even when they contain hexadecimal E digits',
+);
+assert.throws(
+    () => parse('int malformed = 12LLL;'),
+    /invalid integer literal/,
+    'the parser must reject invalid integer literal suffix combinations',
+);
 
 const expressionUnit = parse(`
 struct Pair { int value; };

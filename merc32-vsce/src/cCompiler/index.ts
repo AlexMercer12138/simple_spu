@@ -113,7 +113,7 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
                         declaration.location ?? fallback,
                     );
                 }
-                if (declarator.initializer) validateTypedInitializer(declarator.initializer, fallback);
+                if (declarator.initializer) validateTypedInitializer(declarator.initializer, fallback, declarator.type);
                 continue;
             }
             if (!declarator.body) continue;
@@ -167,7 +167,7 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
                         statement.location ?? fallback,
                     );
                 }
-                if (statement.initializer) validateTypedInitializer(statement.initializer, fallback);
+                if (statement.initializer) validateTypedInitializer(statement.initializer, fallback, statement.type);
                 break;
             case 'if': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.thenBranch, fallback); if (statement.elseBranch) validateTypedStatement(statement.elseBranch, fallback); break;
             case 'while': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
@@ -183,7 +183,9 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
     }
 }
 
-function validateTypedInitializer(initializer: CInitializer, fallback: SourceLocation): void {
+function validateTypedInitializer(initializer: CInitializer, fallback: SourceLocation, type?: CType): void {
+    if (initializer.kind === 'string-literal' && type?.kind === 'array'
+        && type.element.kind === 'builtin' && (type.element.name === 'char' || type.element.name === 'unsigned char')) return;
     if (initializer.kind !== 'initializer') {
         validateTypedExpression(initializer, fallback);
         return;

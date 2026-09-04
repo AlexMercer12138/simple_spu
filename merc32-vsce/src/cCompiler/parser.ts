@@ -37,7 +37,7 @@ class Parser {
         return [{ kind: 'declaration', type: base, declarators: ds, location: first.location }];
       }
       const initializer = this.consumeInitializer();
-      ds.push(initializer ? { ...declarator, initializer } : declarator);
+      ds.push(initializer ? { ...declarator, type: completeArrayBounds(declarator.type, initializer), initializer } : declarator);
       if (!this.is(',')) break;
       this.take();
     } while (true);
@@ -305,7 +305,7 @@ class Parser {
     if (!declarator.name) throw new CFrontendError('local declaration requires a name', start.location);
     const initializer = this.is('=') ? (this.take(), this.parseInitializer()) : undefined;
     this.take(';');
-    return { kind: 'local-declaration', name: declarator.name, type: declarator.type, initializer,
+    return { kind: 'local-declaration', name: declarator.name, type: initializer ? completeArrayBounds(declarator.type, initializer) : declarator.type, initializer,
       location: start.location };
   }
 
@@ -465,6 +465,38 @@ interface DeclaratorNode {
 }
 
 interface FunctionParameter { readonly name?: string; readonly type: CType; readonly location: { readonly file: string; readonly line: number; readonly column: number; }; }
+
+function completeArrayBounds(type: CType, initializer: CInitializer): CType {
+  if (type.kind !== 'array') return type;
+  if (initializer.kind === 'string-literal') {
+    return isCharacterType(type.element) && type.length === null
+      ? arrayType(type.element, Array.from(initializer.value).length + 1, type.qualifiers)
+      : type;
+  }
+  if (initializer.kind !== 'initializer') return type;
+  let element = type.element;
+  let cursor = 0;
+  let requiredLength = 0;
+  for (const entry of initializer.entries) {
+    const designator = entry.designators[0];
+    if (designator?.kind === 'index-designator') {
+      const index = integerLiteralValue(designator.index);
+      if (index !== undefined && index >= 0) cursor = index;
+    }
+    element = completeArrayBounds(element, entry.value);
+    requiredLength = Math.max(requiredLength, cursor + 1);
+    cursor++;
+  }
+  return arrayType(element, type.length ?? requiredLength, type.qualifiers);
+}
+
+function integerLiteralValue(expression: Expression): number | undefined {
+  return expression.kind === 'integer-literal' || expression.kind === 'character-literal' ? expression.value : undefined;
+}
+
+function isCharacterType(type: CType): boolean {
+  return type.kind === 'builtin' && (type.name === 'char' || type.name === 'unsigned char');
+}
 interface FunctionSuffix { readonly kind: 'function'; readonly parameters: readonly FunctionParameter[]; readonly variadic: boolean; }
 type DeclaratorSuffix =
   | { readonly kind: 'array'; readonly length: number | null }
