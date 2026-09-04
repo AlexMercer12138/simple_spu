@@ -81,6 +81,10 @@ expectRejected('partial-allowlist', (root) => {
     });
 }, /MERC32-CHANGES\.json record must contain only/u);
 
+expectRejected('malformed-allowlist', (root) => {
+    fs.writeFileSync(path.join(root, 'MERC32-CHANGES.json'), '{ not JSON\n');
+}, /MERC32-CHANGES\.json is not valid JSON/u);
+
 expectRejected('stale-current-hash', (root) => {
     const readme = path.join(root, 'README.md');
     fs.appendFileSync(readme, 'changed\n');
