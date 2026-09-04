@@ -86,7 +86,7 @@ const sourcedFailure = {
     protocolVersion: 1,
     bridgeBuildId: 'test-build',
     status: 'diagnostics',
-    sourceFiles: [{ id: 1, path: 'broken.c', byteLength: 4 }],
+    sourceFiles: [{ id: 1, path: 'broken.c', byteLength: 4, utf8BoundaryBitmap: '1f' }],
     diagnostics: [{
         severity: 'error',
         code: 'C1000',
@@ -107,6 +107,269 @@ assert.strictEqual(acceptedFailure.status, 'diagnostics');
 assert.notStrictEqual(acceptedFailure.sourceFiles, sourcedFailure.sourceFiles);
 assertDeeplyFrozen(acceptedFailure);
 
+function expectContractFailure(value, invariant, message) {
+    assert.throws(
+        () => validateEnvelope(value, 'test-build'),
+        (errorValue) => errorValue instanceof CFrontendInternalError
+            && errorValue.message.includes(invariant),
+        message,
+    );
+}
+
+for (const [name, bitmap] of [
+    ['wrong byte length', 'ff'],
+    ['uppercase hex', 'FFFFFF07'],
+    ['non-hex character', 'fffffg07'],
+    ['nonzero padding', 'ffffff87'],
+    ['missing offset zero', 'feffff07'],
+    ['missing EOF offset', 'ffffff03'],
+]) {
+    const malformedBitmap = clone(validFixture);
+    malformedBitmap.unit.sourceFiles[0].utf8BoundaryBitmap = bitmap;
+    expectContractFailure(malformedBitmap, 'SOURCE_BOUNDARIES',
+        `${name} UTF-8 boundary bitmap must be rejected`);
+}
+
+const multibyteSource = clone(validFixture);
+multibyteSource.unit.sourceFiles = [{
+    id: 1, path: 'utf8.c', byteLength: 3, utf8BoundaryBitmap: '0b',
+}];
+multibyteSource.diagnostics.push({
+    severity: 'warning', code: 'W_UTF8', message: 'multibyte range',
+    range: {
+        file: 1,
+        start: { line: 1, column: 2, byteOffset: 1 },
+        end: { line: 1, column: 3, byteOffset: 3 },
+    },
+    related: [], notes: [], includeTrace: [], macroExpansionTrace: [],
+});
+assert.doesNotThrow(() => validateEnvelope(multibyteSource, 'test-build'),
+    'ranges on both boundaries of a multibyte UTF-8 code point are valid');
+
+const continuationByteRange = clone(multibyteSource);
+continuationByteRange.diagnostics[0].range.start = { line: 1, column: 2, byteOffset: 2 };
+expectContractFailure(continuationByteRange, 'SOURCE_RANGE',
+    'ranges at a UTF-8 continuation byte must be rejected');
+
+const spellingRange = clone(exactUint64);
+spellingRange.unit.nodes[0].spellingRange = {
+    file: 1,
+    start: { line: 1, column: 3, byteOffset: 2 },
+    end: { line: 1, column: 4, byteOffset: 3 },
+};
+assert.doesNotThrow(() => validateEnvelope(spellingRange, 'test-build'),
+    'a distinct closed spelling range is valid');
+
+const duplicateSpellingRange = clone(exactUint64);
+duplicateSpellingRange.unit.nodes[0].spellingRange = clone(duplicateSpellingRange.unit.nodes[0].range);
+expectContractFailure(duplicateSpellingRange, 'SOURCE_RANGE',
+    'a spelling range identical to the primary range must be rejected');
+
+const nodeRange = {
+    file: 1,
+    start: { line: 1, column: 1, byteOffset: 0 },
+    end: { line: 1, column: 2, byteOffset: 1 },
+};
+const scopedLabels = clone(validFixture);
+scopedLabels.unit.types.push({
+    id: 2, kind: 'function', returnType: 1, parameters: [], variadic: false,
+    qualifiers: [], size: 0, alignment: 4,
+});
+scopedLabels.unit.symbols.push({
+    id: 1, kind: 'function', name: 'f', type: 2, range: nodeRange,
+    linkage: 'external', definition: true,
+});
+scopedLabels.unit.nodes = [{
+    id: 1, category: 'declaration', kind: 'function-definition', type: 2, symbol: 1,
+    range: nodeRange, children: [2],
+}, {
+    id: 2, category: 'statement', kind: 'compound', range: nodeRange, children: [3, 5],
+}, {
+    id: 3, category: 'statement', kind: 'label', label: 'done', range: nodeRange, children: [4],
+}, {
+    id: 4, category: 'statement', kind: 'empty', range: nodeRange, children: [],
+}, {
+    id: 5, category: 'statement', kind: 'goto', label: 'done', range: nodeRange, children: [],
+}];
+scopedLabels.unit.declarations = [1];
+assert.doesNotThrow(() => validateEnvelope(scopedLabels, 'test-build'),
+    'labels and gotos in one function are valid');
+
+const missingFunctionBody = clone(scopedLabels);
+missingFunctionBody.unit.nodes[0].children = [];
+expectContractFailure(missingFunctionBody, 'NODE_CHILDREN',
+    'a function definition without a compound body must be rejected');
+
+const wrongFunctionBody = clone(scopedLabels);
+wrongFunctionBody.unit.nodes[0].children = [3];
+expectContractFailure(wrongFunctionBody, 'NODE_CHILDREN',
+    'a function definition whose last child is not a compound body must be rejected');
+
+const labelOutsideFunction = clone(validFixture);
+labelOutsideFunction.unit.nodes = [{
+    id: 1, category: 'statement', kind: 'label', label: 'loose', range: nodeRange, children: [2],
+}, {
+    id: 2, category: 'statement', kind: 'empty', range: nodeRange, children: [],
+}];
+expectContractFailure(labelOutsideFunction, 'LABEL_SCOPE',
+    'a label outside a function must be rejected');
+
+const missingGotoTarget = clone(scopedLabels);
+missingGotoTarget.unit.nodes[4].label = 'missing';
+expectContractFailure(missingGotoTarget, 'LABEL_SCOPE',
+    'a goto target must exist in the same function');
+
+const duplicateLabel = clone(scopedLabels);
+duplicateLabel.unit.nodes[1].children = [3, 5, 6];
+duplicateLabel.unit.nodes.push({
+    id: 6, category: 'statement', kind: 'label', label: 'done', range: nodeRange, children: [7],
+}, {
+    id: 7, category: 'statement', kind: 'empty', range: nodeRange, children: [],
+});
+expectContractFailure(duplicateLabel, 'LABEL_SCOPE',
+    'duplicate labels in one function must be rejected');
+
+const invalidIfOrdering = clone(scopedLabels);
+invalidIfOrdering.unit.nodes[1].children = [6];
+invalidIfOrdering.unit.nodes.push({
+    id: 6, category: 'statement', kind: 'if', range: nodeRange, children: [4, 4],
+});
+expectContractFailure(invalidIfOrdering, 'NODE_CHILDREN',
+    'an if condition must be an expression and its body must be a statement');
+
+const validPromotion = clone(validFixture);
+validPromotion.unit.types.push({
+    id: 2, kind: 'builtin', name: 'char', qualifiers: [], size: 1, alignment: 1,
+});
+validPromotion.unit.nodes = [{
+    id: 1, category: 'expression', kind: 'conversion', type: 1, targetType: 1,
+    valueCategory: 'rvalue', conversion: 'integer-promotion', range: nodeRange, children: [2],
+}, {
+    id: 2, category: 'expression', kind: 'character-literal', type: 2,
+    valueCategory: 'rvalue', range: nodeRange, children: [],
+    constant: { kind: 'integer', bits: 8, signed: true, value: '65' },
+}];
+assert.doesNotThrow(() => validateEnvelope(validPromotion, 'test-build'),
+    'an integer promotion from char to int is valid');
+
+const preservedLvalue = clone(validFixture);
+preservedLvalue.unit.types.push({
+    id: 2, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 3, kind: 'array', element: 1, count: 1, qualifiers: [], size: 4, alignment: 4,
+});
+preservedLvalue.unit.nodes = [{
+    id: 1, category: 'expression', kind: 'subscript', type: 1,
+    valueCategory: 'lvalue', range: nodeRange, children: [2, 4],
+}, {
+    id: 2, category: 'expression', kind: 'conversion', type: 2, targetType: 2,
+    valueCategory: 'rvalue', conversion: 'array-to-pointer', range: nodeRange, children: [3],
+}, {
+    id: 3, category: 'expression', kind: 'compound-literal', type: 3, targetType: 3,
+    valueCategory: 'lvalue', range: nodeRange, children: [],
+}, {
+    id: 4, category: 'expression', kind: 'integer-literal', type: 1,
+    valueCategory: 'rvalue', range: nodeRange, children: [],
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
+}, {
+    id: 5, category: 'expression', kind: 'generic-selection', type: 1,
+    valueCategory: 'lvalue', memberIndex: 1, range: nodeRange, children: [1],
+}];
+assert.doesNotThrow(() => validateEnvelope(preservedLvalue, 'test-build'),
+    'subscripts are lvalues and generic selections preserve the chosen value category');
+
+const rvalueMember = clone(validFixture);
+rvalueMember.unit.types.push({
+    id: 2, kind: 'struct', name: 'Pair', complete: true,
+    members: [{ name: 'first', type: 1, offset: 0, range: nodeRange }],
+    qualifiers: [], size: 4, alignment: 4,
+});
+rvalueMember.unit.nodes = [{
+    id: 1, category: 'expression', kind: 'member', type: 1,
+    valueCategory: 'rvalue', memberIndex: 0, range: nodeRange, children: [2],
+}, {
+    id: 2, category: 'expression', kind: 'conditional', type: 2,
+    valueCategory: 'rvalue', operator: '?:', range: nodeRange, children: [3, 4, 6],
+}, {
+    id: 3, category: 'expression', kind: 'integer-literal', type: 1,
+    valueCategory: 'rvalue', range: nodeRange, children: [],
+    constant: { kind: 'integer', bits: 32, signed: true, value: '1' },
+}, {
+    id: 4, category: 'expression', kind: 'conversion', type: 2, targetType: 2,
+    valueCategory: 'rvalue', conversion: 'lvalue-to-rvalue', range: nodeRange, children: [5],
+}, {
+    id: 5, category: 'expression', kind: 'compound-literal', type: 2, targetType: 2,
+    valueCategory: 'lvalue', range: nodeRange, children: [],
+}, {
+    id: 6, category: 'expression', kind: 'conversion', type: 2, targetType: 2,
+    valueCategory: 'rvalue', conversion: 'lvalue-to-rvalue', range: nodeRange, children: [7],
+}, {
+    id: 7, category: 'expression', kind: 'compound-literal', type: 2, targetType: 2,
+    valueCategory: 'lvalue', range: nodeRange, children: [],
+}];
+assert.doesNotThrow(() => validateEnvelope(rvalueMember, 'test-build'),
+    'dot member access on an rvalue aggregate remains an rvalue');
+
+const wrongRvalueMember = clone(rvalueMember);
+wrongRvalueMember.unit.nodes[0].valueCategory = 'lvalue';
+expectContractFailure(wrongRvalueMember, 'NODE_EXPRESSION_METADATA',
+    'dot member access must inherit its aggregate base value category');
+
+const enumeratorReference = clone(validFixture);
+enumeratorReference.unit.types.push({
+    id: 2, kind: 'enum', name: 'Choice', underlyingType: 3,
+    enumerators: [{ name: 'choice', value: '1', range: nodeRange }],
+    qualifiers: [], size: 4, alignment: 4,
+}, {
+    id: 3, kind: 'builtin', name: 'unsigned int', qualifiers: [], size: 4, alignment: 4,
+});
+enumeratorReference.unit.symbols.push({
+    id: 1, kind: 'enum', name: 'Choice', type: 2, range: nodeRange,
+}, {
+    id: 2, kind: 'enumerator', name: 'choice', type: 2, owner: 1, range: nodeRange,
+    value: { kind: 'integer', bits: 32, signed: false, value: '1' },
+});
+enumeratorReference.unit.nodes.push({
+    id: 1, category: 'expression', kind: 'declaration-reference', symbol: 2, type: 1,
+    valueCategory: 'rvalue', range: nodeRange, children: [],
+});
+assert.doesNotThrow(() => validateEnvelope(enumeratorReference, 'test-build'),
+    'an enumerator reference may use its promoted integer expression type');
+
+const emptyConversion = clone(validPromotion);
+emptyConversion.unit.nodes[0].children = [];
+expectContractFailure(emptyConversion, 'NODE_CHILDREN',
+    'every conversion must have exactly one expression child');
+
+const mismatchedConversionTarget = clone(validPromotion);
+mismatchedConversionTarget.unit.nodes[0].targetType = 2;
+expectContractFailure(mismatchedConversionTarget, 'NODE_CONVERSION',
+    'conversion type and targetType must agree');
+
+const rvalueLoad = clone(validPromotion);
+rvalueLoad.unit.nodes[0].conversion = 'lvalue-to-rvalue';
+expectContractFailure(rvalueLoad, 'NODE_CONVERSION',
+    'lvalue-to-rvalue must not accept an rvalue child');
+
+const invalidArrayDecay = clone(validPromotion);
+invalidArrayDecay.unit.nodes[0].conversion = 'array-to-pointer';
+expectContractFailure(invalidArrayDecay, 'NODE_CONVERSION',
+    'array-to-pointer must require an array source and matching pointer target');
+
+const missingCaseValue = clone(scopedLabels);
+missingCaseValue.unit.nodes[1].children = [6];
+missingCaseValue.unit.nodes.push({
+    id: 6, category: 'statement', kind: 'case', range: nodeRange, children: [7, 8],
+}, {
+    id: 7, category: 'expression', kind: 'integer-literal', type: 1,
+    valueCategory: 'rvalue', range: nodeRange, children: [],
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
+}, {
+    id: 8, category: 'statement', kind: 'empty', range: nodeRange, children: [],
+});
+expectContractFailure(missingCaseValue, 'STRUCTURE_VALIDATION',
+    'a case node without its evaluated integer constant must be rejected');
+
 const nullPointer = clone(validFixture);
 nullPointer.unit.types.push({
     id: 2, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
@@ -122,9 +385,18 @@ nullPointer.unit.nodes.push({
     },
     type: 2,
     valueCategory: 'rvalue',
-    children: [],
+    children: [2],
     conversion: 'assignment',
     targetType: 2,
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
+}, {
+    id: 2,
+    category: 'expression',
+    kind: 'integer-literal',
+    range: nodeRange,
+    type: 1,
+    valueCategory: 'rvalue',
+    children: [],
     constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
 });
 assert.doesNotThrow(() => validateEnvelope(nullPointer, 'test-build'),
@@ -159,7 +431,10 @@ definedPrototype.unit.nodes.push({
         start: { line: 1, column: 1, byteOffset: 0 },
         end: { line: 1, column: 2, byteOffset: 1 },
     },
-    children: [],
+    children: [3],
+}, {
+    id: 3, category: 'statement', kind: 'compound',
+    range: nodeRange, children: [],
 });
 definedPrototype.unit.declarations.push(1, 2);
 assert.doesNotThrow(() => validateEnvelope(definedPrototype, 'test-build'),
@@ -201,13 +476,18 @@ subobjectRelocation.unit.symbols.push({
 });
 subobjectRelocation.unit.nodes.push({
     id: 1, category: 'expression', kind: 'conversion', type: 3,
-    valueCategory: 'rvalue', children: [], conversion: 'assignment', targetType: 3,
+    valueCategory: 'rvalue', children: [2], conversion: 'assignment', targetType: 3,
     range: {
         file: 1,
         start: { line: 1, column: 1, byteOffset: 0 },
         end: { line: 1, column: 2, byteOffset: 1 },
     },
     constant: { kind: 'address', symbol: 1, addend: '4' },
+}, {
+    id: 2, category: 'expression', kind: 'integer-literal', type: 1,
+    valueCategory: 'rvalue', children: [],
+    range: nodeRange,
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
 });
 assert.doesNotThrow(() => validateEnvelope(subobjectRelocation, 'test-build'),
     'symbol-plus-addend may address an int subobject within a larger object');

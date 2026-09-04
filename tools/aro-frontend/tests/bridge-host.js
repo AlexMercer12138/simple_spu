@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const path = require('path');
 
 const wasmPath = process.argv[2];
 assert.ok(wasmPath, 'the WASM artifact path is required');
@@ -142,8 +143,13 @@ assert.ok(first.envelope.unit);
 assert.strictEqual(first.envelope.sourceFiles, undefined,
     'successful envelopes resolve file IDs through unit.sourceFiles only');
 assert.deepStrictEqual(first.envelope.unit.sourceFiles, [
-    { id: 1, path: 'main.c', byteLength: 40 },
+    { id: 1, path: 'main.c', byteLength: 40, utf8BoundaryBitmap: 'ffffffffff01' },
 ]);
+
+const multibyteSource = analyze(makeRequest({ source: 'int x; /* é */\n' }));
+assert.strictEqual(multibyteSource.envelope.status, 'ok');
+assert.strictEqual(multibyteSource.envelope.unit.sourceFiles[0].utf8BoundaryBitmap, 'fff701',
+    'source table bitmap must mark code-point boundaries and skip UTF-8 continuation bytes');
 
 const includeFiles = new Map([
     ['project/choice.h', { source: '#define CHOICE 1\n' }],
@@ -493,6 +499,19 @@ assert.strictEqual(analyze(makeRequest({
 assert.strictEqual(analyze(makeRequest({
     limits: { ...hardLimits, memoryBytes: (128 * 1024 * 1024) + 1 },
 })).envelope.status, 'internal-error', 'a caller memory limit above the hard maximum must be rejected');
+
+if (process.env.MERC32_C_FRONTEND_VALIDATOR) {
+    const { validateEnvelope } = require(process.env.MERC32_C_FRONTEND_VALIDATOR);
+    const syntaxFixture = analyze(makeRequest({
+        mainPath: 'control-and-expressions.c',
+        source: fs.readFileSync(path.join(__dirname, 'fixtures', 'control-and-expressions.c'), 'utf8'),
+    })).envelope;
+    assert.strictEqual(syntaxFixture.status, 'ok', JSON.stringify(syntaxFixture.diagnostics));
+    assert.doesNotThrow(
+        () => validateEnvelope(syntaxFixture, syntaxFixture.bridgeBuildId),
+        'the compiled TypeScript contract must accept a real WASM envelope',
+    );
+}
 
 const remainingPages = 2048 - (abi.memory.buffer.byteLength / 65536);
 if (remainingPages > 0) abi.memory.grow(remainingPages);

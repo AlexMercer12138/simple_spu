@@ -228,6 +228,7 @@ const symbolRecordSchema: JsonSchema = {
 const nodeBaseProperties: Readonly<Record<string, JsonSchema>> = {
     id: idSchema,
     range: rangeReference,
+    spellingRange: rangeReference,
     children: { type: 'array', items: idSchema },
 };
 
@@ -251,7 +252,7 @@ const declarationKinds = [
 ] as const;
 const plainStatementKinds = [
     'compound', 'declaration-statement', 'expression-statement', 'return', 'if', 'while',
-    'do-while', 'for', 'switch', 'case', 'default', 'break', 'continue', 'empty',
+    'do-while', 'for', 'switch', 'default', 'break', 'continue', 'empty',
 ] as const;
 const expressionProperties: Readonly<Record<string, JsonSchema>> = {
     type: idSchema,
@@ -276,6 +277,7 @@ const nodeRecordSchema: JsonSchema = {
             kind, 'declaration', { type: idSchema, symbol: idSchema }, ['type', 'symbol'])),
         nodeSchema('static-assert', 'declaration'),
         ...plainStatementKinds.map((kind) => nodeSchema(kind, 'statement')),
+        nodeSchema('case', 'statement', { caseValue: integerConstantSchema }, ['caseValue']),
         nodeSchema('goto', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
         nodeSchema('label', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
         expressionSchema('integer-literal', { constant: integerConstantSchema }, ['constant']),
@@ -310,7 +312,8 @@ const sourceFileSchema = objectSchema({
     id: idSchema,
     path: { type: 'string', minLength: 1 },
     byteLength: nonNegativeIntegerSchema,
-}, ['id', 'path', 'byteLength']);
+    utf8BoundaryBitmap: { type: 'string' },
+}, ['id', 'path', 'byteLength', 'utf8BoundaryBitmap']);
 
 const diagnosticSchema = objectSchema({
     severity: { enum: ['note', 'warning', 'error', 'fatal'] },
@@ -378,7 +381,7 @@ const structurallyValid = ajv.compile<TypedCEnvelopeV1>(envelopeSchema);
 const NODE_KINDS = new Set<TypedNodeKind>([
     ...declarationKinds,
     'static-assert',
-    ...plainStatementKinds,
+    ...plainStatementKinds, 'case',
     'goto', 'label',
     'integer-literal', 'floating-literal', 'character-literal', 'string-literal',
     'declaration-reference', 'unary', 'binary', 'conditional', 'assignment',
@@ -592,7 +595,14 @@ function validateUnit(unit: TypedCUnitV1, diagnostics: readonly CFrontendDiagnos
         }
     }
     unit.symbols.forEach((symbol) => checkRange(symbol.range, `${symbol.kind} symbol`));
-    unit.nodes.forEach((node) => checkRange(node.range, `${node.kind} node`));
+    unit.nodes.forEach((node) => {
+        checkRange(node.range, `${node.kind} node`);
+        if (node.spellingRange !== undefined) {
+            checkRange(node.spellingRange, `${node.kind} node spelling range`);
+            assertInvariant(!sameRange(node.range, node.spellingRange), 'SOURCE_RANGE',
+                `${node.kind} node ${node.id} repeats its primary range as spellingRange`);
+        }
+    });
 
     validateTypeReferences(unit.types, types);
     rejectByValueCycles(unit.types, types);
@@ -614,8 +624,29 @@ function validateSourceFileTable(
         assertInvariant(Number.isSafeInteger(totalSourceBytes)
             && totalSourceBytes <= HARD_C_FRONTEND_LIMITS.totalSourceBytes,
         'SOURCE_LIMIT', 'total source byte length exceeds the hard frontend limit');
+        validateUtf8BoundaryBitmap(file);
     }
     return uniqueMap(sourceFiles, 'source file');
+}
+
+function validateUtf8BoundaryBitmap(file: SourceFileRecord): void {
+    const expectedBytes = Math.ceil((file.byteLength + 1) / 8);
+    assertInvariant(/^[0-9a-f]+$/u.test(file.utf8BoundaryBitmap), 'SOURCE_BOUNDARIES',
+        `source file ${file.path} boundary bitmap must use canonical lowercase hexadecimal`);
+    assertInvariant(file.utf8BoundaryBitmap.length === expectedBytes * 2, 'SOURCE_BOUNDARIES',
+        `source file ${file.path} boundary bitmap has the wrong length`);
+
+    const usedBits = (file.byteLength + 1) % 8;
+    if (usedBits !== 0) {
+        const lastByte = Number.parseInt(file.utf8BoundaryBitmap.slice(-2), 16);
+        const paddingMask = 0xff & ~((1 << usedBits) - 1);
+        assertInvariant((lastByte & paddingMask) === 0, 'SOURCE_BOUNDARIES',
+            `source file ${file.path} boundary bitmap has nonzero padding bits`);
+    }
+    assertInvariant(hasUtf8Boundary(file, 0), 'SOURCE_BOUNDARIES',
+        `source file ${file.path} boundary bitmap must include offset zero`);
+    assertInvariant(hasUtf8Boundary(file, file.byteLength), 'SOURCE_BOUNDARIES',
+        `source file ${file.path} boundary bitmap must include EOF`);
 }
 
 function validateTypeReferences(
@@ -963,7 +994,7 @@ function validateNodes(
         }
         if (node.category === 'expression') {
             const expressionType = requireType(types, node.type, `expression node ${node.id} type`);
-            validateExpressionCategory(node, expressionType, symbols);
+            validateExpressionCategory(node, expressionType, types, symbols, nodes);
             if (node.constant !== undefined) {
                 validateConstantForDestination(
                     node.constant, expressionType, types, symbols, `expression node ${node.id}`,
@@ -987,6 +1018,20 @@ function validateNodes(
                     `function-definition node ${node.id} requires a function symbol marked definition`);
             }
         }
+        validateNodeChildren(node, types, nodes);
+        if (node.kind === 'case') {
+            const caseExpression = requireNode(nodes, node.children[0], `case node ${node.id} expression`);
+            assertInvariant(caseExpression.category === 'expression', 'NODE_CHILDREN',
+                `case node ${node.id} requires an expression as its first child`);
+            validateConstantForDestination(
+                node.caseValue,
+                requireType(types, caseExpression.type, `case node ${node.id} expression type`),
+                types,
+                symbols,
+                `case node ${node.id} value`,
+                { kind: 'node' },
+            );
+        }
     }
     for (const declarationId of declarations) {
         const node = requireNode(nodes, declarationId, 'top-level declaration');
@@ -996,6 +1041,267 @@ function validateNodes(
             `top-level declaration ${declarationId} is not a file-scope declaration kind`);
     }
     rejectNodeCycles(records, nodes);
+    validateLabelScopes(records, nodes);
+}
+
+function validateNodeChildren(
+    node: TypedNodeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+    nodes: ReadonlyMap<number, TypedNodeRecord>,
+): void {
+    const children = node.children.map((id) => requireNode(nodes, id, `node ${node.id} child`));
+    const count = (minimum: number, maximum = minimum): void => assertInvariant(
+        children.length >= minimum && children.length <= maximum,
+        'NODE_CHILDREN',
+        `node ${node.id} (${node.kind}) requires ${minimum === maximum ? minimum : `${minimum}..${maximum}`} children`,
+    );
+    const category = (index: number, expected: TypedNodeRecord['category']): void =>
+        assertInvariant(children[index]?.category === expected, 'NODE_CHILDREN',
+            `node ${node.id} (${node.kind}) child ${index} must be ${expected}`);
+    const kind = (index: number, expected: TypedNodeKind): void =>
+        assertInvariant(children[index]?.kind === expected, 'NODE_CHILDREN',
+            `node ${node.id} (${node.kind}) child ${index} must be ${expected}`);
+    const conversion = (
+        index: number,
+        expected: Extract<TypedNodeRecord, { kind: 'conversion' }>['conversion'],
+    ): void => {
+        const child = children[index];
+        assertInvariant(child?.kind === 'conversion' && child.conversion === expected, 'NODE_CHILDREN',
+            `node ${node.id} (${node.kind}) child ${index} must be an ${expected} conversion`);
+    };
+
+    switch (node.kind) {
+        case 'function-declaration':
+            assertInvariant(children.every((child) => child.kind === 'parameter-declaration'),
+                'NODE_CHILDREN', `function declaration ${node.id} may contain only parameters`);
+            break;
+        case 'function-definition':
+            count(1, Number.MAX_SAFE_INTEGER);
+            kind(children.length - 1, 'compound');
+            assertInvariant(children.slice(0, -1).every((child) => child.kind === 'parameter-declaration'),
+                'NODE_CHILDREN', `function definition ${node.id} must place parameters before its compound body`);
+            break;
+        case 'variable-declaration':
+            count(0, 1);
+            if (children.length === 1) conversion(0, 'assignment');
+            break;
+        case 'parameter-declaration':
+        case 'typedef-declaration':
+        case 'record-declaration':
+        case 'enum-declaration':
+            count(0);
+            break;
+        case 'static-assert':
+            count(1, 2);
+            children.forEach((_child, index) => category(index, 'expression'));
+            break;
+        case 'compound':
+            children.forEach((_child, index) => category(index, 'statement'));
+            break;
+        case 'declaration-statement':
+            count(1, Number.MAX_SAFE_INTEGER);
+            children.forEach((_child, index) => category(index, 'declaration'));
+            break;
+        case 'expression-statement':
+            count(1);
+            category(0, 'expression');
+            break;
+        case 'return':
+            count(0, 1);
+            if (children.length === 1) conversion(0, 'return');
+            break;
+        case 'if':
+            count(2, 3);
+            category(0, 'expression');
+            category(1, 'statement');
+            if (children.length === 3) category(2, 'statement');
+            break;
+        case 'while':
+        case 'switch':
+            count(2);
+            category(0, 'expression');
+            category(1, 'statement');
+            break;
+        case 'do-while':
+            count(2);
+            category(0, 'statement');
+            category(1, 'expression');
+            break;
+        case 'for': {
+            count(1, 4);
+            category(children.length - 1, 'statement');
+            const clauses = children.slice(0, -1);
+            const statementClauses = clauses.filter((child) => child.category === 'statement');
+            assertInvariant(statementClauses.length <= 1
+                && (statementClauses.length === 0 || clauses[0].category === 'statement')
+                && clauses.every((child, index) => child.category === 'expression'
+                    || (index === 0 && child.category === 'statement')),
+            'NODE_CHILDREN', `for node ${node.id} has invalid initializer/condition/increment ordering`);
+            break;
+        }
+        case 'case':
+            count(2, 3);
+            category(0, 'expression');
+            if (children.length === 3) category(1, 'expression');
+            category(children.length - 1, 'statement');
+            break;
+        case 'default':
+        case 'label':
+            count(1);
+            category(0, 'statement');
+            break;
+        case 'break':
+        case 'continue':
+        case 'goto':
+        case 'empty':
+            count(0);
+            break;
+        case 'integer-literal':
+        case 'floating-literal':
+        case 'character-literal':
+        case 'string-literal':
+        case 'declaration-reference':
+            count(0);
+            break;
+        case 'unary':
+        case 'member':
+        case 'generic-selection':
+            count(1);
+            category(0, 'expression');
+            break;
+        case 'binary':
+        case 'subscript':
+            count(2);
+            category(0, 'expression');
+            category(1, 'expression');
+            break;
+        case 'assignment':
+            count(2);
+            category(0, 'expression');
+            conversion(1, 'assignment');
+            break;
+        case 'conditional':
+            count(3);
+            children.forEach((_child, index) => category(index, 'expression'));
+            break;
+        case 'call':
+            count(1, Number.MAX_SAFE_INTEGER);
+            category(0, 'expression');
+            for (let index = 1; index < children.length; index += 1) conversion(index, 'argument');
+            break;
+        case 'sizeof':
+        case 'alignof':
+            count(0, 1);
+            if (children.length === 1) category(0, 'expression');
+            break;
+        case 'conversion':
+            count(1);
+            category(0, 'expression');
+            validateConversion(node, children[0], types);
+            break;
+        case 'compound-literal':
+            children.forEach((_child, index) => category(index, 'expression'));
+            break;
+    }
+}
+
+function validateConversion(
+    node: Extract<TypedNodeRecord, { kind: 'conversion' }>,
+    child: TypedNodeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): void {
+    assertInvariant(child.category === 'expression', 'NODE_CONVERSION',
+        `conversion node ${node.id} requires an expression child`);
+    assertInvariant(node.type === node.targetType, 'NODE_CONVERSION',
+        `conversion node ${node.id} type must equal targetType`);
+    const source = unaliasType(requireType(types, child.type, `conversion node ${node.id} source`), types);
+    const target = unaliasType(requireType(types, node.targetType, `conversion node ${node.id} target`), types);
+    switch (node.conversion) {
+        case 'lvalue-to-rvalue':
+            assertInvariant(child.valueCategory === 'lvalue' && sameResolvedType(source, target),
+                'NODE_CONVERSION', `lvalue conversion ${node.id} requires a same-type lvalue source`);
+            break;
+        case 'array-to-pointer': {
+            assertInvariant(source.kind === 'array' && target.kind === 'pointer', 'NODE_CONVERSION',
+                `array conversion ${node.id} requires array and pointer types`);
+            const element = unaliasType(requireType(types, source.element, `array conversion ${node.id} element`), types);
+            const pointee = unaliasType(requireType(types, target.pointee, `array conversion ${node.id} pointee`), types);
+            assertInvariant(sameResolvedType(element, pointee), 'NODE_CONVERSION',
+                `array conversion ${node.id} target must point to its source element type`);
+            break;
+        }
+        case 'function-to-pointer': {
+            assertInvariant(source.kind === 'function' && child.valueCategory === 'function'
+                && target.kind === 'pointer', 'NODE_CONVERSION',
+            `function conversion ${node.id} requires a function source and pointer target`);
+            const pointee = unaliasType(requireType(types, target.pointee,
+                `function conversion ${node.id} pointee`), types);
+            assertInvariant(pointee.kind === 'function' && sameResolvedType(source, pointee),
+                'NODE_CONVERSION', `function conversion ${node.id} target must point to its source function type`);
+            break;
+        }
+        case 'integer-promotion': {
+            const sourceRepresentation = integerRepresentation(source, types);
+            const targetRepresentation = integerRepresentation(target, types);
+            assertInvariant(sourceRepresentation !== undefined && targetRepresentation !== undefined
+                && sourceRepresentation.bits < targetRepresentation.bits
+                && targetRepresentation.bits === MERC32_ABI.builtin.int[0] * 8,
+            'NODE_CONVERSION', `integer promotion ${node.id} must widen to int width`);
+            break;
+        }
+        case 'usual-arithmetic':
+            assertInvariant(isArithmeticType(source) && isArithmeticType(target), 'NODE_CONVERSION',
+                `usual arithmetic conversion ${node.id} requires arithmetic source and target types`);
+            break;
+        case 'assignment':
+        case 'argument':
+        case 'return':
+            assertInvariant(isImplicitConversionPair(source, target), 'NODE_CONVERSION',
+                `${node.conversion} conversion ${node.id} has incompatible source and target types`);
+            break;
+    }
+}
+
+function validateLabelScopes(
+    records: readonly TypedNodeRecord[],
+    nodes: ReadonlyMap<number, TypedNodeRecord>,
+): void {
+    const owned = new Map<number, number>();
+    for (const functionNode of records) {
+        if (functionNode.kind !== 'function-definition') continue;
+        const labels = new Set<string>();
+        const gotos: { readonly id: number; readonly label: string }[] = [];
+        const visited = new Set<number>();
+        const visit = (node: TypedNodeRecord): void => {
+            if (visited.has(node.id)) return;
+            visited.add(node.id);
+            if (node.kind === 'label' || node.kind === 'goto') {
+                const previousOwner = owned.get(node.id);
+                assertInvariant(previousOwner === undefined || previousOwner === functionNode.id,
+                    'LABEL_SCOPE', `node ${node.id} belongs to more than one function`);
+                owned.set(node.id, functionNode.id);
+            }
+            if (node.kind === 'label') {
+                assertInvariant(!labels.has(node.label), 'LABEL_SCOPE',
+                    `function node ${functionNode.id} has duplicate label ${JSON.stringify(node.label)}`);
+                labels.add(node.label);
+            } else if (node.kind === 'goto') {
+                gotos.push(node);
+            }
+            node.children.forEach((child) => visit(requireNode(nodes, child, `node ${node.id} child`)));
+        };
+        visit(functionNode);
+        for (const goto of gotos) {
+            assertInvariant(labels.has(goto.label), 'LABEL_SCOPE',
+                `goto node ${goto.id} has no target ${JSON.stringify(goto.label)} in its function`);
+        }
+    }
+    for (const node of records) {
+        if (node.kind === 'label' || node.kind === 'goto') {
+            assertInvariant(owned.has(node.id), 'LABEL_SCOPE',
+                `${node.kind} node ${node.id} is outside a function definition`);
+        }
+    }
 }
 
 function validateConstantForDestination(
@@ -1120,12 +1426,17 @@ function unaliasType(
 function validateExpressionCategory(
     node: Extract<TypedNodeRecord, { category: 'expression' }>,
     type: TypedTypeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
     symbols: ReadonlyMap<number, TypedSymbolRecord>,
+    nodes: ReadonlyMap<number, TypedNodeRecord>,
 ): void {
     if (node.kind === 'declaration-reference') {
         const symbol = requireSymbolKind(symbols, node.symbol,
             ['variable', 'function', 'parameter', 'enumerator'], `expression node ${node.id} symbol`);
-        assertInvariant('type' in symbol && symbol.type === type.id, 'CROSS_KIND_REFERENCE',
+        const typeMatches = symbol.kind === 'enumerator'
+            ? integerRepresentation(type, types) !== undefined
+            : symbol.type === type.id;
+        assertInvariant(typeMatches, 'CROSS_KIND_REFERENCE',
             `expression node ${node.id} type disagrees with its referenced symbol`);
         const expected = symbol.kind === 'function' ? 'function'
             : symbol.kind === 'enumerator' ? 'rvalue' : 'lvalue';
@@ -1133,8 +1444,30 @@ function validateExpressionCategory(
             `declaration reference ${node.id} must have ${expected} value category`);
         return;
     }
-    const expected = node.kind === 'string-literal' || node.kind === 'compound-literal'
-        ? 'lvalue' : 'rvalue';
+    let expected: Extract<TypedNodeRecord, { category: 'expression' }>['valueCategory'] = 'rvalue';
+    if (node.kind === 'string-literal' || node.kind === 'compound-literal'
+        || node.kind === 'subscript') {
+        expected = 'lvalue';
+    } else if (node.kind === 'member') {
+        const base = requireNode(nodes, node.children[0], `member node ${node.id} base expression`);
+        assertInvariant(base.category === 'expression', 'NODE_EXPRESSION_METADATA',
+            `member node ${node.id} must have an expression base`);
+        expected = unaliasType(requireType(types, base.type, `member node ${node.id} base type`), types).kind === 'pointer'
+            ? 'lvalue'
+            : base.valueCategory;
+    } else if (node.kind === 'generic-selection') {
+        const chosen = requireNode(nodes, node.children[0], `generic selection ${node.id} chosen expression`);
+        assertInvariant(chosen.category === 'expression', 'NODE_EXPRESSION_METADATA',
+            `generic selection ${node.id} must select an expression`);
+        expected = chosen.valueCategory;
+    } else if (node.kind === 'unary' && node.operator === 'parentheses') {
+        const operand = requireNode(nodes, node.children[0], `parentheses node ${node.id} operand`);
+        assertInvariant(operand.category === 'expression', 'NODE_EXPRESSION_METADATA',
+            `parentheses node ${node.id} must contain an expression`);
+        expected = operand.valueCategory;
+    } else if (node.kind === 'unary' && node.operator === '*') {
+        expected = unaliasType(type, types).kind === 'function' ? 'function' : 'lvalue';
+    }
     assertInvariant(node.valueCategory === expected, 'NODE_EXPRESSION_METADATA',
         `expression node ${node.id} must have ${expected} value category`);
 }
@@ -1233,6 +1566,9 @@ function validateRange(
         assertInvariant(range.start.byteOffset <= file.byteLength
             && range.end.byteOffset <= file.byteLength,
         'SOURCE_RANGE', `${label} exceeds UTF-8 byte length ${file.byteLength}`);
+        assertInvariant(hasUtf8Boundary(file, range.start.byteOffset)
+            && hasUtf8Boundary(file, range.end.byteOffset),
+        'SOURCE_RANGE', `${label} endpoint is not a UTF-8 code-point boundary`);
     }
     assertInvariant(range.start.byteOffset <= range.end.byteOffset,
         'SOURCE_RANGE', `${label} has inverted byte offsets`);
@@ -1246,6 +1582,23 @@ function validateRange(
         `${label} violates source position coherence between byte offset and line/column`);
     recordSourcePosition(range.file, range.start, label, positions);
     recordSourcePosition(range.file, range.end, label, positions);
+}
+
+function hasUtf8Boundary(file: SourceFileRecord, byteOffset: number): boolean {
+    const byteIndex = Math.floor(byteOffset / 8);
+    const encodedByte = file.utf8BoundaryBitmap.slice(byteIndex * 2, byteIndex * 2 + 2);
+    const packed = Number.parseInt(encodedByte, 16);
+    return (packed & (1 << (byteOffset % 8))) !== 0;
+}
+
+function sameRange(left: SourceRange, right: SourceRange): boolean {
+    return left.file === right.file
+        && left.start.line === right.start.line
+        && left.start.column === right.start.column
+        && left.start.byteOffset === right.start.byteOffset
+        && left.end.line === right.end.line
+        && left.end.column === right.end.column
+        && left.end.byteOffset === right.end.byteOffset;
 }
 
 interface SourcePositionCoherence {
@@ -1347,6 +1700,21 @@ function isObjectType(
 
 function isIntegerType(type: TypedTypeRecord): boolean {
     return type.kind === 'enum' || (type.kind === 'builtin' && isIntegerBuiltin(type.name));
+}
+
+function isArithmeticType(type: TypedTypeRecord): boolean {
+    return isIntegerType(type) || (type.kind === 'builtin' && isFloatingBuiltin(type.name));
+}
+
+function isImplicitConversionPair(source: TypedTypeRecord, target: TypedTypeRecord): boolean {
+    if (sameResolvedType(source, target) || (isArithmeticType(source) && isArithmeticType(target))) {
+        return true;
+    }
+    if (target.kind === 'pointer') {
+        return source.kind === 'pointer' || isIntegerType(source);
+    }
+    return target.kind === 'builtin' && target.name === '_Bool'
+        && (isArithmeticType(source) || source.kind === 'pointer');
 }
 
 function isIntegerBuiltin(name: BuiltinTypeName): boolean {

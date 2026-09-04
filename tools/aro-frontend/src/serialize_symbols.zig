@@ -28,6 +28,7 @@ pub const Store = struct {
         definition_node: ?aro.Tree.Node.Index = null,
         owner: u32 = 0,
         type_qt: aro.QualType = .invalid,
+        local: bool = false,
     };
 
     pub fn init(allocator: std.mem.Allocator, tree: *const aro.Tree, types: *serialize_types.Store) Store {
@@ -76,6 +77,13 @@ pub const Store = struct {
             }
         }
 
+        for (store.tree.root_decls.items) |node_index| switch (node_index.get(store.tree)) {
+            .function => |decl| if (decl.body) |body| {
+                try store.collectLocals(body);
+            },
+            else => {},
+        };
+
         const source_symbol_count = store.records.items.len;
         var record_index: usize = 0;
         while (record_index < source_symbol_count) : (record_index += 1) {
@@ -96,6 +104,22 @@ pub const Store = struct {
         owner: u32,
         definition: ?aro.Tree.Node.Index,
     ) !u32 {
+        return store.addRecord(kind, node, type_qt, owner, definition, false);
+    }
+
+    fn addLocal(store: *Store, node: aro.Tree.Node.Index, qt: aro.QualType) !u32 {
+        return store.addRecord(.variable, node, qt, 0, null, true);
+    }
+
+    fn addRecord(
+        store: *Store,
+        kind: Kind,
+        node: aro.Tree.Node.Index,
+        type_qt: aro.QualType,
+        owner: u32,
+        definition: ?aro.Tree.Node.Index,
+        local: bool,
+    ) !u32 {
         if (store.by_node.get(node)) |id| {
             if (definition) |definition_node| store.records.items[id - 1].definition_node = definition_node;
             return id;
@@ -112,10 +136,57 @@ pub const Store = struct {
             .definition_node = definition,
             .owner = owner,
             .type_qt = type_qt,
+            .local = local,
         });
         try store.by_node.put(store.allocator, node, id);
         if (definition) |definition_node| try store.by_node.put(store.allocator, definition_node, id);
         return id;
+    }
+
+    fn collectLocals(store: *Store, node_index: aro.Tree.Node.Index) !void {
+        switch (node_index.get(store.tree)) {
+            .variable => |decl| if (!decl.implicit and store.types.isSourceToken(decl.name_tok)) {
+                _ = try store.addLocal(node_index, decl.qt);
+            },
+            .typedef => |decl| if (!decl.implicit and store.types.isSourceToken(decl.name_tok)) {
+                _ = try store.types.internTypedef(node_index, store.tree.tokSlice(decl.name_tok), decl.qt);
+                _ = try store.add(.typedef, node_index, decl.qt, 0, null);
+            },
+            .struct_decl, .union_decl => |decl| if (store.types.isSourceToken(decl.name_or_kind_tok)) {
+                _ = try store.add(.record, node_index, decl.container_qt, 0, null);
+            },
+            .struct_forward_decl, .union_forward_decl => |decl| if (store.types.isSourceToken(decl.name_or_kind_tok)) {
+                _ = try store.add(.record, node_index, decl.container_qt, 0, decl.definition);
+            },
+            .enum_decl => |decl| if (store.types.isSourceToken(decl.name_or_kind_tok)) {
+                const owner = try store.add(.@"enum", node_index, decl.container_qt, 0, null);
+                for (decl.fields) |field_node| {
+                    _ = try store.add(.enumerator, field_node, decl.container_qt, owner, null);
+                }
+            },
+            .enum_forward_decl => |decl| if (store.types.isSourceToken(decl.name_or_kind_tok)) {
+                _ = try store.add(.@"enum", node_index, decl.container_qt, 0, decl.definition);
+            },
+            .compound_stmt => |compound| for (compound.body) |child| {
+                try store.collectLocals(child);
+            },
+            .if_stmt => |statement| {
+                try store.collectLocals(statement.then_body);
+                if (statement.else_body) |child| try store.collectLocals(child);
+            },
+            .switch_stmt => |statement| try store.collectLocals(statement.body),
+            .case_stmt => |statement| try store.collectLocals(statement.body),
+            .default_stmt => |statement| try store.collectLocals(statement.body),
+            .while_stmt => |statement| try store.collectLocals(statement.body),
+            .do_while_stmt => |statement| try store.collectLocals(statement.body),
+            .for_stmt => |statement| {
+                if (statement.init) |initializer_node| try store.collectLocals(initializer_node);
+                try store.collectLocals(statement.body);
+            },
+            .labeled_stmt => |statement| try store.collectLocals(statement.body),
+            .decl_stmt => |statement| for (statement.decls) |decl| try store.collectLocals(decl),
+            else => {},
+        }
     }
 
     fn collectInitializerStrings(
@@ -219,19 +290,27 @@ pub const Store = struct {
                 try output.add(",\"type\":");
                 try output.integer(try store.types.intern(variable.qt));
                 try output.add(",\"linkage\":");
-                try output.string(if (variable.storage_class == .static) "internal" else "external");
+                try output.string(if (record.local)
+                    (if (variable.storage_class == .@"extern") "external" else "none")
+                else if (variable.storage_class == .static)
+                    "internal"
+                else
+                    "external");
                 try output.add(",\"storage\":");
                 try output.string(if (variable.thread_local)
                     "thread"
                 else switch (variable.storage_class) {
                     .@"extern" => "extern",
                     .register => "register",
-                    else => "static",
+                    .static => "static",
+                    .auto => if (record.local) "automatic" else "static",
                 });
                 const definition = variable.storage_class != .@"extern" or variable.initializer != null;
                 try output.add(",\"definition\":");
                 try output.add(if (definition) "true" else "false");
-                if (definition) {
+                if ((!record.local and definition) or
+                    (record.local and variable.storage_class == .static))
+                {
                     try output.add(",\"initializer\":");
                     try serialize_initializers.write(
                         output,

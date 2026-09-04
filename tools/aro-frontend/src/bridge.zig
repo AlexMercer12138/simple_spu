@@ -135,7 +135,7 @@ fn analyze(json: []const u8) !void {
 
     const diagnostic_records = try diagnostics.collect(allocator, &comp, &aro_diagnostics, &sources);
     const status: serializer.Status = if (!compilation_failed and aro_diagnostics.errors == 0) .ok else .diagnostics;
-    const encoded = try serializer.envelope(
+    const encoded = try serializer.envelopeWithPreprocessor(
         allocator,
         parsed.limits.result_bytes,
         build_id,
@@ -143,6 +143,7 @@ fn analyze(json: []const u8) !void {
         diagnostic_records,
         &sources,
         if (tree) |*parsed_tree| parsed_tree else null,
+        &pp,
     );
     state.setResult(encoded);
 }

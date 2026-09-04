@@ -126,6 +126,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_serializer_types_tests = b.addRunArtifact(serializer_types_tests);
+    const serializer_nodes_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/serializer_nodes.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{
+                .name = "serializer",
+                .module = serializer_module,
+            }, .{
+                .name = "aro",
+                .module = aro_dependency.module("aro"),
+            } },
+        }),
+    });
+    const run_serializer_nodes_tests = b.addRunArtifact(serializer_nodes_tests);
     const run_bridge_host = b.addSystemCommand(&.{ "node", "tests/bridge-host.js" });
     run_bridge_host.addArtifactArg(bridge);
 
@@ -136,4 +151,7 @@ pub fn build(b: *std.Build) void {
 
     const test_serializer_types = b.step("test-serializer-types", "Run MERC32 semantic serializer tests");
     test_serializer_types.dependOn(&run_serializer_types_tests.step);
+
+    const test_serializer_nodes = b.step("test-serializer-nodes", "Run MERC32 typed syntax serializer tests");
+    test_serializer_nodes.dependOn(&run_serializer_nodes_tests.step);
 }

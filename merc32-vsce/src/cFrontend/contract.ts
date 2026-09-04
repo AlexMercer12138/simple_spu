@@ -19,6 +19,7 @@ export interface SourceFileRecord {
     readonly id: SourceFileId;
     readonly path: string;
     readonly byteLength: number;
+    readonly utf8BoundaryBitmap: string;
 }
 
 export interface CFrontendDiagnostic {
@@ -231,6 +232,7 @@ interface TypedNodeBase<K extends TypedNodeKind, C extends 'expression' | 'state
     readonly category: C;
     readonly kind: K;
     readonly range: SourceRange;
+    readonly spellingRange?: SourceRange;
     readonly children: readonly NodeId[];
 }
 
@@ -255,8 +257,9 @@ export type TypedNodeRecord =
     | TypedNodeBase<'static-assert', 'declaration'>
     | PlainStatement<
         | 'compound' | 'declaration-statement' | 'expression-statement' | 'return'
-        | 'if' | 'while' | 'do-while' | 'for' | 'switch' | 'case' | 'default'
+        | 'if' | 'while' | 'do-while' | 'for' | 'switch' | 'default'
         | 'break' | 'continue' | 'empty'>
+    | (PlainStatement<'case'> & Readonly<{ caseValue: IntegerConstant }>)
     | (PlainStatement<'goto' | 'label'> & Readonly<{ label: string }>)
     | (ExpressionBase<'integer-literal' | 'character-literal'> & Readonly<{ constant: IntegerConstant }>)
     | (ExpressionBase<'floating-literal'> & Readonly<{ constant: FloatingConstant }>)

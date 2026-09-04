@@ -117,8 +117,8 @@
         "op": "set",
         "path": ["unit", "sourceFiles"],
         "value": [
-          { "id": 1, "path": "main.c", "byteLength": 26 },
-          { "id": 1, "path": "duplicate.c", "byteLength": 0 }
+          { "id": 1, "path": "main.c", "byteLength": 26, "utf8BoundaryBitmap": "ffffff07" },
+          { "id": 1, "path": "duplicate.c", "byteLength": 0, "utf8BoundaryBitmap": "01" }
         ]
       }]
     },
@@ -429,7 +429,7 @@
       "name": "ok envelope carries failure source table",
       "invariant": "STATUS_CONSISTENCY",
       "messageIncludes": "forbids envelope sourceFiles",
-      "operations": [{ "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "main.c", "byteLength": 26 }] }]
+      "operations": [{ "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "main.c", "byteLength": 26, "utf8BoundaryBitmap": "ffffff07" }] }]
     },
     {
       "name": "failure diagnostic has no source table",
@@ -448,7 +448,7 @@
       "operations": [
         { "op": "set", "path": ["status"], "value": "diagnostics" },
         { "op": "delete", "path": ["unit"] },
-        { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 4 }] },
+        { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 4, "utf8BoundaryBitmap": "1f" }] },
         { "op": "set", "path": ["diagnostics"], "value": [{ "severity": "error", "code": "C1002", "message": "unknown source", "range": { "file": 2, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }] }
       ]
     },
@@ -459,7 +459,7 @@
       "operations": [
         { "op": "set", "path": ["status"], "value": "diagnostics" },
         { "op": "delete", "path": ["unit"] },
-        { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 1 }] },
+        { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 1, "utf8BoundaryBitmap": "03" }] },
         { "op": "set", "path": ["diagnostics"], "value": [{ "severity": "error", "code": "C1003", "message": "out of range", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 3, "byteOffset": 2 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }] }
       ]
     },
