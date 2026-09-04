@@ -353,7 +353,7 @@ const envelopeSchema: JsonSchema = {
     ...objectSchema({
         protocolVersion: { type: 'integer' },
         bridgeBuildId: { type: 'string', minLength: 1 },
-        status: { enum: ['ok', 'error', 'internal-error'] },
+        status: { enum: ['ok', 'diagnostics', 'internal-error'] },
         diagnostics: { type: 'array', items: diagnosticSchema },
         sourceFiles: { type: 'array', items: sourceFileSchema },
         unit: { $ref: '#/$defs/unit' },
@@ -390,6 +390,7 @@ const SYMBOL_KINDS = new Set([
     'variable', 'function', 'parameter', 'typedef', 'record', 'enum', 'enumerator', 'label',
 ]);
 const CONSTANT_KINDS = new Set(['integer', 'floating', 'address', 'string']);
+const ENVELOPE_STATUSES = new Set(['ok', 'diagnostics', 'internal-error']);
 
 export function validateEnvelope(value: unknown, expectedBuildId: string): TypedCEnvelopeV1 {
     if (!structurallyValid(value)) {
@@ -433,6 +434,10 @@ export function hasErrors(diagnostics: readonly CFrontendDiagnostic[]): boolean 
 }
 
 function structuralError(value: unknown, errors: readonly ErrorObject[]): CFrontendInternalError {
+    const status = isObject(value) ? value.status : undefined;
+    if (typeof status === 'string' && !ENVELOPE_STATUSES.has(status)) {
+        return failure('STATUS_KIND', `unknown envelope status ${JSON.stringify(status)}`);
+    }
     const unit = isObject(value) ? value.unit : undefined;
     const types = isObject(unit) && Array.isArray(unit.types) ? unit.types : [];
     for (const type of types) {
@@ -940,7 +945,8 @@ function validateInitializer(
         previousOffset = write.offset;
         previousEnd = write.offset + type.size;
         validateConstantForDestination(
-            write.value, type, types, symbols, `initializer write at ${write.offset}`);
+            write.value, type, types, symbols, `initializer write at ${write.offset}`,
+            { kind: 'initializer', zeroFill: initializer.zeroFill });
     }
 }
 
@@ -960,7 +966,8 @@ function validateNodes(
             validateExpressionCategory(node, expressionType, symbols);
             if (node.constant !== undefined) {
                 validateConstantForDestination(
-                    node.constant, expressionType, types, symbols, `expression node ${node.id}`);
+                    node.constant, expressionType, types, symbols, `expression node ${node.id}`,
+                    { kind: 'node' });
             }
         }
         if ('targetType' in node) {
@@ -997,6 +1004,7 @@ function validateConstantForDestination(
     types: ReadonlyMap<number, TypedTypeRecord>,
     symbols: ReadonlyMap<number, TypedSymbolRecord>,
     label: string,
+    context: Readonly<{ kind: 'node' }> | Readonly<{ kind: 'initializer'; zeroFill: true }>,
 ): void {
     validateConstant(constant, types, symbols);
     const destination = unaliasType(destinationType, types);
@@ -1046,11 +1054,6 @@ function validateConstantForDestination(
             } else {
                 assertInvariant(pointee.kind !== 'function', 'CONSTANT_TYPE',
                     `${label} object address cannot initialize a function pointer`);
-                const symbolType = unaliasType(
-                    requireType(types, symbol.type, `variable symbol ${symbol.id} type`), types);
-                const pointsToVoid = pointee.kind === 'builtin' && pointee.name === 'void';
-                assertInvariant(pointsToVoid || sameResolvedType(pointee, symbolType),
-                    'CONSTANT_TYPE', `${label} address pointee type disagrees with its symbol`);
             }
             return;
         }
@@ -1066,8 +1069,13 @@ function validateConstantForDestination(
                 && constantElement.kind === 'builtin'
                 && constantElement.name === destinationElement.name,
             'CONSTANT_TYPE', `${label} string destination has an incompatible element type`);
-            assertInvariant(constant.bytes.length === destination.size,
-                'CONSTANT_TYPE', `${label} string constant byte size disagrees with its array destination`);
+            if (context.kind === 'initializer' && context.zeroFill) {
+                assertInvariant(constant.bytes.length <= destination.size,
+                    'CONSTANT_TYPE', `${label} string constant byte size exceeds its array destination`);
+            } else {
+                assertInvariant(constant.bytes.length === destination.size,
+                    'CONSTANT_TYPE', `${label} string constant byte size disagrees with its array destination`);
+            }
             return;
         }
     }

@@ -85,7 +85,7 @@ assert.doesNotThrow(() => validateEnvelope(exactUint64, 'test-build'),
 const sourcedFailure = {
     protocolVersion: 1,
     bridgeBuildId: 'test-build',
-    status: 'error',
+    status: 'diagnostics',
     sourceFiles: [{ id: 1, path: 'broken.c', byteLength: 4 }],
     diagnostics: [{
         severity: 'error',
@@ -103,6 +103,7 @@ const sourcedFailure = {
     }],
 };
 const acceptedFailure = validateEnvelope(sourcedFailure, 'test-build');
+assert.strictEqual(acceptedFailure.status, 'diagnostics');
 assert.notStrictEqual(acceptedFailure.sourceFiles, sourcedFailure.sourceFiles);
 assertDeeplyFrozen(acceptedFailure);
 
@@ -151,10 +152,91 @@ definedPrototype.unit.nodes.push({
         end: { line: 1, column: 2, byteOffset: 1 },
     },
     children: [],
+}, {
+    id: 2, category: 'declaration', kind: 'function-definition', type: 2, symbol: 1,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    children: [],
 });
-definedPrototype.unit.declarations.push(1);
+definedPrototype.unit.declarations.push(1, 2);
 assert.doesNotThrow(() => validateEnvelope(definedPrototype, 'test-build'),
-    'a prototype may share a function symbol that is marked as defined elsewhere');
+    'a declaration and later definition may share one function symbol marked definition');
+
+const subobjectRelocation = clone(validFixture);
+subobjectRelocation.unit.types.push({
+    id: 2,
+    kind: 'struct',
+    name: 'Pair',
+    complete: true,
+    members: [{
+        name: 'first', type: 1, offset: 0,
+        range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        },
+    }, {
+        name: 'second', type: 1, offset: 4,
+        range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        },
+    }],
+    qualifiers: [], size: 8, alignment: 4,
+}, {
+    id: 3, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
+});
+subobjectRelocation.unit.symbols.push({
+    id: 1, kind: 'variable', name: 'pair', type: 2,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    linkage: 'internal', storage: 'static', definition: true,
+});
+subobjectRelocation.unit.nodes.push({
+    id: 1, category: 'expression', kind: 'conversion', type: 3,
+    valueCategory: 'rvalue', children: [], conversion: 'assignment', targetType: 3,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    constant: { kind: 'address', symbol: 1, addend: '4' },
+});
+assert.doesNotThrow(() => validateEnvelope(subobjectRelocation, 'test-build'),
+    'symbol-plus-addend may address an int subobject within a larger object');
+
+const paddedStringInitializer = clone(validFixture);
+paddedStringInitializer.unit.types = [
+    { id: 1, kind: 'builtin', name: 'char', qualifiers: [], size: 1, alignment: 1 },
+    { id: 2, kind: 'array', element: 1, count: 4, qualifiers: [], size: 4, alignment: 1 },
+];
+paddedStringInitializer.unit.symbols.push({
+    id: 1, kind: 'variable', name: 'text', type: 2,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    linkage: 'internal', storage: 'static', definition: true,
+    initializer: {
+        size: 4,
+        zeroFill: true,
+        writes: [{
+            offset: 0,
+            type: 2,
+            value: { kind: 'string', elementType: 1, bytes: [65, 0] },
+        }],
+    },
+});
+assert.doesNotThrow(() => validateEnvelope(paddedStringInitializer, 'test-build'),
+    'zeroFill supplies the remaining bytes of a short character-array initializer');
 
 const typedefRepresentations = clone(validFixture);
 typedefRepresentations.unit.types = [

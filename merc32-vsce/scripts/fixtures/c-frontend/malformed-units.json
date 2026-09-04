@@ -78,8 +78,14 @@
       "operations": [{ "op": "delete", "path": ["unit"] }]
     },
     {
-      "name": "error status with unit",
+      "name": "diagnostics status with unit",
       "invariant": "STATUS_CONSISTENCY",
+      "operations": [{ "op": "set", "path": ["status"], "value": "diagnostics" }]
+    },
+    {
+      "name": "legacy error status",
+      "invariant": "STATUS_KIND",
+      "messageIncludes": "unknown envelope status",
       "operations": [{ "op": "set", "path": ["status"], "value": "error" }]
     },
     {
@@ -430,7 +436,7 @@
       "invariant": "FAILURE_SOURCE_FILES",
       "messageIncludes": "requires sourceFiles",
       "operations": [
-        { "op": "set", "path": ["status"], "value": "error" },
+        { "op": "set", "path": ["status"], "value": "diagnostics" },
         { "op": "delete", "path": ["unit"] },
         { "op": "set", "path": ["diagnostics"], "value": [{ "severity": "error", "code": "C1001", "message": "missing source table", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }] }
       ]
@@ -440,7 +446,7 @@
       "invariant": "MISSING_REFERENCE",
       "messageIncludes": "missing source file 2",
       "operations": [
-        { "op": "set", "path": ["status"], "value": "error" },
+        { "op": "set", "path": ["status"], "value": "diagnostics" },
         { "op": "delete", "path": ["unit"] },
         { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 4 }] },
         { "op": "set", "path": ["diagnostics"], "value": [{ "severity": "error", "code": "C1002", "message": "unknown source", "range": { "file": 2, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }] }
@@ -451,7 +457,7 @@
       "invariant": "SOURCE_RANGE",
       "messageIncludes": "exceeds UTF-8 byte length 1",
       "operations": [
-        { "op": "set", "path": ["status"], "value": "error" },
+        { "op": "set", "path": ["status"], "value": "diagnostics" },
         { "op": "delete", "path": ["unit"] },
         { "op": "set", "path": ["sourceFiles"], "value": [{ "id": 1, "path": "broken.c", "byteLength": 1 }] },
         { "op": "set", "path": ["diagnostics"], "value": [{ "severity": "error", "code": "C1003", "message": "out of range", "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 3, "byteOffset": 2 } }, "related": [], "notes": [], "includeTrace": [], "macroExpansionTrace": [] }] }
@@ -485,6 +491,15 @@
       "operations": [
         { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "char", "qualifiers": [], "size": 1, "alignment": 1 }] },
         { "op": "set", "path": ["unit", "symbols"], "value": [{ "id": 1, "kind": "variable", "name": "x", "type": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "linkage": "internal", "storage": "static", "definition": true, "initializer": { "size": 1, "zeroFill": true, "writes": [{ "offset": 0, "type": 1, "value": { "kind": "string", "elementType": 1, "bytes": [65, 66, 0] } }] } }] }
+      ]
+    },
+    {
+      "name": "initializer string value exceeds array write",
+      "invariant": "CONSTANT_TYPE",
+      "messageIncludes": "exceeds its array destination",
+      "operations": [
+        { "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "char", "qualifiers": [], "size": 1, "alignment": 1 }, { "id": 2, "kind": "array", "element": 1, "count": 2, "qualifiers": [], "size": 2, "alignment": 1 }] },
+        { "op": "set", "path": ["unit", "symbols"], "value": [{ "id": 1, "kind": "variable", "name": "text", "type": 2, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } }, "linkage": "internal", "storage": "static", "definition": true, "initializer": { "size": 2, "zeroFill": true, "writes": [{ "offset": 0, "type": 2, "value": { "kind": "string", "elementType": 1, "bytes": [65, 66, 0] } }] } }] }
       ]
     },
     {
