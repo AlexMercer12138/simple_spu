@@ -25,6 +25,7 @@ pub const Store = struct {
     const Record = struct {
         kind: Kind,
         node: aro.Tree.Node.Index,
+        definition_node: ?aro.Tree.Node.Index = null,
         owner: u32 = 0,
         type_qt: aro.QualType = .invalid,
     };
@@ -42,10 +43,7 @@ pub const Store = struct {
         for (store.tree.root_decls.items) |node_index| {
             switch (node_index.get(store.tree)) {
                 .variable => |decl| if (!decl.implicit and store.types.isSourceToken(decl.name_tok)) {
-                    const owner = try store.add(.variable, node_index, decl.qt, 0, decl.definition);
-                    if (decl.qt.get(store.tree.comp, .pointer) != null) {
-                        if (decl.initializer) |initializer| _ = try store.collectStringLiteral(initializer, owner);
-                    }
+                    _ = try store.add(.variable, node_index, decl.qt, 0, decl.definition);
                 },
                 .function => |decl| if (store.types.isSourceToken(decl.name_tok)) {
                     const owner = try store.add(.function, node_index, decl.qt, 0, decl.definition);
@@ -77,6 +75,17 @@ pub const Store = struct {
                 else => {},
             }
         }
+
+        const source_symbol_count = store.records.items.len;
+        var record_index: usize = 0;
+        while (record_index < source_symbol_count) : (record_index += 1) {
+            const record = store.records.items[record_index];
+            if (record.kind != .variable) continue;
+            const variable = (record.definition_node orelse record.node).get(store.tree).variable;
+            if (variable.initializer) |initializer| {
+                _ = try store.collectInitializerStrings(initializer, variable.qt, @intCast(record_index + 1));
+            }
+        }
     }
 
     fn add(
@@ -87,8 +96,12 @@ pub const Store = struct {
         owner: u32,
         definition: ?aro.Tree.Node.Index,
     ) !u32 {
-        if (store.by_node.get(node)) |id| return id;
+        if (store.by_node.get(node)) |id| {
+            if (definition) |definition_node| store.records.items[id - 1].definition_node = definition_node;
+            return id;
+        }
         if (definition) |definition_node| if (store.by_node.get(definition_node)) |id| {
+            store.records.items[id - 1].definition_node = definition_node;
             try store.by_node.put(store.allocator, node, id);
             return id;
         };
@@ -96,6 +109,7 @@ pub const Store = struct {
         try store.records.append(store.allocator, .{
             .kind = kind,
             .node = node,
+            .definition_node = definition,
             .owner = owner,
             .type_qt = type_qt,
         });
@@ -104,19 +118,49 @@ pub const Store = struct {
         return id;
     }
 
-    fn collectStringLiteral(store: *Store, node: aro.Tree.Node.Index, owner: u32) !?u32 {
+    fn collectInitializerStrings(
+        store: *Store,
+        node: aro.Tree.Node.Index,
+        destination_qt: aro.QualType,
+        owner: u32,
+    ) !?u32 {
         if (store.by_node.get(node)) |id| return id;
         return switch (node.get(store.tree)) {
             .string_literal_expr => |literal| blk: {
+                if (destination_qt.get(store.tree.comp, .pointer) == null) break :blk null;
                 const id = try store.add(.string_literal, node, literal.qt, owner, null);
                 _ = try store.types.intern(literal.qt);
                 break :blk id;
             },
-            .cast => |cast| if (try store.collectStringLiteral(cast.operand, owner)) |id| blk: {
+            .array_init_expr => |initializer| blk: {
+                const array = destination_qt.get(store.tree.comp, .array) orelse return error.UnsupportedInitializer;
+                for (initializer.items) |item| switch (item.get(store.tree)) {
+                    .array_filler_expr => {},
+                    else => _ = try store.collectInitializerStrings(item, array.elem, owner),
+                };
+                break :blk null;
+            },
+            .struct_init_expr => |initializer| blk: {
+                const record = destination_qt.get(store.tree.comp, .@"struct") orelse return error.UnsupportedInitializer;
+                if (initializer.items.len != record.fields.len) return error.UnsupportedInitializer;
+                for (initializer.items, record.fields) |item, field| {
+                    _ = try store.collectInitializerStrings(item, field.qt, owner);
+                }
+                break :blk null;
+            },
+            .union_init_expr => |initializer| blk: {
+                if (initializer.initializer) |item| {
+                    const record = destination_qt.get(store.tree.comp, .@"union") orelse return error.UnsupportedInitializer;
+                    if (initializer.field_index >= record.fields.len) return error.UnsupportedInitializer;
+                    _ = try store.collectInitializerStrings(item, record.fields[initializer.field_index].qt, owner);
+                }
+                break :blk null;
+            },
+            .cast => |cast| if (try store.collectInitializerStrings(cast.operand, destination_qt, owner)) |id| blk: {
                 try store.by_node.put(store.allocator, node, id);
                 break :blk id;
             } else null,
-            .paren_expr => |paren| if (try store.collectStringLiteral(paren.operand, owner)) |id| blk: {
+            .paren_expr => |paren| if (try store.collectInitializerStrings(paren.operand, destination_qt, owner)) |id| blk: {
                 try store.by_node.put(store.allocator, node, id);
                 break :blk id;
             } else null,
@@ -139,6 +183,7 @@ pub const Store = struct {
 
     fn writeRecord(store: *Store, output: anytype, id: u32, record: Record) !void {
         const node = record.node.get(store.tree);
+        const semantic_node = (record.definition_node orelse record.node).get(store.tree);
         const name_token: aro.Tree.TokenIndex = switch (node) {
             .variable => |decl| decl.name_tok,
             .function => |decl| decl.name_tok,
@@ -170,7 +215,7 @@ pub const Store = struct {
 
         switch (record.kind) {
             .variable => {
-                const variable = node.variable;
+                const variable = semantic_node.variable;
                 try output.add(",\"type\":");
                 try output.integer(try store.types.intern(variable.qt));
                 try output.add(",\"linkage\":");
@@ -198,7 +243,7 @@ pub const Store = struct {
                 }
             },
             .function => {
-                const function = node.function;
+                const function = semantic_node.function;
                 try output.add(",\"type\":");
                 try output.integer(try store.types.intern(function.qt));
                 try output.add(",\"linkage\":");

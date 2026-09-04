@@ -124,6 +124,10 @@ test "semantic golden serializes MERC32 types symbols exact constants and normal
     try std.testing.expectEqual(@as(i64, 3), integerField(high, "bitOffset"));
     try std.testing.expectEqual(@as(i64, 5), integerField(high, "bitWidth"));
     try std.testing.expectEqual(@as(usize, 0), initializerWrites(findNamedOnly(symbols, "zero_bits")).items.len);
+    const redeclared_object = findNamedOnly(symbols, "redeclared_object");
+    try std.testing.expectEqual(@as(usize, 1), countNamed(symbols, "redeclared_object"));
+    try std.testing.expect(boolField(redeclared_object, "definition"));
+    try expectIntegerInitializer(redeclared_object, 0, 32, true, "3");
 
     const atomic = findId(types, integerField(findNamedOnly(symbols, "atomic_word"), "type"));
     try expectStrings(stringArrayField(atomic, "qualifiers"), &.{"atomic"});
@@ -131,8 +135,11 @@ test "semantic golden serializes MERC32 types symbols exact constants and normal
     try expectIntegerInitializer(findNamedOnly(symbols, "signed_min"), 0, 64, true, "-9223372036854775808");
     try expectIntegerInitializer(findNamedOnly(symbols, "unsigned_max"), 0, 64, false, "18446744073709551615");
     try expectFloatingInitializer(findNamedOnly(symbols, "exact_float"), "3fc00000");
+    try expectFloatingInitializer(findNamedOnly(symbols, "negative_zero_float"), "80000000");
     try expectFloatingInitializer(findNamedOnly(symbols, "exact_double"), "c002000000000000");
+    try expectFloatingInitializer(findNamedOnly(symbols, "negative_zero_double"), "8000000000000000");
     try expectFloatingInitializer(findNamedOnly(symbols, "exact_long_double"), "4008000000000000");
+    try expectFloatingInitializer(findNamedOnly(symbols, "negative_zero_long_double"), "8000000000000000");
     const string_value = objectField(firstWrite(findNamedOnly(symbols, "embedded_nul")), "value");
     try expectIntegers(arrayField(string_value, "bytes"), &.{ 65, 0, 66, 0 });
     const literal_pointer = objectField(firstWrite(findNamedOnly(symbols, "literal_pointer")), "value");
@@ -141,7 +148,21 @@ test "semantic golden serializes MERC32 types symbols exact constants and normal
     try expectString(literal_backing, "linkage", "internal");
     const literal_bytes = objectField(firstWrite(literal_backing), "value");
     try expectIntegers(arrayField(literal_bytes, "bytes"), &.{ 67, 0 });
-    try std.testing.expectEqual(@as(usize, 1), countStringBackingSymbols(symbols));
+    const pointer_array_writes = initializerWrites(findNamedOnly(symbols, "pointer_array"));
+    try std.testing.expectEqual(@as(usize, 2), pointer_array_writes.items.len);
+    try expectStringAddressWrite(symbols, pointer_array_writes.items[0].object, 0, &.{ 68, 0 });
+    try expectStringAddressWrite(symbols, pointer_array_writes.items[1].object, 8, &.{ 69, 0 });
+    const aggregate_writes = initializerWrites(findNamedOnly(symbols, "string_aggregate"));
+    try std.testing.expectEqual(@as(usize, 2), aggregate_writes.items.len);
+    try expectStringAddressWrite(symbols, aggregate_writes.items[0].object, 0, &.{ 70, 0 });
+    try expectStringAddressWrite(symbols, aggregate_writes.items[1].object, 8, &.{ 71, 0 });
+    const string_aggregate_type = findNamed(types, "struct", "StringAggregate");
+    const tail_member = findNamedOnly(arrayField(string_aggregate_type, "members"), "tail");
+    const tail_type = findId(types, integerField(tail_member, "type"));
+    try expectString(tail_type, "kind", "array");
+    try std.testing.expectEqual(@as(i64, 8), integerField(tail_type, "size"));
+    try expectString(findId(types, integerField(tail_type, "element")), "kind", "pointer");
+    try std.testing.expectEqual(@as(usize, 5), countStringBackingSymbols(symbols));
 
     const base = findNamedOnly(symbols, "address_base");
     const positive = objectField(firstWrite(findNamedOnly(symbols, "object_address_positive")), "value");
@@ -156,6 +177,8 @@ test "semantic golden serializes MERC32 types symbols exact constants and normal
     );
 
     const add_symbol = findNamedOnly(symbols, "add");
+    try std.testing.expectEqual(@as(usize, 1), countNamed(symbols, "add"));
+    try std.testing.expect(boolField(add_symbol, "definition"));
     try std.testing.expectEqual(integerField(function_type, "id"), integerField(add_symbol, "type"));
     const function_address = objectField(firstWrite(findNamedOnly(symbols, "function_address")), "value");
     try std.testing.expectEqual(integerField(add_symbol, "id"), integerField(function_address, "symbol"));
@@ -203,6 +226,15 @@ fn countStringBackingSymbols(symbols: std.json.Array) usize {
         const object = item.object;
         const name = object.get("name") orelse continue;
         if (std.mem.startsWith(u8, name.string, ".L.str.")) count += 1;
+    }
+    return count;
+}
+
+fn countNamed(symbols: std.json.Array, expected: []const u8) usize {
+    var count: usize = 0;
+    for (symbols.items) |item| {
+        const name = item.object.get("name") orelse continue;
+        if (std.mem.eql(u8, name.string, expected)) count += 1;
     }
     return count;
 }
@@ -282,4 +314,19 @@ fn expectFloatingInitializer(symbol: std.json.ObjectMap, bits: []const u8) !void
 fn expectWrite(write: std.json.ObjectMap, offset: i64, value: []const u8) !void {
     try std.testing.expectEqual(offset, integerField(write, "offset"));
     try expectString(objectField(write, "value"), "value", value);
+}
+
+fn expectStringAddressWrite(
+    symbols: std.json.Array,
+    write: std.json.ObjectMap,
+    offset: i64,
+    bytes: []const i64,
+) !void {
+    try std.testing.expectEqual(offset, integerField(write, "offset"));
+    const address = objectField(write, "value");
+    try expectString(address, "kind", "address");
+    try expectString(address, "addend", "0");
+    const backing = findId(symbols, integerField(address, "symbol"));
+    try std.testing.expect(std.mem.startsWith(u8, stringField(backing, "name"), ".L.str."));
+    try expectIntegers(arrayField(objectField(firstWrite(backing), "value"), "bytes"), bytes);
 }

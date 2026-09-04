@@ -20,6 +20,20 @@ pub fn writeConstant(
     origin_node: ?aro.Tree.Node.Index,
 ) !void {
     const comp = types.tree.comp;
+    if (origin_node) |node| {
+        if (destination_qt.get(comp, .float) != null and value.isZero(comp) and isNegativeFloatingZero(types.tree, node)) {
+            try output.add("{\"kind\":\"floating\",\"type\":");
+            try output.integer(try types.intern(destination_qt));
+            try output.add(",\"ieeeBits\":");
+            try output.string(switch (destination_qt.bitSizeof(comp)) {
+                32 => "80000000",
+                64 => "8000000000000000",
+                else => return error.UnsupportedValue,
+            });
+            try output.byte('}');
+            return;
+        }
+    }
     switch (comp.interner.get(value.ref())) {
         .int => {
             const is_pointer = destination_qt.is(comp, .pointer);
@@ -72,6 +86,26 @@ pub fn writeConstant(
         },
         else => return error.UnsupportedValue,
     }
+}
+
+pub fn isNegativeFloatingZero(tree: *const aro.Tree, node: aro.Tree.Node.Index) bool {
+    return floatingZeroSign(tree, node) orelse false;
+}
+
+fn floatingZeroSign(tree: *const aro.Tree, node: aro.Tree.Node.Index) ?bool {
+    return switch (node.get(tree)) {
+        .float_literal => blk: {
+            const value = tree.value_map.get(node) orelse break :blk null;
+            break :blk if (value.isZero(tree.comp)) false else null;
+        },
+        .negate_expr => |unary| if (floatingZeroSign(tree, unary.operand)) |negative| !negative else null,
+        .plus_expr, .paren_expr => |unary| floatingZeroSign(tree, unary.operand),
+        .cast => |cast| switch (cast.kind) {
+            .no_op, .float_cast => floatingZeroSign(tree, cast.operand),
+            else => null,
+        },
+        else => null,
+    };
 }
 
 fn writeFloatBits(output: anytype, floating: anytype) !void {

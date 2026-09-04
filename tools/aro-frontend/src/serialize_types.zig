@@ -70,7 +70,7 @@ pub const Store = struct {
             .typedef_decl => {},
             .aro_type => |existing| {
                 if (std.meta.activeTag(existing.type(store.tree.comp)) == std.meta.activeTag(qt.type(store.tree.comp)) and
-                    existing.eqlQualified(qt, store.tree.comp))
+                    samePublicType(existing, qt, store.tree.comp))
                 {
                     const id: u32 = @intCast(index + 1);
                     try store.by_type.put(store.allocator, qt, id);
@@ -381,6 +381,36 @@ pub const Store = struct {
         return store.sources.fileForAroId(store.tree.tokens.items(.loc)[token].id) != null;
     }
 };
+
+fn samePublicType(a: aro.QualType, b: aro.QualType, comp: *const aro.Compilation) bool {
+    if (a.@"const" != b.@"const" or a.@"volatile" != b.@"volatile" or a.restrict != b.restrict) return false;
+    const a_type = a.type(comp);
+    const b_type = b.type(comp);
+    if (std.meta.activeTag(a_type) != std.meta.activeTag(b_type)) return false;
+    return switch (a_type) {
+        .void, .bool => true,
+        .int => |integer| integer == b_type.int,
+        .float => |floating| floating == b_type.float,
+        .atomic => |child| samePublicType(child, b_type.atomic, comp),
+        .pointer => |pointer| samePublicType(pointer.child, b_type.pointer.child, comp),
+        .array => |array| std.meta.eql(array.len, b_type.array.len) and
+            samePublicType(array.elem, b_type.array.elem, comp),
+        .func => |function| blk: {
+            const other = b_type.func;
+            if (function.kind != other.kind or function.params.len != other.params.len or
+                !samePublicType(function.return_type, other.return_type, comp)) break :blk false;
+            for (function.params, other.params) |param, other_param| {
+                if (!samePublicType(param.qt, other_param.qt, comp)) break :blk false;
+            }
+            break :blk true;
+        },
+        .@"struct" => |record| record.decl_node == b_type.@"struct".decl_node,
+        .@"union" => |record| record.decl_node == b_type.@"union".decl_node,
+        .@"enum" => |enumeration| enumeration.decl_node == b_type.@"enum".decl_node,
+        .typedef => |typedef| typedef.decl_node == b_type.typedef.decl_node,
+        else => false,
+    };
+}
 
 fn typeLayout(qt: aro.QualType, comp: *const aro.Compilation) struct { size: u64, alignment: u32 } {
     const base_type = qt.base(comp).type;

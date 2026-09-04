@@ -75,7 +75,7 @@ fn State(comptime Output: type) type {
                 },
                 .cast => |cast| {
                     if (tree.value_map.get(node_index)) |value| {
-                        if (!isZeroFillValue(value, comp)) try self.emit(node_index, offset, destination_qt, value);
+                        if (!isZeroFillValue(value, destination_qt, tree, node_index)) try self.emit(node_index, offset, destination_qt, value);
                     } else if (destination_qt.is(comp, .pointer)) {
                         const operand = tree.value_map.get(cast.operand) orelse return error.UnsupportedValue;
                         if (!operand.isZero(comp)) return error.UnsupportedValue;
@@ -85,7 +85,7 @@ fn State(comptime Output: type) type {
                 },
                 else => {
                     const value = tree.value_map.get(node_index) orelse return error.UnsupportedValue;
-                    if (isZeroFillValue(value, comp)) return;
+                    if (isZeroFillValue(value, destination_qt, tree, node_index)) return;
                     try self.emit(node_index, offset, destination_qt, value);
                 },
             }
@@ -105,9 +105,15 @@ fn State(comptime Output: type) type {
     };
 }
 
-fn isZeroFillValue(value: aro.Value, comp: *const aro.Compilation) bool {
-    return switch (comp.interner.get(value.ref())) {
-        .int, .null => value.isZero(comp),
+fn isZeroFillValue(
+    value: aro.Value,
+    destination_qt: aro.QualType,
+    tree: *const aro.Tree,
+    node: aro.Tree.Node.Index,
+) bool {
+    if (destination_qt.get(tree.comp, .float) != null and serialize_values.isNegativeFloatingZero(tree, node)) return false;
+    return switch (tree.comp.interner.get(value.ref())) {
+        .int, .null => value.isZero(tree.comp),
         else => false,
     };
 }
