@@ -1,6 +1,6 @@
 import { Token } from './lexer';
 import { CFrontendError } from './source';
-import { arrayType, builtinType, CType, functionType, pointerType, qualifyType, structType, unionType, typedefType, TypeQualifiers } from './types';
+import { arrayType, builtinType, CType, functionType, pointerType, qualifyType, structLayout, structType, unionLayout, unionType, typedefType, TypeQualifiers } from './types';
 import { CInitializer, CompoundStatement, Declaration, Declarator, Expression, Initializer, InitializerDesignator, Statement, TranslationUnit } from './declarations';
 
 type MutableQualifiers = { -readonly [K in keyof TypeQualifiers]?: boolean };
@@ -475,19 +475,20 @@ function completeArrayBounds(type: CType, initializer: CInitializer): CType {
   }
   if (initializer.kind !== 'initializer') return type;
   let element = type.element;
-  let cursor = 0;
-  let requiredLength = 0;
+  let leafCursor = 0;
+  const elementSlots = scalarSlotCount(element);
   for (const entry of initializer.entries) {
     const designator = entry.designators[0];
     if (designator?.kind === 'index-designator') {
       const index = integerLiteralValue(designator.index);
-      if (index !== undefined && index >= 0) cursor = index;
+      if (index !== undefined && index >= 0) leafCursor = index * elementSlots;
     }
     element = completeArrayBounds(element, entry.value);
-    requiredLength = Math.max(requiredLength, cursor + 1);
-    cursor++;
+    const slots = scalarSlotCount(element);
+    if (entry.designators.length === 0 && entry.value.kind === 'initializer' && leafCursor % slots === 0) leafCursor += slots;
+    else leafCursor++;
   }
-  return arrayType(element, type.length ?? requiredLength, type.qualifiers);
+  return arrayType(element, type.length ?? Math.ceil(leafCursor / scalarSlotCount(element)), type.qualifiers);
 }
 
 function integerLiteralValue(expression: Expression): number | undefined {
@@ -496,6 +497,14 @@ function integerLiteralValue(expression: Expression): number | undefined {
 
 function isCharacterType(type: CType): boolean {
   return type.kind === 'builtin' && (type.name === 'char' || type.name === 'unsigned char');
+}
+
+function scalarSlotCount(type: CType): number {
+  if (type.kind === 'array') return (type.length ?? 1) * scalarSlotCount(type.element);
+  if (type.kind === 'struct') return structLayout(type.fields).fields.reduce((count, field) => count + scalarSlotCount(field.type), 0);
+  if (type.kind === 'union') return scalarSlotCount(unionLayout(type.fields).fields[0]?.type ?? type);
+  if (type.kind === 'typedef' && type.target) return scalarSlotCount(type.target);
+  return 1;
 }
 interface FunctionSuffix { readonly kind: 'function'; readonly parameters: readonly FunctionParameter[]; readonly variadic: boolean; }
 type DeclaratorSuffix =

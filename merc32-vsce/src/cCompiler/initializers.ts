@@ -69,7 +69,6 @@ function normalizeAggregate(
   evaluateConstant: ConstantEvaluator,
 ): void {
   const leaves = scalarLeaves(type, baseOffset);
-  let directCursor = 0;
   let leafCursor = 0;
   for (const entry of initializer.entries) {
     let targetType: CType;
@@ -79,17 +78,15 @@ function normalizeAggregate(
       const selection = selectDirectSubobject(type, entry.designators[0], baseOffset, evaluateConstant);
       targetType = selection.type;
       targetOffset = selection.offset;
-      directCursor = selection.nextCursor;
       remainingDesignators = entry.designators.slice(1);
       if (entry.designators[0].kind === 'field-designator') {
         const scalarValue = literalValue(entry.value);
         if (scalarValue !== undefined) entries.set(entry.designators[0].field, scalarValue);
       }
     } else if (entry.value.kind === 'initializer' || entry.value.kind === 'string-literal') {
-      const selection = selectPositionalSubobject(type, directCursor, baseOffset, entry.value);
+      const selection = selectCurrentSubobject(type, leaves, leafCursor, baseOffset, entry.value);
       targetType = selection.type;
       targetOffset = selection.offset;
-      directCursor = selection.nextCursor;
     } else {
       if (leafCursor >= leaves.length) throw initializerError('too many aggregate initializer elements', entry);
       targetType = leaves[leafCursor].type;
@@ -108,6 +105,23 @@ function normalizeAggregate(
       if (nextLeaf >= 0) leafCursor = nextLeaf;
       else leafCursor = leaves.length;
     }
+  }
+}
+
+function selectCurrentSubobject(
+  type: Extract<CType, { kind: 'array' | 'struct' | 'union' }>,
+  leaves: readonly ScalarLeaf[],
+  leafCursor: number,
+  baseOffset: number,
+  initializer: CInitializer,
+): { readonly type: CType; readonly offset: number } {
+  if (leafCursor >= leaves.length) throw initializerError('too many aggregate initializer elements', initializer);
+  const currentOffset = leaves[leafCursor].offset;
+  for (let cursor = 0; ; cursor++) {
+    const selection = selectPositionalSubobject(type, cursor, baseOffset, initializer);
+    const childLeaves = scalarLeaves(selection.type, selection.offset);
+    if (childLeaves[0]?.offset === currentOffset) return selection;
+    if (childLeaves.some(leaf => leaf.offset === currentOffset)) return leaves[leafCursor];
   }
 }
 

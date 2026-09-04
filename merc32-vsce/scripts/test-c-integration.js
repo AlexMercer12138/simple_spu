@@ -143,22 +143,28 @@ assert.deepStrictEqual(
 const braceElisionObject = compileCToObject(`
 int flattened[2][2] = { 1, 2, 3, 4 };
 int continued[2][2] = { [0][1] = 5, 6, 7 };
+int mixed[2][2] = { 1, { 2 }, 3, 4 };
 `);
 assert.deepStrictEqual(
     braceElisionObject.sections.find((section) => section.name === 'data').content,
     [
         1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
         0, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0,
+        1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
     ],
     'typed aggregate globals must brace-elide nested arrays and continue after chained designators',
 );
 const inferredArrayObject = compileCToObject(`
 int values[] = { 1, 2 };
 char message[] = "hi";
+int inferred[][2] = { 1, 2, 3, 4 };
 `);
 assert.deepStrictEqual(
     inferredArrayObject.sections.find((section) => section.name === 'data').content,
-    [1, 0, 0, 0, 2, 0, 0, 0, 104, 105, 0],
+    [
+        1, 0, 0, 0, 2, 0, 0, 0, 104, 105, 0, 0,
+        1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
+    ],
     'typed aggregate globals must infer list and string array bounds before lowering',
 );
 assert.throws(
