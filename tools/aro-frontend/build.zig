@@ -90,10 +90,23 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_bridge_contract_tests = b.addRunArtifact(bridge_contract_tests);
+    const serializer_contract_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/serializer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "aro",
+                .module = aro_dependency.module("aro"),
+            }},
+        }),
+    });
+    const run_serializer_contract_tests = b.addRunArtifact(serializer_contract_tests);
     const run_bridge_host = b.addSystemCommand(&.{ "node", "tests/bridge-host.js" });
     run_bridge_host.addArtifactArg(bridge);
 
     const test_bridge = b.step("test-bridge", "Run the bounded WASM bridge contract tests");
     test_bridge.dependOn(&run_bridge_contract_tests.step);
+    test_bridge.dependOn(&run_serializer_contract_tests.step);
     test_bridge.dependOn(&run_bridge_host.step);
 }

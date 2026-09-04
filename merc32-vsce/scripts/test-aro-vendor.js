@@ -118,15 +118,14 @@ expectRejected('modified-null-upstream-hash', (root) => {
 expectRejected('new-nonnull-upstream-hash', (root) => {
     const added = path.join(root, 'added.txt');
     fs.writeFileSync(added, 'added\n');
-    writeJson(root, 'MERC32-CHANGES.json', {
-        formatVersion: 1,
-        files: [{
-            path: 'added.txt',
-            upstreamSha256: manifestEntry(root, 'README.md').sha256,
-            sha256: fileHash(added),
-            reason: 'test fixture',
-        }],
+    const changes = readJson(root, 'MERC32-CHANGES.json');
+    changes.files.push({
+        path: 'added.txt',
+        upstreamSha256: manifestEntry(root, 'README.md').sha256,
+        sha256: fileHash(added),
+        reason: 'test fixture',
     });
+    writeJson(root, 'MERC32-CHANGES.json', changes);
 }, /unknown vendor file: added\.txt/u);
 
 expectRejected('unsorted-manifest', (root) => {

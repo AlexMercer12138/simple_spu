@@ -136,14 +136,30 @@ pub const Include = struct {
 const Compilation = @This();
 
 pub const SourceProvider = struct {
+    pub const Failure = enum {
+        host_read,
+        invalid_record,
+        invalid_utf8,
+        invalid_path,
+        file_bytes,
+        total_source_bytes,
+        file_count,
+    };
+
+    pub const Resolution = union(enum) {
+        not_found,
+        source: Source,
+        failure: Failure,
+    };
+
     context: *anyopaque,
     resolve: *const fn (
         context: *anyopaque,
         comp: *Compilation,
         candidate: []const u8,
         kind: Source.Kind,
-        includer_path: []const u8,
-    ) Allocator.Error!?Source,
+        include_site: ?Source.ExpandedLocation,
+    ) Allocator.Error!Resolution,
 };
 
 gpa: Allocator,
@@ -153,6 +169,7 @@ io: Io,
 cwd: std.Io.Dir,
 diagnostics: *Diagnostics,
 source_provider: ?SourceProvider,
+source_provider_failure: ?SourceProvider.Failure = null,
 max_include_depth: u32,
 
 sources: std.StringArrayHashMapUnmanaged(Source) = .empty,
@@ -2364,7 +2381,7 @@ pub fn hasInclude(
     opt_dep_file: ?*DepFile,
 ) Compilation.Error!bool {
     const includer_source = comp.getSource(includer_token_source);
-    if (try FindInclude.run(comp, filename, includer_source, include_type, switch (which) {
+    if (try FindInclude.run(comp, filename, includer_source, null, include_type, switch (which) {
         .next => .{ .only_search_after_dir = includer_source.path },
         .first => switch (include_type) {
             .cli => unreachable,
@@ -2386,6 +2403,7 @@ const FindInclude = struct {
     comp: *Compilation,
     include_path: []const u8,
     includer_path: []const u8,
+    include_site: ?Source.ExpandedLocation,
     /// We won't actually consider any include directories until after this directory.
     wait_for: ?[]const u8,
 
@@ -2399,17 +2417,20 @@ const FindInclude = struct {
         comp: *Compilation,
         include_path: []const u8,
         includer_source: Source,
+        include_site: ?Source.ExpandedLocation,
         include_type: IncludeType,
         search_strat: union(enum) {
             allow_same_dir: []const u8,
             only_search,
             only_search_after_dir: []const u8,
         },
-    ) Allocator.Error!?Result {
+    ) Compilation.Error!?Result {
+        comp.source_provider_failure = null;
         var find: FindInclude = .{
             .comp = comp,
             .include_path = include_path,
             .includer_path = includer_source.path,
+            .include_site = include_site,
             .wait_for = null,
         };
 
@@ -2461,13 +2482,13 @@ const FindInclude = struct {
 
         return null;
     }
-    fn checkIncludeDir(find: *FindInclude, include_dir: []const u8, kind: Source.Kind) Allocator.Error!?Result {
+    fn checkIncludeDir(find: *FindInclude, include_dir: []const u8, kind: Source.Kind) Compilation.Error!?Result {
         return find.check(&.{
             include_dir,
             find.include_path,
         }, kind, false);
     }
-    fn checkMsCwdIncludeDir(find: *FindInclude, source_id: Source.Id) Allocator.Error!?Result {
+    fn checkMsCwdIncludeDir(find: *FindInclude, source_id: Source.Id) Compilation.Error!?Result {
         const path = find.comp.getSource(source_id).path;
         const dir = std.fs.path.dirname(path) orelse ".";
         return find.check(&.{
@@ -2476,7 +2497,7 @@ const FindInclude = struct {
         }, .user, true);
     }
 
-    fn checkFrameworkDir(find: *FindInclude, framework_dir: []const u8, kind: Source.Kind) Allocator.Error!?Result {
+    fn checkFrameworkDir(find: *FindInclude, framework_dir: []const u8, kind: Source.Kind) Compilation.Error!?Result {
         // For an include like 'Foo/Bar.h', search in '<framework_dir>/Foo.framework/Headers/Bar.h'.
         const framework_name, const header_sub_path = mem.cutScalar(u8, find.include_path, '/') orelse return null;
 
@@ -2500,7 +2521,7 @@ const FindInclude = struct {
         return res;
     }
 
-    fn checkSubframeworkDir(find: *FindInclude, umbrella_framework_path: []const u8, kind: Source.Kind) Allocator.Error!?Result {
+    fn checkSubframeworkDir(find: *FindInclude, umbrella_framework_path: []const u8, kind: Source.Kind) Compilation.Error!?Result {
         // For an include like 'Foo/Bar.h', search in '<umbrella_framework_path>/Frameworks/Foo.framework/Headers/Bar.h'.
         const framework_name, const header_sub_path = mem.cutScalar(u8, find.include_path, '/') orelse return null;
 
@@ -2532,7 +2553,7 @@ const FindInclude = struct {
         paths: []const []const u8,
         kind: Source.Kind,
         used_ms_search_rule: bool,
-    ) Allocator.Error!?Result {
+    ) Compilation.Error!?Result {
         const comp = find.comp;
 
         var bfa_buf: [path_buf_stack_limit]u8 = undefined;
@@ -2551,17 +2572,24 @@ const FindInclude = struct {
         };
 
         if (comp.source_provider) |provider| {
-            const source = try provider.resolve(
+            const resolution = try provider.resolve(
                 provider.context,
                 comp,
                 header_path,
                 kind,
-                find.includer_path,
-            ) orelse return null;
-            return .{
-                .source = source.id,
-                .kind = kind,
-                .used_ms_search_rule = used_ms_search_rule,
+                find.include_site,
+            );
+            return switch (resolution) {
+                .not_found => null,
+                .source => |source| .{
+                    .source = source.id,
+                    .kind = kind,
+                    .used_ms_search_rule = used_ms_search_rule,
+                },
+                .failure => |failure| {
+                    comp.source_provider_failure = failure;
+                    return error.FatalError;
+                },
             };
         }
         if (comptime target_builtin.os.tag == .freestanding) return null;
@@ -2699,7 +2727,12 @@ pub fn findInclude(
     which: WhichInclude,
 ) Compilation.Error!?Source {
     const includer_source = comp.getSource(includer_token.source);
-    const found = try FindInclude.run(comp, filename, includer_source, include_type, switch (which) {
+    const include_site = (Source.Location{
+        .id = includer_token.source,
+        .byte_offset = includer_token.start,
+        .line = includer_token.line,
+    }).expand(comp);
+    const found = try FindInclude.run(comp, filename, includer_source, include_site, include_type, switch (which) {
         .next => .{ .only_search_after_dir = includer_source.path },
         .first => switch (include_type) {
             .cli => .{ .allow_same_dir = "." },

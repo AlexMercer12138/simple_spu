@@ -5,7 +5,7 @@ The pinned upstream snapshot remains byte-for-byte auditable through `UPSTREAM-M
 | Path | Reason |
 |---|---|
 | `src/aro.zig` | Export the explicit public MERC32 data-model value. |
-| `src/aro/Compilation.zig` | Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary, and freestanding I/O guards. |
+| `src/aro/Compilation.zig` | Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary with typed failures and include-site propagation, and freestanding I/O guards. |
 | `src/aro/DataModel.zig` | Define the explicit MERC32 ILP32 sizes, alignments, function alignment, and signed-char model. |
 | `src/aro/Parser.zig` | Route integer-literal and int128 capability behavior through the selected compilation model. |
 | `src/aro/Preprocessor.zig` | Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, and compile out verbose stderr logging for freestanding builds. |

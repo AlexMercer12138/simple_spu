@@ -11,22 +11,15 @@ const host = struct {
     ) callconv(.c) i32;
 };
 
-pub const Failure = enum {
-    none,
-    host_read,
-    invalid_record,
-    invalid_utf8,
-    invalid_path,
-    file_bytes,
-    total_source_bytes,
-    file_count,
-};
+pub const Failure = aro.Compilation.SourceProvider.Failure;
+const Resolution = aro.Compilation.SourceProvider.Resolution;
 
 pub const SourceFile = struct {
     id: u32,
     path: []const u8,
     source: []const u8,
-    parent_path: ?[]const u8,
+    aro_id: ?aro.Source.Id,
+    included_from: ?aro.Source.ExpandedLocation,
 };
 
 pub const State = struct {
@@ -34,7 +27,6 @@ pub const State = struct {
     limits: request.Limits,
     files: std.ArrayList(SourceFile) = .empty,
     total_source_bytes: u64 = 0,
-    failure: Failure = .none,
 
     pub fn init(allocator: std.mem.Allocator, limits: request.Limits) State {
         return .{ .allocator = allocator, .limits = limits };
@@ -45,9 +37,35 @@ pub const State = struct {
             .id = 1,
             .path = path,
             .source = source,
-            .parent_path = null,
+            .aro_id = null,
+            .included_from = null,
         });
         state.total_source_bytes = source.len;
+    }
+
+    pub fn seed(
+        state: *State,
+        main_path: []const u8,
+        main_source: []const u8,
+        virtual_files: []const request.VirtualFile,
+    ) !void {
+        try state.recordMain(main_path, main_source);
+        for (virtual_files) |file| {
+            try state.files.append(state.allocator, .{
+                .id = @intCast(state.files.items.len + 1),
+                .path = file.path,
+                .source = file.source,
+                .aro_id = null,
+                .included_from = null,
+            });
+            state.total_source_bytes += file.source.len;
+        }
+    }
+
+    pub fn bindMain(state: *State, source: aro.Source) void {
+        std.debug.assert(state.files.items.len != 0);
+        std.debug.assert(std.mem.eql(u8, state.files.items[0].path, source.path));
+        state.files.items[0].aro_id = source.id;
     }
 
     pub fn provider(state: *State) aro.Compilation.SourceProvider {
@@ -64,94 +82,102 @@ pub const State = struct {
         return null;
     }
 
+    fn findIndex(state: *const State, path: []const u8) ?usize {
+        for (state.files.items, 0..) |file, index| {
+            if (std.mem.eql(u8, file.path, path)) return index;
+        }
+        return null;
+    }
+
+    fn register(
+        state: *State,
+        comp: *aro.Compilation,
+        index: usize,
+        kind: aro.Source.Kind,
+        include_site: ?aro.Source.ExpandedLocation,
+    ) std.mem.Allocator.Error!Resolution {
+        const file = &state.files.items[index];
+        if (file.included_from == null) file.included_from = include_site;
+        if (file.aro_id) |id| return .{ .source = comp.getSource(id) };
+
+        const aro_source = comp.addSourceFromBuffer(file.path, file.source) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .failure = .invalid_record },
+        };
+        file.aro_id = aro_source.id;
+        _ = kind;
+        return .{ .source = aro_source };
+    }
+
     fn resolveSource(
         context: *anyopaque,
         comp: *aro.Compilation,
         candidate: []const u8,
         kind: aro.Source.Kind,
-        includer_path: []const u8,
-    ) std.mem.Allocator.Error!?aro.Source {
+        include_site: ?aro.Source.ExpandedLocation,
+    ) std.mem.Allocator.Error!Resolution {
         const state: *State = @ptrCast(@alignCast(context));
+        if (state.findIndex(candidate)) |index| {
+            return state.register(comp, index, kind, include_site);
+        }
         if (candidate.len > std.math.maxInt(u32)) {
-            state.failure = .invalid_record;
-            return null;
+            return .{ .failure = .invalid_record };
         }
         const capacity_usize = std.math.add(
             usize,
             4 + @as(usize, state.limits.file_bytes),
             candidate.len,
         ) catch {
-            state.failure = .invalid_record;
-            return null;
+            return .{ .failure = .invalid_record };
         };
         if (capacity_usize > std.math.maxInt(u32)) {
-            state.failure = .invalid_record;
-            return null;
+            return .{ .failure = .invalid_record };
         }
-        const buffer = state.allocator.alloc(u8, capacity_usize) catch {
-            state.failure = .host_read;
-            return null;
-        };
+        const buffer = try state.allocator.alloc(u8, capacity_usize);
         const encoded_len = host.resolve(
             @intCast(@intFromPtr(candidate.ptr)),
             @intCast(candidate.len),
             @intCast(@intFromPtr(buffer.ptr)),
             @intCast(buffer.len),
         );
-        if (encoded_len == -1) return null;
-        if (encoded_len == -2) {
-            state.failure = .host_read;
-            return null;
-        }
-        if (encoded_len < 0 or encoded_len > buffer.len or encoded_len < 4) {
-            state.failure = .invalid_record;
-            return null;
-        }
-        const record = buffer[0..@intCast(encoded_len)];
+        if (encoded_len == -1) return .not_found;
+        if (encoded_len == -2) return .{ .failure = .host_read };
+        if (encoded_len < 4) return .{ .failure = .invalid_record };
+        const record_len: usize = @intCast(encoded_len);
+        if (record_len > buffer.len) return .{ .failure = .invalid_record };
+        const record = buffer[0..record_len];
         const path_len = std.mem.readInt(u32, record[0..4], .little);
-        if (path_len > record.len - 4) {
-            state.failure = .invalid_record;
-            return null;
-        }
-        const canonical_path = record[4 .. 4 + path_len];
-        const source = record[4 + path_len ..];
+        if (path_len > record.len - 4) return .{ .failure = .invalid_record };
+        const path_end = 4 + @as(usize, path_len);
+        const canonical_path = record[4..path_end];
+        const source = record[path_end..];
         if (!std.unicode.utf8ValidateSlice(canonical_path) or !std.unicode.utf8ValidateSlice(source)) {
-            state.failure = .invalid_utf8;
-            return null;
+            return .{ .failure = .invalid_utf8 };
         }
         if (!request.validateLogicalPath(canonical_path)) {
-            state.failure = .invalid_path;
-            return null;
+            return .{ .failure = .invalid_path };
         }
         if (source.len > state.limits.file_bytes) {
-            state.failure = .file_bytes;
-            return null;
+            return .{ .failure = .file_bytes };
         }
-        if (state.find(canonical_path)) |_| return comp.addSourceFromBuffer(canonical_path, source) catch null;
+        if (state.findIndex(canonical_path)) |index| {
+            return state.register(comp, index, kind, include_site);
+        }
         if (state.files.items.len >= state.limits.file_count) {
-            state.failure = .file_count;
-            return null;
+            return .{ .failure = .file_count };
         }
         if (state.total_source_bytes + source.len > state.limits.total_source_bytes) {
-            state.failure = .total_source_bytes;
-            return null;
+            return .{ .failure = .total_source_bytes };
         }
 
-        const aro_source = comp.addSourceFromBuffer(canonical_path, source) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                state.failure = .invalid_record;
-                return null;
-            },
-        };
-        state.files.append(state.allocator, .{
+        try state.files.append(state.allocator, .{
             .id = @intCast(state.files.items.len + 1),
-            .path = aro_source.path,
+            .path = canonical_path,
             .source = source,
-            .parent_path = includer_path,
-        }) catch return error.OutOfMemory;
+            .aro_id = null,
+            .included_from = include_site,
+        });
         state.total_source_bytes += source.len;
-        _ = kind;
-        return aro_source;
+        return state.register(comp, state.files.items.len - 1, kind, include_site);
     }
 };

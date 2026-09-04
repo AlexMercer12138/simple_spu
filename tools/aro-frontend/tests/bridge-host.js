@@ -46,6 +46,11 @@ class Resolver {
         const file = this.files.get(candidate);
         if (file === undefined) return -1;
         if (file.hostFailure) return -2;
+        if (file.rawRecord) {
+            if (file.rawRecord.length > resultCapacity) return -2;
+            new Uint8Array(memory.buffer, resultPtr, file.rawRecord.length).set(file.rawRecord);
+            return file.rawRecord.length;
+        }
         const pathBytes = encoder.encode(file.path ?? candidate);
         const sourceBytes = encoder.encode(file.source);
         const encodedLength = 4 + pathBytes.length + sourceBytes.length;
@@ -162,6 +167,83 @@ assert.strictEqual(angled.envelope.status, 'ok');
 assert.strictEqual(angled.resolver.candidates[0], 'include/choice.h',
     'angle includes must begin at the explicit include roots');
 
+const virtualOverlayResolver = new Resolver(new Map([
+    ['overlay.h', { source: '#define OVERLAY_VALUE 2\n' }],
+]));
+const virtualOverlay = analyze(makeRequest({
+    source: '#include "overlay.h"\nint selected = OVERLAY_VALUE;\n',
+    virtualFiles: [{ path: 'overlay.h', source: '#define OVERLAY_VALUE 1\n' }],
+}), virtualOverlayResolver);
+assert.strictEqual(virtualOverlay.envelope.status, 'ok',
+    'request virtual files must be usable as include overlays');
+assert.deepStrictEqual(virtualOverlayResolver.candidates, [],
+    'an exact virtual overlay must resolve before calling the host');
+assert.deepStrictEqual(virtualOverlay.envelope.unit.sourceFiles.map((file) => file.path),
+    ['main.c', 'overlay.h'], 'the canonical registry must include seeded virtual files once');
+
+const combinedCount = analyze(makeRequest({
+    source: '#include "host.h"\n',
+    virtualFiles: [{ path: 'unused.h', source: '' }],
+    limits: { ...hardLimits, fileCount: 2 },
+}), new Resolver(new Map([
+    ['host.h', { source: 'int host_value;\n' }],
+])));
+assert.strictEqual(combinedCount.envelope.status, 'diagnostics',
+    'main, virtual, and host-resolved files must share one file-count limit');
+assert.ok(combinedCount.envelope.diagnostics.some((item) => item.code === 'source-file-count'));
+
+const combinedBytes = analyze(makeRequest({
+    source: '#include "host.h"\n',
+    virtualFiles: [{ path: 'unused.h', source: 'x' }],
+    limits: { ...hardLimits, totalSourceBytes: 25 },
+}), new Resolver(new Map([
+    ['host.h', { source: 'int y;\n' }],
+])));
+assert.strictEqual(combinedBytes.envelope.status, 'diagnostics',
+    'main, virtual, and host-resolved files must share one source-byte limit');
+assert.ok(combinedBytes.envelope.diagnostics.some((item) => item.code === 'source-total-bytes'));
+
+const hostReadFailure = analyze(makeRequest({
+    source: '#include "read.h"\n',
+    includePaths: ['fallback'],
+}), new Resolver(new Map([
+    ['read.h', { hostFailure: true }],
+    ['fallback/read.h', { source: 'int must_not_resolve;\n' }],
+])));
+assert.strictEqual(hostReadFailure.envelope.status, 'diagnostics',
+    'resolver -2 must be an actionable resource diagnostic');
+assert.ok(hostReadFailure.envelope.diagnostics.some((item) => item.code === 'source-host-read'));
+assert.deepStrictEqual(hostReadFailure.resolver.candidates, ['read.h'],
+    'resolver -2 must stop lower-priority include search');
+
+const malformedRecord = new Uint8Array([10, 0, 0, 0]);
+const malformedResolution = analyze(makeRequest({
+    source: '#include "malformed.h"\n',
+    includePaths: ['fallback'],
+}), new Resolver(new Map([
+    ['malformed.h', { rawRecord: malformedRecord }],
+    ['fallback/malformed.h', { source: 'int must_not_resolve;\n' }],
+])));
+assert.strictEqual(malformedResolution.envelope.status, 'internal-error',
+    'malformed resolver records are protocol failures');
+assert.ok(malformedResolution.envelope.diagnostics.some((item) => item.code === 'source-invalid-record'));
+assert.deepStrictEqual(malformedResolution.resolver.candidates, ['malformed.h'],
+    'malformed records must stop lower-priority include search');
+
+const invalidUtf8Record = new Uint8Array([1, 0, 0, 0, 0xff]);
+const invalidUtf8Resolution = analyze(makeRequest({
+    source: '#include "utf8.h"\n',
+    includePaths: ['fallback'],
+}), new Resolver(new Map([
+    ['utf8.h', { rawRecord: invalidUtf8Record }],
+    ['fallback/utf8.h', { source: 'int must_not_resolve;\n' }],
+])));
+assert.strictEqual(invalidUtf8Resolution.envelope.status, 'internal-error',
+    'invalid UTF-8 resolver records are protocol failures');
+assert.ok(invalidUtf8Resolution.envelope.diagnostics.some((item) => item.code === 'source-invalid-utf8'));
+assert.deepStrictEqual(invalidUtf8Resolution.resolver.candidates, ['utf8.h'],
+    'invalid UTF-8 records must stop lower-priority include search');
+
 const missing = analyze(makeRequest({ source: '#include "missing.h"\n' }));
 assert.strictEqual(missing.envelope.status, 'diagnostics');
 assert.ok(
@@ -176,6 +258,20 @@ const syntax = analyze(makeRequest({ source: 'int value = ;\n' }));
 assert.strictEqual(syntax.envelope.status, 'diagnostics');
 assert.ok(syntax.envelope.diagnostics.some((item) =>
     item.severity === 'error' || item.severity === 'fatal'));
+
+const rangedInclude = analyze(makeRequest({
+    source: 'int before;\n#include "broken.h"\n',
+}), new Resolver(new Map([
+    ['broken.h', { source: 'int broken = + trailing;\n' }],
+])));
+assert.strictEqual(rangedInclude.envelope.status, 'diagnostics');
+const includedDiagnostic = rangedInclude.envelope.diagnostics.find((item) => item.range.file === 2);
+assert.ok(includedDiagnostic, JSON.stringify(rangedInclude.envelope));
+assert.ok(includedDiagnostic.range.end.byteOffset - includedDiagnostic.range.start.byteOffset > 1,
+    'diagnostic end positions must retain the Aro location width');
+assert.strictEqual(includedDiagnostic.includeTrace[0].file, 1);
+assert.strictEqual(includedDiagnostic.includeTrace[0].start.byteOffset, 21,
+    'include traces must point at the actual include filename token');
 
 const cycleResolver = new Resolver(new Map([
     ['a.h', { path: 'canonical/a.h', source: '#include "../b.h"\n' }],
@@ -212,6 +308,22 @@ const totalFiles = Array.from({ length: 8 }, (_, index) => ({
 const totalFailure = analyze(makeRequest({ virtualFiles: totalFiles })).envelope;
 assert.strictEqual(totalFailure.status, 'diagnostics',
     `total source over 32 MiB must be a resource diagnostic: ${JSON.stringify(totalFailure)}`);
+
+const loweredMemory = analyze(makeRequest({
+    limits: { ...hardLimits, memoryBytes: 1 },
+})).envelope;
+assert.strictEqual(loweredMemory.status, 'diagnostics',
+    'a lowered per-request memory budget must stop analysis with a bounded diagnostic');
+assert.ok(loweredMemory.diagnostics.some((item) => item.code === 'memory-bytes'));
+
+const loweredResult = analyze(makeRequest({
+    limits: { ...hardLimits, resultBytes: 256 },
+}));
+assert.strictEqual(loweredResult.envelope.status, 'diagnostics',
+    'a serialized result above resultBytes must return a bounded resource diagnostic');
+assert.ok(loweredResult.envelope.diagnostics.some((item) => item.code === 'result-bytes'));
+assert.ok(loweredResult.bytes.length <= hardLimits.resultBytes,
+    'the result-limit diagnostic must stay below the compiled hard maximum');
 
 abi.merc32_reset();
 assert.strictEqual(abi.merc32_alloc((40 * 1024 * 1024) + 1), 0,

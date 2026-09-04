@@ -19,6 +19,7 @@ pub fn envelope(
     sources: *const source_provider.State,
 ) Error![]const u8 {
     var output: Buffer = .{ .allocator = allocator, .limit = limit };
+    errdefer output.list.deinit(allocator);
     try output.add("{\"protocolVersion\":1,\"bridgeBuildId\":");
     try output.string(build_id);
     try output.add(",\"status\":");
@@ -44,6 +45,43 @@ pub fn envelope(
     }
     try output.byte('}');
     return output.list.toOwnedSlice(allocator);
+}
+
+pub fn failureEnvelope(
+    storage: []u8,
+    build_id: []const u8,
+    status: Status,
+    code: []const u8,
+    message: []const u8,
+) []const u8 {
+    var output = std.Io.Writer.fixed(storage);
+    output.writeAll("{\"protocolVersion\":1,\"bridgeBuildId\":") catch return &.{};
+    writeFixedString(&output, build_id) catch return &.{};
+    output.writeAll(",\"status\":") catch return &.{};
+    writeFixedString(&output, @tagName(status)) catch return &.{};
+    output.writeAll(",\"diagnostics\":[{\"severity\":\"error\",\"code\":") catch return &.{};
+    writeFixedString(&output, code) catch return &.{};
+    output.writeAll(",\"message\":") catch return &.{};
+    writeFixedString(&output, message) catch return &.{};
+    output.writeAll(",\"range\":{\"file\":1,\"start\":{\"line\":1,\"column\":1,\"byteOffset\":0},\"end\":{\"line\":1,\"column\":1,\"byteOffset\":0}},\"related\":[],\"notes\":[],\"includeTrace\":[],\"macroExpansionTrace\":[]}],\"sourceFiles\":[{\"id\":1,\"path\":\"request.json\",\"byteLength\":0}]}") catch return &.{};
+    return output.buffered();
+}
+
+fn writeFixedString(output: *std.Io.Writer, value: []const u8) std.Io.Writer.Error!void {
+    try output.writeByte('"');
+    for (value) |char| switch (char) {
+        '"' => try output.writeAll("\\\""),
+        '\\' => try output.writeAll("\\\\"),
+        '\n' => try output.writeAll("\\n"),
+        '\r' => try output.writeAll("\\r"),
+        '\t' => try output.writeAll("\\t"),
+        0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+            const hex = "0123456789abcdef";
+            try output.writeAll(&.{ '\\', 'u', '0', '0', hex[char >> 4], hex[char & 0xf] });
+        },
+        else => try output.writeByte(char),
+    };
+    try output.writeByte('"');
 }
 
 fn writeSourceFiles(output: *Buffer, sources: *const source_provider.State) Error!void {
@@ -154,3 +192,35 @@ const Buffer = struct {
         try buffer.byte('"');
     }
 };
+
+test "serialized result one byte over the hard cap fails without retaining its partial buffer" {
+    var sources = source_provider.State.init(std.testing.allocator, @import("request.zig").hard_limits);
+    defer sources.files.deinit(std.testing.allocator);
+    try sources.recordMain("main.c", "");
+
+    const oversized_message = try std.testing.allocator.alloc(u8, (64 * 1024 * 1024) + 1);
+    defer std.testing.allocator.free(oversized_message);
+    @memset(oversized_message, 'x');
+    const diagnostic: diagnostics.Diagnostic = .{
+        .severity = .@"error",
+        .code = "result-boundary",
+        .message = oversized_message,
+        .range = .{
+            .file = 1,
+            .start = .{ .line = 1, .column = 1, .byte_offset = 0 },
+            .end = .{ .line = 1, .column = 1, .byte_offset = 0 },
+        },
+        .related = &.{},
+        .notes = &.{},
+        .include_trace = &.{},
+        .macro_expansion_trace = &.{},
+    };
+    try std.testing.expectError(error.ResultTooLarge, envelope(
+        std.testing.allocator,
+        64 * 1024 * 1024,
+        "test-build",
+        .diagnostics,
+        &.{diagnostic},
+        &sources,
+    ));
+}

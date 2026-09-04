@@ -152,16 +152,21 @@ fn rangeForExpanded(sources: *const source_provider.State, location: aro.Source.
         const sequence_len = std.unicode.utf8ByteSequenceLength(source[offset]) catch 1;
         offset += @min(sequence_len, source.len - offset);
     }
-    const end_offset = if (offset < source.len)
-        offset + @min(std.unicode.utf8ByteSequenceLength(source[offset]) catch 1, source.len - offset)
-    else
-        offset;
+    var end_offset = offset;
+    var end_column = @max(location.col, 1);
+    var remaining_width = @max(location.width, 1);
+    while (remaining_width != 0 and end_offset < source.len and source[end_offset] != '\n') {
+        const sequence_len = std.unicode.utf8ByteSequenceLength(source[end_offset]) catch 1;
+        end_offset += @min(sequence_len, source.len - end_offset);
+        end_column += 1;
+        remaining_width -= 1;
+    }
     return .{
         .file = file.id,
         .start = .{ .line = wanted_line, .column = @max(location.col, 1), .byte_offset = @intCast(offset) },
         .end = .{
             .line = wanted_line,
-            .column = @max(location.col, 1) + @intFromBool(end_offset > offset),
+            .column = end_column,
             .byte_offset = @intCast(end_offset),
         },
     };
@@ -183,10 +188,13 @@ fn includeTrace(
     if (file_id == 0 or file_id > sources.files.items.len) return &.{};
     var ranges: std.ArrayList(Range) = .empty;
     var current = sources.files.items[file_id - 1];
-    while (current.parent_path) |parent_path| {
-        const parent = sources.find(parent_path) orelse break;
-        try ranges.append(allocator, startRange(parent));
-        current = parent;
+    var remaining = sources.files.items.len;
+    while (remaining != 0) : (remaining -= 1) {
+        const include_site = current.included_from orelse break;
+        const include_range = rangeForExpanded(sources, include_site);
+        try ranges.append(allocator, include_range);
+        if (include_range.file == 0 or include_range.file > sources.files.items.len) break;
+        current = sources.files.items[include_range.file - 1];
     }
     return ranges.toOwnedSlice(allocator);
 }

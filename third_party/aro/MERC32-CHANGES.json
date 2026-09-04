@@ -10,8 +10,8 @@
     {
       "path": "src/aro/Compilation.zig",
       "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
-      "sha256": "ebae8139c654647e7e2ea5c81737f30bf69cec377e4460bd9899ff29fcec0ec2",
-      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary, and freestanding I/O guards."
+      "sha256": "e568a48d5150c80e9f102b75f8f38ac43bc5cbcd34bfa5c4e2b6c897a669451e",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary with typed failures and include-site propagation, and freestanding I/O guards."
     },
     {
       "path": "src/aro/DataModel.zig",
