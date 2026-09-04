@@ -68,10 +68,19 @@ pub const Store = struct {
 
     pub fn collect(store: *Store) !void {
         for (store.tree.root_decls.items) |node_index| {
+            if (store.isSourceBackedUnsupportedRoot(node_index)) return error.UnknownAroNode;
             if (!store.isPublicRoot(node_index)) continue;
             const id = try store.serializeDeclaration(node_index, true);
             try store.declarations.append(store.allocator, id);
         }
+    }
+
+    fn isSourceBackedUnsupportedRoot(store: *const Store, node_index: aro.Tree.Node.Index) bool {
+        const token: aro.Tree.TokenIndex = switch (node_index.get(store.tree)) {
+            .global_asm => |decl| decl.asm_tok,
+            else => return false,
+        };
+        return store.types.isSourceToken(token);
     }
 
     fn isPublicRoot(store: *const Store, node_index: aro.Tree.Node.Index) bool {
@@ -306,6 +315,7 @@ pub const Store = struct {
             .union_forward_decl,
             .enum_forward_decl,
             .static_assert,
+            .function,
             => store.serializeDeclarationStatement(&.{node_index}),
             else => store.serializeStatement(node_index),
         };
@@ -446,7 +456,14 @@ pub const Store = struct {
     }
 
     fn serializeCompoundAssignment(store: *Store, binary: aro.Tree.Node.Binary, operator: []const u8) anyerror!u32 {
-        const rhs = switch (binary.rhs.get(store.tree)) {
+        var operation_node = binary.rhs;
+        while (switch (operation_node.get(store.tree)) {
+            .cast => |cast| cast.implicit,
+            else => false,
+        }) {
+            operation_node = operation_node.get(store.tree).cast.operand;
+        }
+        const rhs = switch (operation_node.get(store.tree)) {
             .add_expr,
             .sub_expr,
             .mul_expr,
@@ -607,15 +624,12 @@ pub const Store = struct {
             try store.addChild(id, try store.serializeExpression(cast.operand));
             return id;
         }
-        const conversion = switch (cast.kind) {
-            .lval_to_rval => "lvalue-to-rvalue",
-            .array_to_pointer => "array-to-pointer",
-            .function_to_pointer => "function-to-pointer",
-            else => if (isIntegerPromotion(cast.operand.qt(store.tree), cast.qt, store.tree.comp))
-                "integer-promotion"
-            else
-                "usual-arithmetic",
-        };
+        const conversion = store.castConversionName(
+            cast.kind,
+            cast.operand.qt(store.tree),
+            cast.qt,
+            store.tree.comp,
+        );
         const id = try store.addRecord(.{
             .category = .expression,
             .kind = "conversion",
@@ -629,8 +643,50 @@ pub const Store = struct {
         return id;
     }
 
+    fn castConversionName(
+        _: *const Store,
+        kind: aro.Tree.Node.Cast.Kind,
+        source: aro.QualType,
+        target: aro.QualType,
+        comp: *const aro.Compilation,
+    ) []const u8 {
+        if (isIntegerPromotion(source, target, comp)) return "integer-promotion";
+        return switch (kind) {
+            .no_op => "no-op",
+            .bitcast => "bitcast",
+            .array_to_pointer => "array-to-pointer",
+            .lval_to_rval => "lvalue-to-rvalue",
+            .function_to_pointer => "function-to-pointer",
+            .pointer_to_bool => "pointer-to-bool",
+            .pointer_to_int => "pointer-to-int",
+            .bool_to_int => "bool-to-int",
+            .bool_to_float => "bool-to-float",
+            .bool_to_pointer => "bool-to-pointer",
+            .int_to_bool => "int-to-bool",
+            .int_to_float => "int-to-float",
+            .complex_int_to_complex_float => "complex-int-to-complex-float",
+            .int_to_pointer => "int-to-pointer",
+            .float_to_bool => "float-to-bool",
+            .float_to_int => "float-to-int",
+            .complex_float_to_complex_int => "complex-float-to-complex-int",
+            .int_cast => "int-cast",
+            .complex_int_cast => "complex-int-cast",
+            .complex_int_to_real => "complex-int-to-real",
+            .real_to_complex_int => "real-to-complex-int",
+            .float_cast => "float-cast",
+            .complex_float_cast => "complex-float-cast",
+            .complex_float_to_real => "complex-float-to-real",
+            .real_to_complex_float => "real-to-complex-float",
+            .to_void => "to-void",
+            .null_to_pointer => "null-to-pointer",
+            .union_cast => "union-cast",
+            .vector_splat => "vector-splat",
+            .atomic_to_non_atomic => "atomic-to-non-atomic",
+            .non_atomic_to_atomic => "non-atomic-to-atomic",
+        };
+    }
+
     fn serializeConverted(store: *Store, node: aro.Tree.Node.Index, conversion: []const u8, target_qt: aro.QualType, preserve_promotion: bool) anyerror!u32 {
-        _ = preserve_promotion;
         _ = try store.types.intern(target_qt);
         const id = try store.addRecord(.{
             .category = .expression,
@@ -642,14 +698,61 @@ pub const Store = struct {
             .conversion = conversion,
         });
         const operand = switch (node.get(store.tree)) {
-            .cast => |cast| if (cast.implicit and isBoundaryCast(cast.kind) and !isIntegerPromotion(cast.operand.qt(store.tree), cast.qt, store.tree.comp))
+            .cast => |cast| if (cast.implicit and
+                ((isBoundaryCast(cast.kind) and !isIntegerPromotion(cast.operand.qt(store.tree), cast.qt, store.tree.comp)) or
+                    (!preserve_promotion and isIntegerPromotion(cast.operand.qt(store.tree), cast.qt, store.tree.comp))))
                 cast.operand
             else
                 node,
             else => node,
         };
-        try store.addChild(id, try store.serializeExpression(operand));
+        const child = if (store.needsLvalueLoad(operand, conversion, target_qt))
+            try store.serializeConverted(operand, "lvalue-to-rvalue", operand.qt(store.tree), false)
+        else switch (operand.get(store.tree)) {
+            .array_init_expr, .struct_init_expr, .union_init_expr => try store.serializeAggregateInitializer(operand, target_qt),
+            else => try store.serializeExpression(operand),
+        };
+        try store.addChild(id, child);
         return id;
+    }
+
+    fn serializeAggregateInitializer(store: *Store, node: aro.Tree.Node.Index, target_qt: aro.QualType) anyerror!u32 {
+        _ = try store.types.intern(target_qt);
+        const token = switch (node.get(store.tree)) {
+            .array_init_expr => |initializer| initializer.l_brace_tok,
+            .struct_init_expr => |initializer| initializer.l_brace_tok,
+            .union_init_expr => |initializer| initializer.l_brace_tok,
+            else => return error.UnsupportedInitializer,
+        };
+        const id = try store.addRecord(.{
+            .category = .expression,
+            .kind = "compound-literal",
+            .token = token,
+            .qt = target_qt,
+            .value_category = "lvalue",
+            .target_qt = target_qt,
+        });
+        try store.addInitializerChildren(id, node);
+        return id;
+    }
+
+    fn needsLvalueLoad(store: *const Store, node: aro.Tree.Node.Index, conversion: []const u8, target_qt: aro.QualType) bool {
+        if (std.mem.eql(u8, conversion, "lvalue-to-rvalue")) return false;
+        if (std.mem.eql(u8, conversion, "assignment") and isAggregate(target_qt, store.tree.comp)) return false;
+        return store.semanticLvalue(node);
+    }
+
+    fn semanticLvalue(store: *const Store, node: aro.Tree.Node.Index) bool {
+        return switch (node.get(store.tree)) {
+            .generic_expr => |generic| switch (generic.chosen.get(store.tree)) {
+                .generic_association_expr => |association| store.semanticLvalue(association.expr),
+                .generic_default_expr => |default| store.semanticLvalue(default.expr),
+                else => false,
+            },
+            .paren_expr => |unary| store.semanticLvalue(unary.operand),
+            .cast => |cast| cast.kind == .no_op and store.semanticLvalue(cast.operand),
+            else => store.tree.isLval(node),
+        };
     }
 
     fn serializeCompoundLiteral(store: *Store, literal: aro.Tree.Node.CompoundLiteral) anyerror!u32 {
@@ -811,7 +914,7 @@ pub const Store = struct {
         const primary = try store.resolveRange(primary_loc, primary_len);
         try output.add(",\"range\":");
         try writeRange(output, primary);
-        if (spelling_loc.id.index != .generated) {
+        if (spelling_loc.id.index != .generated and store.types.sources.fileForAroId(spelling_loc.id) != null) {
             const spelling = try store.resolveRange(spelling_loc, spelling_len);
             if (!Range.eql(primary, spelling)) {
                 try output.add(",\"spellingRange\":");
@@ -854,6 +957,10 @@ pub const Store = struct {
 
 fn isPointer(qt: aro.QualType, comp: *const aro.Compilation) bool {
     return qt.get(comp, .pointer) != null;
+}
+
+fn isAggregate(qt: aro.QualType, comp: *const aro.Compilation) bool {
+    return qt.get(comp, .array) != null or qt.get(comp, .@"struct") != null or qt.get(comp, .@"union") != null;
 }
 
 fn isIntegerPromotion(source: aro.QualType, target: aro.QualType, comp: *const aro.Compilation) bool {

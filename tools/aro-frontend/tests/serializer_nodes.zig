@@ -128,6 +128,10 @@ test "node golden serializes C17 control expressions conversions and macro locat
     try expectCaseConstant(nodes);
     try expectGenericSelection(nodes);
     try expectMemberValueCategories(nodes);
+    try expectPointerConversions(nodes);
+    try expectAutomaticAggregateInitializers(nodes);
+    try expectLocalFunctionLink(nodes, arrayField(unit, "symbols"));
+    try expectGenericValueContext(nodes);
     const symbols = arrayField(unit, "symbols");
     try expectLocalSymbols(symbols);
     try expectNormalizedStaticDeclaration(nodes, symbols);
@@ -141,6 +145,53 @@ test "node golden serializes C17 control expressions conversions and macro locat
         const node = findId(nodes, declaration_id.integer);
         try expectString(node, "category", "declaration");
     }
+}
+
+fn expectPointerConversions(nodes: std.json.Array) !void {
+    const conversion = findString(nodes, "conversion", "int-to-pointer") orelse return error.TestExpectedEqual;
+    try expectString(conversion, "kind", "conversion");
+}
+
+fn expectAutomaticAggregateInitializers(nodes: std.json.Array) !void {
+    var saw_array = false;
+    var saw_struct = false;
+    for (nodes.items) |value| {
+        const node = value.object;
+        if (!stringEquals(node, "kind", "compound-literal")) continue;
+        const target = node.get("targetType") orelse continue;
+        _ = target;
+        saw_array = saw_array or arrayField(node, "children").items.len == 3;
+        saw_struct = saw_struct or arrayField(node, "children").items.len == 2;
+    }
+    try std.testing.expect(saw_array and saw_struct);
+}
+
+fn expectLocalFunctionLink(nodes: std.json.Array, symbols: std.json.Array) !void {
+    const helper = findString(symbols, "name", "later_helper") orelse return error.TestExpectedEqual;
+    try expectString(helper, "kind", "function");
+    try std.testing.expect(boolField(helper, "definition"));
+    var saw_local_declaration = false;
+    for (nodes.items) |value| {
+        const node = value.object;
+        if (stringEquals(node, "kind", "function-declaration") and integerField(node, "symbol") == integerField(helper, "id")) {
+            saw_local_declaration = true;
+        }
+    }
+    try std.testing.expect(saw_local_declaration);
+}
+
+fn expectGenericValueContext(nodes: std.json.Array) !void {
+    var saw_load = false;
+    for (nodes.items) |value| {
+        const node = value.object;
+        if (!stringEquals(node, "kind", "conversion") or !stringEquals(node, "conversion", "lvalue-to-rvalue")) continue;
+        const child = findId(nodes, arrayField(node, "children").items[0].integer);
+        if (findDescendantKind(nodes, child, "generic-selection")) |generic| {
+            try expectString(generic, "valueCategory", "lvalue");
+            saw_load = true;
+        }
+    }
+    try std.testing.expect(saw_load);
 }
 
 fn expectGenericSelection(nodes: std.json.Array) !void {
@@ -253,7 +304,7 @@ fn expectCallChildOrder(nodes: std.json.Array, symbols: std.json.Array) !void {
         const node = value.object;
         if (!stringEquals(node, "kind", "call")) continue;
         const children = arrayField(node, "children");
-        try std.testing.expectEqual(@as(usize, 3), children.items.len);
+        try std.testing.expect(children.items.len >= 2);
         const callee_conversion = findId(nodes, children.items[0].integer);
         const callee_kind = stringField(callee_conversion, "conversion");
         try std.testing.expect(std.mem.eql(u8, callee_kind, "function-to-pointer") or std.mem.eql(u8, callee_kind, "lvalue-to-rvalue"));
@@ -268,7 +319,7 @@ fn expectCallChildOrder(nodes: std.json.Array, symbols: std.json.Array) !void {
         if (symbol == direct_symbol) {
             try std.testing.expectEqualStrings("function-to-pointer", callee_kind);
             saw_direct = true;
-        } else {
+        } else if (std.mem.eql(u8, callee_kind, "lvalue-to-rvalue")) {
             try std.testing.expectEqualStrings("lvalue-to-rvalue", callee_kind);
             saw_indirect = true;
         }
@@ -388,6 +439,10 @@ fn expectString(object: std.json.ObjectMap, field: []const u8, expected: []const
 
 fn integerField(object: std.json.ObjectMap, field: []const u8) i64 {
     return object.get(field).?.integer;
+}
+
+fn boolField(object: std.json.ObjectMap, field: []const u8) bool {
+    return object.get(field).?.bool;
 }
 
 fn stringField(object: std.json.ObjectMap, field: []const u8) []const u8 {

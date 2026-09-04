@@ -402,6 +402,33 @@ nullPointer.unit.nodes.push({
 assert.doesNotThrow(() => validateEnvelope(nullPointer, 'test-build'),
     'canonical integer zero may represent a converted null pointer');
 
+const pointerConversions = clone(validFixture);
+pointerConversions.unit.types.push({
+    id: 2, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
+});
+pointerConversions.unit.symbols.push({
+    id: 1, kind: 'variable', name: 'pointer', type: 2, range: nodeRange,
+    linkage: 'none', storage: 'automatic', definition: true,
+});
+pointerConversions.unit.nodes.push({
+    id: 1, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 1, valueCategory: 'rvalue', children: [2],
+    conversion: 'pointer-to-int', targetType: 1,
+}, {
+    id: 2, category: 'expression', kind: 'declaration-reference', range: nodeRange,
+    type: 2, valueCategory: 'lvalue', children: [], symbol: 1,
+}, {
+    id: 3, category: 'expression', kind: 'conversion', range: nodeRange,
+    type: 2, valueCategory: 'rvalue', children: [4],
+    conversion: 'null-to-pointer', targetType: 2,
+}, {
+    id: 4, category: 'expression', kind: 'integer-literal', range: nodeRange,
+    type: 1, valueCategory: 'rvalue', children: [],
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
+});
+assert.doesNotThrow(() => validateEnvelope(pointerConversions, 'test-build'),
+    'pointer and null implicit conversions must retain their source and target kinds');
+
 const definedPrototype = clone(validFixture);
 definedPrototype.unit.types.push({
     id: 2, kind: 'function', returnType: 1, parameters: [], variadic: false,

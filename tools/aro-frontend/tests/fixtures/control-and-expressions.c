@@ -82,4 +82,28 @@ finished:
     return local;
 }
 
+int generic_sum(int value) {
+    return _Generic(value, int: value, default: value) + 1;
+}
+
+int compare_pointer(int *pointer) {
+    return pointer == 0;
+}
+
+int local_link(int value) {
+    extern int later_helper(int);
+    return later_helper(value);
+}
+
+int later_helper(int value) {
+    return value;
+}
+
+char automatic_aggregates(char value) {
+    char values[3] = { value, 1, 0 };
+    struct Pair pair = { .first = value, .second = 1 };
+    values[0] += 1;
+    return values[0] + pair.first;
+}
+
 struct Pair global_pair = { 1, 2 };

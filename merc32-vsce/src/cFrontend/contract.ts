@@ -225,7 +225,17 @@ export type ValueCategory = 'lvalue' | 'function' | 'rvalue';
 export type ConversionKind =
     | 'lvalue-to-rvalue' | 'array-to-pointer' | 'function-to-pointer'
     | 'integer-promotion' | 'usual-arithmetic' | 'assignment'
-    | 'argument' | 'return';
+    | 'argument' | 'return' | 'no-op' | 'bitcast'
+    | 'pointer-to-bool' | 'pointer-to-int' | 'bool-to-int'
+    | 'bool-to-float' | 'bool-to-pointer' | 'int-to-bool'
+    | 'int-to-float' | 'complex-int-to-complex-float'
+    | 'int-to-pointer' | 'float-to-bool' | 'float-to-int'
+    | 'complex-float-to-complex-int' | 'int-cast' | 'complex-int-cast'
+    | 'complex-int-to-real' | 'real-to-complex-int' | 'float-cast'
+    | 'complex-float-cast' | 'complex-float-to-real'
+    | 'real-to-complex-float' | 'to-void' | 'null-to-pointer'
+    | 'union-cast' | 'vector-splat' | 'atomic-to-non-atomic'
+    | 'non-atomic-to-atomic';
 
 interface TypedNodeBase<K extends TypedNodeKind, C extends 'expression' | 'statement' | 'declaration'> {
     readonly id: NodeId;

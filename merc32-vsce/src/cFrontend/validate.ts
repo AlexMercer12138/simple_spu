@@ -300,6 +300,14 @@ const nodeRecordSchema: JsonSchema = {
             conversion: { enum: [
                 'lvalue-to-rvalue', 'array-to-pointer', 'function-to-pointer',
                 'integer-promotion', 'usual-arithmetic', 'assignment', 'argument', 'return',
+                'no-op', 'bitcast', 'pointer-to-bool', 'pointer-to-int', 'bool-to-int',
+                'bool-to-float', 'bool-to-pointer', 'int-to-bool', 'int-to-float',
+                'complex-int-to-complex-float', 'int-to-pointer', 'float-to-bool',
+                'float-to-int', 'complex-float-to-complex-int', 'int-cast',
+                'complex-int-cast', 'complex-int-to-real', 'real-to-complex-int',
+                'float-cast', 'complex-float-cast', 'complex-float-to-real',
+                'real-to-complex-float', 'to-void', 'null-to-pointer', 'union-cast',
+                'vector-splat', 'atomic-to-non-atomic', 'non-atomic-to-atomic',
             ] },
             targetType: idSchema,
         }, ['conversion', 'targetType']),
@@ -1217,8 +1225,16 @@ function validateConversion(
     const source = unaliasType(requireType(types, child.type, `conversion node ${node.id} source`), types);
     const target = unaliasType(requireType(types, node.targetType, `conversion node ${node.id} target`), types);
     switch (node.conversion) {
+        case 'no-op':
+            assertInvariant(sameUnqualifiedType(source, target, types), 'NODE_CONVERSION',
+                `no-op conversion ${node.id} requires equivalent source and target types`);
+            break;
+        case 'bitcast':
+            assertInvariant(source.size === target.size, 'NODE_CONVERSION',
+                `bitcast conversion ${node.id} requires equal-sized source and target types`);
+            break;
         case 'lvalue-to-rvalue':
-            assertInvariant(child.valueCategory === 'lvalue' && sameResolvedType(source, target),
+            assertInvariant(child.valueCategory === 'lvalue' && sameUnqualifiedType(source, target, types),
                 'NODE_CONVERSION', `lvalue conversion ${node.id} requires a same-type lvalue source`);
             break;
         case 'array-to-pointer': {
@@ -1252,6 +1268,76 @@ function validateConversion(
         case 'usual-arithmetic':
             assertInvariant(isArithmeticType(source) && isArithmeticType(target), 'NODE_CONVERSION',
                 `usual arithmetic conversion ${node.id} requires arithmetic source and target types`);
+            break;
+        case 'pointer-to-bool':
+            assertInvariant(source.kind === 'pointer' && isBoolType(target), 'NODE_CONVERSION',
+                `pointer-to-bool conversion ${node.id} requires pointer and boolean types`);
+            break;
+        case 'pointer-to-int':
+            assertInvariant(source.kind === 'pointer' && isIntegerType(target), 'NODE_CONVERSION',
+                `pointer-to-int conversion ${node.id} requires pointer and integer types`);
+            break;
+        case 'bool-to-int':
+            assertInvariant(isBoolType(source) && isIntegerType(target), 'NODE_CONVERSION',
+                `bool-to-int conversion ${node.id} requires boolean and integer types`);
+            break;
+        case 'bool-to-float':
+            assertInvariant(isBoolType(source) && isFloatingType(target), 'NODE_CONVERSION',
+                `bool-to-float conversion ${node.id} requires boolean and floating types`);
+            break;
+        case 'bool-to-pointer':
+            assertInvariant(isBoolType(source) && target.kind === 'pointer', 'NODE_CONVERSION',
+                `bool-to-pointer conversion ${node.id} requires boolean and pointer types`);
+            break;
+        case 'int-to-bool':
+            assertInvariant(isIntegerType(source) && isBoolType(target), 'NODE_CONVERSION',
+                `int-to-bool conversion ${node.id} requires integer and boolean types`);
+            break;
+        case 'int-to-float':
+            assertInvariant(isIntegerType(source) && isFloatingType(target), 'NODE_CONVERSION',
+                `int-to-float conversion ${node.id} requires integer and floating types`);
+            break;
+        case 'int-to-pointer':
+            assertInvariant(isIntegerType(source) && target.kind === 'pointer', 'NODE_CONVERSION',
+                `int-to-pointer conversion ${node.id} requires integer and pointer types`);
+            break;
+        case 'float-to-bool':
+            assertInvariant(isFloatingType(source) && isBoolType(target), 'NODE_CONVERSION',
+                `float-to-bool conversion ${node.id} requires floating and boolean types`);
+            break;
+        case 'float-to-int':
+            assertInvariant(isFloatingType(source) && isIntegerType(target), 'NODE_CONVERSION',
+                `float-to-int conversion ${node.id} requires floating and integer types`);
+            break;
+        case 'null-to-pointer':
+            assertInvariant(isIntegerType(source) && target.kind === 'pointer'
+                && (child.kind === 'integer-literal' || child.kind === 'character-literal')
+                && child.constant.value === '0',
+            'NODE_CONVERSION', `null-to-pointer conversion ${node.id} requires an integer zero and pointer target`);
+            break;
+        case 'to-void':
+            assertInvariant(target.kind === 'builtin' && target.name === 'void', 'NODE_CONVERSION',
+                `to-void conversion ${node.id} requires a void target`);
+            break;
+        case 'complex-int-to-complex-float':
+        case 'complex-float-to-complex-int':
+        case 'complex-int-cast':
+        case 'complex-int-to-real':
+        case 'real-to-complex-int':
+        case 'complex-float-cast':
+        case 'complex-float-to-real':
+        case 'real-to-complex-float':
+        case 'int-cast':
+        case 'float-cast':
+            assertInvariant(isArithmeticType(source) && isArithmeticType(target), 'NODE_CONVERSION',
+                `arithmetic conversion ${node.id} requires arithmetic source and target types`);
+            break;
+        case 'union-cast':
+        case 'vector-splat':
+        case 'atomic-to-non-atomic':
+        case 'non-atomic-to-atomic':
+            assertInvariant(source.size === target.size, 'NODE_CONVERSION',
+                `representation conversion ${node.id} requires equal-sized source and target types`);
             break;
         case 'assignment':
         case 'argument':
@@ -1392,6 +1478,56 @@ function sameResolvedType(left: TypedTypeRecord, right: TypedTypeRecord): boolea
         return true;
     }
     return left.kind === 'builtin' && right.kind === 'builtin' && left.name === right.name;
+}
+
+function sameUnqualifiedType(
+    left: TypedTypeRecord,
+    right: TypedTypeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): boolean {
+    return sameTypeShape(left, right, types, true);
+}
+
+function sameTypeShape(
+    left: TypedTypeRecord,
+    right: TypedTypeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+    ignoreQualifiers: boolean,
+): boolean {
+    const leftType = unaliasType(left, types);
+    const rightType = unaliasType(right, types);
+    if (!ignoreQualifiers && (leftType.qualifiers.length !== rightType.qualifiers.length
+        || leftType.qualifiers.some((qualifier) => !rightType.qualifiers.includes(qualifier)))) {
+        return false;
+    }
+    if (leftType.kind !== rightType.kind) return false;
+    switch (leftType.kind) {
+        case 'builtin':
+            return rightType.kind === 'builtin' && leftType.name === rightType.name;
+        case 'pointer':
+            return rightType.kind === 'pointer'
+                && sameTypeShape(requireType(types, leftType.pointee, 'pointer source pointee'),
+                    requireType(types, rightType.pointee, 'pointer target pointee'), types, false);
+        case 'array':
+            return rightType.kind === 'array' && leftType.count === rightType.count
+                && sameTypeShape(requireType(types, leftType.element, 'array source element'),
+                    requireType(types, rightType.element, 'array target element'), types, false);
+        case 'function':
+            return rightType.kind === 'function'
+                && leftType.variadic === rightType.variadic
+                && leftType.parameters.length === rightType.parameters.length
+                && sameTypeShape(requireType(types, leftType.returnType, 'function source return'),
+                    requireType(types, rightType.returnType, 'function target return'), types, false)
+                && leftType.parameters.every((parameter, index) => sameTypeShape(
+                    requireType(types, parameter, 'function source parameter'),
+                    requireType(types, rightType.parameters[index]!, 'function target parameter'), types, false));
+        case 'struct':
+        case 'union':
+        case 'enum':
+            return leftType.id === rightType.id;
+        case 'typedef':
+            return leftType.id === rightType.id;
+    }
 }
 
 function integerRepresentation(
@@ -1704,6 +1840,14 @@ function isIntegerType(type: TypedTypeRecord): boolean {
 
 function isArithmeticType(type: TypedTypeRecord): boolean {
     return isIntegerType(type) || (type.kind === 'builtin' && isFloatingBuiltin(type.name));
+}
+
+function isBoolType(type: TypedTypeRecord): boolean {
+    return type.kind === 'builtin' && type.name === '_Bool';
+}
+
+function isFloatingType(type: TypedTypeRecord): boolean {
+    return type.kind === 'builtin' && isFloatingBuiltin(type.name);
 }
 
 function isImplicitConversionPair(source: TypedTypeRecord, target: TypedTypeRecord): boolean {

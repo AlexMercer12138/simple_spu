@@ -146,6 +146,24 @@ assert.deepStrictEqual(first.envelope.unit.sourceFiles, [
     { id: 1, path: 'main.c', byteLength: 40, utf8BoundaryBitmap: 'ffffffffff01' },
 ]);
 
+const commandLineMacro = analyze(makeRequest({
+    defines: { VALUE: '1' },
+    source: 'int value = VALUE;\n',
+}));
+assert.strictEqual(commandLineMacro.envelope.status, 'ok',
+    'command-line macro expansions must serialize successfully');
+const commandLineDeclaration = commandLineMacro.envelope.unit.nodes.find((node) =>
+    node.kind === 'variable-declaration');
+assert.ok(commandLineDeclaration, 'command-line macro fixture must include its declaration node');
+assert.strictEqual(commandLineDeclaration.spellingRange, undefined,
+    'unavailable command-line spelling ranges must be omitted');
+
+const unsupportedSourceRoot = analyze(makeRequest({
+    source: '__asm__("nop");\nint value;\n',
+}));
+assert.strictEqual(unsupportedSourceRoot.envelope.status, 'internal-error',
+    'source-backed unsupported roots must not disappear from a successful unit');
+
 const multibyteSource = analyze(makeRequest({ source: 'int x; /* é */\n' }));
 assert.strictEqual(multibyteSource.envelope.status, 'ok');
 assert.strictEqual(multibyteSource.envelope.unit.sourceFiles[0].utf8BoundaryBitmap, 'fff701',

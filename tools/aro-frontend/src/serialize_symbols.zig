@@ -145,6 +145,13 @@ pub const Store = struct {
 
     fn collectLocals(store: *Store, node_index: aro.Tree.Node.Index) !void {
         switch (node_index.get(store.tree)) {
+            .function => |decl| if (store.types.isSourceToken(decl.name_tok)) {
+                _ = try store.add(.function, node_index, decl.qt, 0, decl.definition);
+                const function = decl.qt.get(store.tree.comp, .func) orelse return error.UnsupportedType;
+                for (function.params) |param| if (param.node.unpack()) |param_node| {
+                    _ = try store.add(.parameter, param_node, param.qt, store.by_node.get(node_index) orelse return error.MissingSymbol, null);
+                };
+            },
             .variable => |decl| if (!decl.implicit and store.types.isSourceToken(decl.name_tok)) {
                 _ = try store.addLocal(node_index, decl.qt);
             },
