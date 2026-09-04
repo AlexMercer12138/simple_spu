@@ -82,6 +82,136 @@ exactUint64.unit.nodes.push({
 assert.doesNotThrow(() => validateEnvelope(exactUint64, 'test-build'),
     'unsigned 64-bit constants must retain exact values beyond Number.MAX_SAFE_INTEGER');
 
+const sourcedFailure = {
+    protocolVersion: 1,
+    bridgeBuildId: 'test-build',
+    status: 'error',
+    sourceFiles: [{ id: 1, path: 'broken.c', byteLength: 4 }],
+    diagnostics: [{
+        severity: 'error',
+        code: 'C1000',
+        message: 'failure with source context',
+        range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        },
+        related: [],
+        notes: [],
+        includeTrace: [],
+        macroExpansionTrace: [],
+    }],
+};
+const acceptedFailure = validateEnvelope(sourcedFailure, 'test-build');
+assert.notStrictEqual(acceptedFailure.sourceFiles, sourcedFailure.sourceFiles);
+assertDeeplyFrozen(acceptedFailure);
+
+const nullPointer = clone(validFixture);
+nullPointer.unit.types.push({
+    id: 2, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
+});
+nullPointer.unit.nodes.push({
+    id: 1,
+    category: 'expression',
+    kind: 'conversion',
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    type: 2,
+    valueCategory: 'rvalue',
+    children: [],
+    conversion: 'assignment',
+    targetType: 2,
+    constant: { kind: 'integer', bits: 32, signed: true, value: '0' },
+});
+assert.doesNotThrow(() => validateEnvelope(nullPointer, 'test-build'),
+    'canonical integer zero may represent a converted null pointer');
+
+const definedPrototype = clone(validFixture);
+definedPrototype.unit.types.push({
+    id: 2, kind: 'function', returnType: 1, parameters: [], variadic: false,
+    qualifiers: [], size: 0, alignment: 4,
+});
+definedPrototype.unit.symbols.push({
+    id: 1, kind: 'function', name: 'f', type: 2,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    linkage: 'external', definition: true,
+});
+definedPrototype.unit.nodes.push({
+    id: 1, category: 'declaration', kind: 'function-declaration', type: 2, symbol: 1,
+    range: {
+        file: 1,
+        start: { line: 1, column: 1, byteOffset: 0 },
+        end: { line: 1, column: 2, byteOffset: 1 },
+    },
+    children: [],
+});
+definedPrototype.unit.declarations.push(1);
+assert.doesNotThrow(() => validateEnvelope(definedPrototype, 'test-build'),
+    'a prototype may share a function symbol that is marked as defined elsewhere');
+
+const typedefRepresentations = clone(validFixture);
+typedefRepresentations.unit.types = [
+    { id: 1, kind: 'builtin', name: 'unsigned int', qualifiers: [], size: 4, alignment: 4 },
+    { id: 2, kind: 'typedef', name: 'UInt', target: 1, qualifiers: [], size: 4, alignment: 4 },
+    {
+        id: 3, kind: 'enum', name: 'Choice', underlyingType: 2,
+        enumerators: [{ name: 'choice', value: '0', range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        } }],
+        qualifiers: [], size: 4, alignment: 4,
+    },
+    { id: 4, kind: 'builtin', name: 'float', qualifiers: [], size: 4, alignment: 4 },
+    { id: 5, kind: 'typedef', name: 'Float', target: 4, qualifiers: [], size: 4, alignment: 4 },
+    { id: 6, kind: 'builtin', name: 'char', qualifiers: [], size: 1, alignment: 1 },
+    { id: 7, kind: 'typedef', name: 'Char', target: 6, qualifiers: [], size: 1, alignment: 1 },
+    { id: 8, kind: 'array', element: 7, count: 2, qualifiers: [], size: 2, alignment: 1 },
+    {
+        id: 9, kind: 'struct', name: 'Bits', complete: true,
+        members: [{
+            name: 'flag', type: 1, offset: 0, bitOffset: 0, bitWidth: 1,
+            range: {
+                file: 1,
+                start: { line: 1, column: 1, byteOffset: 0 },
+                end: { line: 1, column: 2, byteOffset: 1 },
+            },
+        }],
+        qualifiers: [], size: 4, alignment: 4,
+    },
+];
+typedefRepresentations.unit.nodes = [
+    {
+        id: 1, category: 'expression', kind: 'floating-literal', type: 5,
+        valueCategory: 'rvalue', children: [],
+        range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        },
+        constant: { kind: 'floating', type: 5, ieeeBits: '00000000' },
+    },
+    {
+        id: 2, category: 'expression', kind: 'string-literal', type: 8,
+        valueCategory: 'lvalue', children: [],
+        range: {
+            file: 1,
+            start: { line: 1, column: 1, byteOffset: 0 },
+            end: { line: 1, column: 2, byteOffset: 1 },
+        },
+        constant: { kind: 'string', elementType: 7, bytes: [65, 0] },
+    },
+];
+assert.doesNotThrow(() => validateEnvelope(typedefRepresentations, 'test-build'),
+    'typedef-wrapped scalar representations and retained bit-field metadata are valid');
+
 assert.strictEqual(MERC32_ABI.target, 'merc32');
 assert.strictEqual(MERC32_ABI.abi, 'merc32-c-v1');
 assert.strictEqual(MERC32_ABI.dataModel, 'merc32-ilp32');
@@ -116,7 +246,9 @@ for (const fixtureCase of malformedFixture.cases) {
     assert.throws(
         () => validateEnvelope(malformed, 'test-build'),
         (errorValue) => errorValue instanceof CFrontendInternalError
-            && errorValue.message.includes(fixtureCase.invariant),
+            && errorValue.message.includes(fixtureCase.invariant)
+            && (fixtureCase.messageIncludes === undefined
+                || errorValue.message.includes(fixtureCase.messageIncludes)),
         `${fixtureCase.name} must be rejected by ${fixtureCase.invariant}`,
     );
 }

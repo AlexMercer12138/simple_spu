@@ -289,6 +289,7 @@ export interface TypedCEnvelopeV1 {
     readonly bridgeBuildId: string;
     readonly status: 'ok' | 'error' | 'internal-error';
     readonly diagnostics: readonly CFrontendDiagnostic[];
+    readonly sourceFiles?: readonly SourceFileRecord[];
     readonly unit?: TypedCUnitV1;
 }
 

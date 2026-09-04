@@ -40,6 +40,7 @@ const nonNegativeIntegerSchema: JsonSchema = {
 const positiveIntegerSchema: JsonSchema = {
     type: 'integer', minimum: 1, maximum: MAX_SAFE_INTEGER,
 };
+const CANONICAL_DECIMAL_PATTERN = '^(0|-[1-9][0-9]*|[1-9][0-9]*)$';
 const rangeReference: JsonSchema = { $ref: '#/$defs/range' };
 const constantReference: JsonSchema = { $ref: '#/$defs/constant' };
 
@@ -66,7 +67,7 @@ const integerConstantSchema = objectSchema({
     kind: { const: 'integer' },
     bits: { type: 'integer', minimum: 1, maximum: 1024 },
     signed: { type: 'boolean' },
-    value: { type: 'string', pattern: '^-?(0|[1-9][0-9]*)$' },
+    value: { type: 'string', pattern: CANONICAL_DECIMAL_PATTERN },
 }, ['kind', 'bits', 'signed', 'value']);
 
 const floatingConstantSchema = objectSchema({
@@ -78,7 +79,7 @@ const floatingConstantSchema = objectSchema({
 const addressConstantSchema = objectSchema({
     kind: { const: 'address' },
     symbol: idSchema,
-    addend: { type: 'string', pattern: '^-?(0|[1-9][0-9]*)$' },
+    addend: { type: 'string', pattern: CANONICAL_DECIMAL_PATTERN },
 }, ['kind', 'symbol', 'addend']);
 
 const stringConstantSchema = objectSchema({
@@ -147,7 +148,7 @@ const aggregateMemberSchema = objectSchema({
 
 const enumValueSchema = objectSchema({
     name: { type: 'string', minLength: 1 },
-    value: { type: 'string', pattern: '^-?(0|[1-9][0-9]*)$' },
+    value: { type: 'string', pattern: CANONICAL_DECIMAL_PATTERN },
     range: rangeReference,
 }, ['name', 'value', 'range']);
 
@@ -354,6 +355,7 @@ const envelopeSchema: JsonSchema = {
         bridgeBuildId: { type: 'string', minLength: 1 },
         status: { enum: ['ok', 'error', 'internal-error'] },
         diagnostics: { type: 'array', items: diagnosticSchema },
+        sourceFiles: { type: 'array', items: sourceFileSchema },
         unit: { $ref: '#/$defs/unit' },
     }, ['protocolVersion', 'bridgeBuildId', 'status', 'diagnostics']),
     $defs: {
@@ -437,6 +439,10 @@ function structuralError(value: unknown, errors: readonly ErrorObject[]): CFront
         if (isObject(type) && typeof type.kind === 'string' && !TYPE_KINDS.has(type.kind)) {
             return failure('TYPE_KIND', `unknown type kind ${JSON.stringify(type.kind)}`);
         }
+        if (isObject(type) && type.kind === 'enum' && Array.isArray(type.enumerators)
+            && type.enumerators.some((value) => isObject(value) && value.value === '-0')) {
+            return failure('INTEGER_CONSTANT', 'enum value must be a canonical decimal integer string');
+        }
     }
     const symbols = isObject(unit) && Array.isArray(unit.symbols) ? unit.symbols : [];
     for (const symbol of symbols) {
@@ -455,10 +461,18 @@ function structuralError(value: unknown, errors: readonly ErrorObject[]): CFront
             return failure('NODE_EXPRESSION_METADATA',
                 'every expression must carry both type and valueCategory');
         }
-        const constant = isObject(node) ? node.constant : undefined;
-        if (isObject(constant) && typeof constant.kind === 'string'
-            && !CONSTANT_KINDS.has(constant.kind)) {
+    }
+    for (const constant of collectStructuralConstants(unit)) {
+        if (typeof constant.kind === 'string' && !CONSTANT_KINDS.has(constant.kind)) {
             return failure('CONSTANT_KIND', `unknown constant kind ${JSON.stringify(constant.kind)}`);
+        }
+        if (constant.kind === 'integer' && constant.value === '-0') {
+            return failure('INTEGER_CONSTANT',
+                'integer constant must be a canonical decimal integer string');
+        }
+        if (constant.kind === 'address' && constant.addend === '-0') {
+            return failure('ADDRESS_CONSTANT',
+                'address addend must be a canonical decimal integer string');
         }
     }
     const additional = errors.find((error) => error.keyword === 'additionalProperties');
@@ -473,6 +487,38 @@ function structuralError(value: unknown, errors: readonly ErrorObject[]): CFront
         : `${first.instancePath || '$'} ${first.message ?? 'is invalid'}`);
 }
 
+function collectStructuralConstants(unit: unknown): readonly Record<string, unknown>[] {
+    if (!isObject(unit)) {
+        return [];
+    }
+    const constants: Record<string, unknown>[] = [];
+    if (Array.isArray(unit.nodes)) {
+        for (const node of unit.nodes) {
+            if (isObject(node) && isObject(node.constant)) {
+                constants.push(node.constant);
+            }
+        }
+    }
+    if (Array.isArray(unit.symbols)) {
+        for (const symbol of unit.symbols) {
+            if (!isObject(symbol)) {
+                continue;
+            }
+            if (isObject(symbol.value)) {
+                constants.push(symbol.value);
+            }
+            if (isObject(symbol.initializer) && Array.isArray(symbol.initializer.writes)) {
+                for (const write of symbol.initializer.writes) {
+                    if (isObject(write) && isObject(write.value)) {
+                        constants.push(write.value);
+                    }
+                }
+            }
+        }
+    }
+    return constants;
+}
+
 function validateEnvelopeSemantics(envelope: TypedCEnvelopeV1, expectedBuildId: string): void {
     assertInvariant(envelope.protocolVersion === 1, 'ENVELOPE_IDENTITY',
         'protocolVersion must be exactly 1');
@@ -480,18 +526,27 @@ function validateEnvelopeSemantics(envelope: TypedCEnvelopeV1, expectedBuildId: 
         `bridgeBuildId ${JSON.stringify(envelope.bridgeBuildId)} does not match the expected build`);
     assertInvariant(envelope.status === 'ok' ? envelope.unit !== undefined : envelope.unit === undefined,
         'STATUS_CONSISTENCY', 'status ok requires a unit and non-ok status forbids a unit');
+    assertInvariant(envelope.status !== 'ok' || envelope.sourceFiles === undefined,
+        'STATUS_CONSISTENCY', 'status ok forbids envelope sourceFiles; use unit.sourceFiles');
     assertInvariant(envelope.status !== 'ok' || !hasErrors(envelope.diagnostics),
         'STATUS_CONSISTENCY', 'status ok cannot carry error or fatal diagnostics');
 
     if (envelope.unit === undefined) {
+        assertInvariant(envelope.diagnostics.length === 0 || envelope.sourceFiles !== undefined,
+            'FAILURE_SOURCE_FILES', 'a non-ok envelope with ranged diagnostics requires sourceFiles');
+        const files = envelope.sourceFiles === undefined
+            ? undefined
+            : validateSourceFileTable(envelope.sourceFiles);
+        const positions = createSourcePositionCoherence();
         for (const diagnostic of envelope.diagnostics) {
-            validateRange(diagnostic.range, undefined, 'diagnostic range');
+            validateRange(diagnostic.range, files, 'diagnostic range', positions);
             for (const related of diagnostic.related) {
-                validateRange(related.range, undefined, 'related diagnostic range');
+                validateRange(related.range, files, 'related diagnostic range', positions);
             }
-            diagnostic.includeTrace.forEach((range) => validateRange(range, undefined, 'include trace'));
+            diagnostic.includeTrace.forEach((range) =>
+                validateRange(range, files, 'include trace', positions));
             diagnostic.macroExpansionTrace.forEach((range) =>
-                validateRange(range, undefined, 'macro expansion trace'));
+                validateRange(range, files, 'macro expansion trace', positions));
         }
         return;
     }
@@ -510,24 +565,14 @@ function validateUnit(unit: TypedCUnitV1, diagnostics: readonly CFrontendDiagnos
         'unit identities must be merc32.typed-c-unit v1 for merc32/merc32-c-v1/merc32-ilp32/c17-freestanding',
     );
 
-    assertInvariant(unit.sourceFiles.length <= HARD_C_FRONTEND_LIMITS.fileCount,
-        'SOURCE_LIMIT', 'source file count exceeds the hard frontend limit');
-    let totalSourceBytes = 0;
-    for (const file of unit.sourceFiles) {
-        assertInvariant(file.byteLength <= HARD_C_FRONTEND_LIMITS.fileBytes,
-            'SOURCE_LIMIT', `source file ${file.path} exceeds the per-file byte limit`);
-        totalSourceBytes += file.byteLength;
-        assertInvariant(Number.isSafeInteger(totalSourceBytes)
-            && totalSourceBytes <= HARD_C_FRONTEND_LIMITS.totalSourceBytes,
-        'SOURCE_LIMIT', 'total source byte length exceeds the hard frontend limit');
-    }
-
-    const files = uniqueMap(unit.sourceFiles, 'source file');
+    const files = validateSourceFileTable(unit.sourceFiles);
     const types = uniqueMap(unit.types, 'type');
     const symbols = uniqueMap(unit.symbols, 'symbol');
     const nodes = uniqueMap(unit.nodes, 'node');
 
-    const checkRange = (range: SourceRange, label: string): void => validateRange(range, files, label);
+    const positions = createSourcePositionCoherence();
+    const checkRange = (range: SourceRange, label: string): void =>
+        validateRange(range, files, label, positions);
     for (const diagnostic of diagnostics) {
         checkRange(diagnostic.range, 'diagnostic range');
         diagnostic.related.forEach((related) => checkRange(related.range, 'related diagnostic range'));
@@ -551,6 +596,23 @@ function validateUnit(unit: TypedCUnitV1, diagnostics: readonly CFrontendDiagnos
     validateNodes(unit.nodes, unit.declarations, types, symbols, nodes);
 }
 
+function validateSourceFileTable(
+    sourceFiles: readonly SourceFileRecord[],
+): ReadonlyMap<number, SourceFileRecord> {
+    assertInvariant(sourceFiles.length <= HARD_C_FRONTEND_LIMITS.fileCount,
+        'SOURCE_LIMIT', 'source file count exceeds the hard frontend limit');
+    let totalSourceBytes = 0;
+    for (const file of sourceFiles) {
+        assertInvariant(file.byteLength <= HARD_C_FRONTEND_LIMITS.fileBytes,
+            'SOURCE_LIMIT', `source file ${file.path} exceeds the per-file byte limit`);
+        totalSourceBytes += file.byteLength;
+        assertInvariant(Number.isSafeInteger(totalSourceBytes)
+            && totalSourceBytes <= HARD_C_FRONTEND_LIMITS.totalSourceBytes,
+        'SOURCE_LIMIT', 'total source byte length exceeds the hard frontend limit');
+    }
+    return uniqueMap(sourceFiles, 'source file');
+}
+
 function validateTypeReferences(
     records: readonly TypedTypeRecord[],
     types: ReadonlyMap<number, TypedTypeRecord>,
@@ -563,18 +625,21 @@ function validateTypeReferences(
                 requireType(types, type.pointee, `pointer type ${type.id} pointee`);
                 break;
             case 'array': {
-                const element = requireType(types, type.element, `array type ${type.id} element`);
+                const element = unaliasType(
+                    requireType(types, type.element, `array type ${type.id} element`), types);
                 assertInvariant(element.kind !== 'function'
                     && !(element.kind === 'builtin' && element.name === 'void'),
                 'CROSS_KIND_REFERENCE', `array type ${type.id} must reference an object element type`);
                 break;
             }
             case 'function': {
-                const result = requireType(types, type.returnType, `function type ${type.id} return`);
+                const result = unaliasType(
+                    requireType(types, type.returnType, `function type ${type.id} return`), types);
                 assertInvariant(result.kind !== 'array' && result.kind !== 'function',
                     'CROSS_KIND_REFERENCE', `function type ${type.id} has an illegal return type`);
                 for (const parameterId of type.parameters) {
-                    const parameter = requireType(types, parameterId, `function type ${type.id} parameter`);
+                    const parameter = unaliasType(
+                        requireType(types, parameterId, `function type ${type.id} parameter`), types);
                     assertInvariant(parameter.kind !== 'array' && parameter.kind !== 'function'
                         && !(parameter.kind === 'builtin' && parameter.name === 'void'),
                     'CROSS_KIND_REFERENCE', `function type ${type.id} has a non-parameter type`);
@@ -584,14 +649,16 @@ function validateTypeReferences(
             case 'struct':
             case 'union':
                 for (const member of type.members) {
-                    const memberType = requireType(types, member.type, `${type.kind} type ${type.id} member`);
+                    const memberType = unaliasType(
+                        requireType(types, member.type, `${type.kind} type ${type.id} member`), types);
                     assertInvariant(memberType.kind !== 'function'
                         && !(memberType.kind === 'builtin' && memberType.name === 'void'),
                     'CROSS_KIND_REFERENCE', `${type.kind} type ${type.id} member is not an object type`);
                 }
                 break;
             case 'enum': {
-                const underlying = requireType(types, type.underlyingType, `enum type ${type.id} underlying`);
+                const underlying = unaliasType(
+                    requireType(types, type.underlyingType, `enum type ${type.id} underlying`), types);
                 assertInvariant(underlying.kind === 'builtin' && isIntegerBuiltin(underlying.name),
                     'CROSS_KIND_REFERENCE', `enum type ${type.id} underlying type must be an integer builtin`);
                 for (const enumerator of type.enumerators) {
@@ -674,7 +741,8 @@ function validateTypeLayouts(
                 break;
             }
             case 'enum': {
-                const underlying = requireType(types, type.underlyingType, `enum type ${type.id} underlying`);
+                const underlying = unaliasType(
+                    requireType(types, type.underlyingType, `enum type ${type.id} underlying`), types);
                 assertInvariant(type.size === underlying.size && type.alignment === underlying.alignment,
                     'ABI_LAYOUT', `enum type ${type.id} layout disagrees with its underlying type`);
                 break;
@@ -698,19 +766,62 @@ function validateAggregateLayout(
     types: ReadonlyMap<number, TypedTypeRecord>,
 ): void {
     if (!aggregate.complete) {
-        assertInvariant(aggregate.members.length === 0 && aggregate.size === 0,
-            'AGGREGATE_LAYOUT', `incomplete ${aggregate.kind} type ${aggregate.id} must have no layout`);
+        assertInvariant(aggregate.members.length === 0
+            && aggregate.size === 0
+            && aggregate.alignment === 1,
+        'AGGREGATE_LAYOUT',
+        `incomplete ${aggregate.kind} type ${aggregate.id} must have no members, size 0, alignment 1`);
         return;
     }
     assertInvariant(aggregate.members.length > 0, 'AGGREGATE_LAYOUT',
         `complete ${aggregate.kind} type ${aggregate.id} must contain a member`);
+
+    // V1 retains frontend bit metadata, but MERC32_ABI does not yet define canonical bit placement.
+    if (aggregate.members.some((member) =>
+        member.bitOffset !== undefined || member.bitWidth !== undefined)) {
+        validateAggregateWithBitFields(aggregate, types);
+        return;
+    }
+
+    let expectedAlignment = 1;
+    let extent = 0;
+    for (const member of aggregate.members) {
+        const memberType = unaliasType(
+            requireType(types, member.type, `${aggregate.kind} type ${aggregate.id} member`), types);
+        assertInvariant(memberType.size > 0, 'AGGREGATE_LAYOUT',
+            `${aggregate.kind} type ${aggregate.id} has an incomplete member`);
+        const memberAlignment = Math.min(
+            memberType.alignment, MERC32_ABI.maximumNaturalAlignment);
+        expectedAlignment = Math.max(expectedAlignment, memberAlignment);
+        if (aggregate.kind === 'union') {
+            assertInvariant(member.offset === 0, 'AGGREGATE_LAYOUT',
+                `union type ${aggregate.id} members must start at byte offset zero`);
+            extent = Math.max(extent, memberType.size);
+        } else {
+            const expectedOffset = roundUp(extent, memberAlignment);
+            assertInvariant(member.offset === expectedOffset, 'AGGREGATE_LAYOUT',
+                `struct type ${aggregate.id} member ${member.name} expected byte offset ${expectedOffset}`);
+            extent = expectedOffset + memberType.size;
+        }
+    }
+    const expectedSize = roundUp(extent, expectedAlignment);
+    assertInvariant(aggregate.alignment === expectedAlignment && aggregate.size === expectedSize,
+        'AGGREGATE_LAYOUT',
+        `${aggregate.kind} type ${aggregate.id} expected layout ${expectedSize}/${expectedAlignment}`);
+}
+
+function validateAggregateWithBitFields(
+    aggregate: Extract<TypedTypeRecord, { kind: 'struct' | 'union' }>,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): void {
 
     let expectedAlignment = 1;
     let extent = 0;
     let previousStart = -1;
     let previousEnd = 0;
     for (const member of aggregate.members) {
-        const memberType = requireType(types, member.type, `${aggregate.kind} type ${aggregate.id} member`);
+        const memberType = unaliasType(
+            requireType(types, member.type, `${aggregate.kind} type ${aggregate.id} member`), types);
         assertInvariant(memberType.size > 0, 'AGGREGATE_LAYOUT',
             `${aggregate.kind} type ${aggregate.id} has an incomplete member`);
         expectedAlignment = Math.max(expectedAlignment,
@@ -756,9 +867,11 @@ function validateSymbols(
         switch (symbol.kind) {
             case 'variable': {
                 const type = requireType(types, symbol.type, `variable symbol ${symbol.id}`);
-                assertInvariant(isObjectType(type), 'CROSS_KIND_REFERENCE',
+                assertInvariant(isObjectType(type, types), 'CROSS_KIND_REFERENCE',
                     `variable symbol ${symbol.id} must reference an object type`);
                 if (symbol.initializer !== undefined) {
+                    assertInvariant(symbol.definition, 'DECLARATION_SEMANTICS',
+                        `initializer for symbol ${symbol.id} requires a defined variable`);
                     assertInvariant(symbol.initializer.size === type.size, 'INITIALIZER_LAYOUT',
                         `initializer for symbol ${symbol.id} must match its object size`);
                     validateInitializer(symbol.initializer, types, symbols);
@@ -766,14 +879,15 @@ function validateSymbols(
                 break;
             }
             case 'function': {
-                const type = requireType(types, symbol.type, `function symbol ${symbol.id}`);
+                const type = unaliasType(
+                    requireType(types, symbol.type, `function symbol ${symbol.id}`), types);
                 assertInvariant(type.kind === 'function', 'CROSS_KIND_REFERENCE',
                     `function symbol ${symbol.id} must reference a function type`);
                 break;
             }
             case 'parameter': {
                 const type = requireType(types, symbol.type, `parameter symbol ${symbol.id}`);
-                assertInvariant(isObjectType(type), 'CROSS_KIND_REFERENCE',
+                assertInvariant(isObjectType(type, types), 'CROSS_KIND_REFERENCE',
                     `parameter symbol ${symbol.id} must reference an object type`);
                 requireSymbolKind(symbols, symbol.owner, ['function'], `parameter symbol ${symbol.id} owner`);
                 break;
@@ -783,17 +897,20 @@ function validateSymbols(
                     'CROSS_KIND_REFERENCE', `typedef symbol ${symbol.id} must reference a typedef type`);
                 break;
             case 'record': {
-                const type = requireType(types, symbol.type, `record symbol ${symbol.id}`);
+                const type = unaliasType(
+                    requireType(types, symbol.type, `record symbol ${symbol.id}`), types);
                 assertInvariant(type.kind === 'struct' || type.kind === 'union',
                     'CROSS_KIND_REFERENCE', `record symbol ${symbol.id} must reference an aggregate type`);
                 break;
             }
             case 'enum':
-                assertInvariant(requireType(types, symbol.type, `enum symbol ${symbol.id}`).kind === 'enum',
+                assertInvariant(unaliasType(
+                    requireType(types, symbol.type, `enum symbol ${symbol.id}`), types).kind === 'enum',
                     'CROSS_KIND_REFERENCE', `enum symbol ${symbol.id} must reference an enum type`);
                 break;
             case 'enumerator':
-                assertInvariant(requireType(types, symbol.type, `enumerator symbol ${symbol.id}`).kind === 'enum',
+                assertInvariant(unaliasType(
+                    requireType(types, symbol.type, `enumerator symbol ${symbol.id}`), types).kind === 'enum',
                     'CROSS_KIND_REFERENCE', `enumerator symbol ${symbol.id} must reference an enum type`);
                 requireSymbolKind(symbols, symbol.owner, ['enum'], `enumerator symbol ${symbol.id} owner`);
                 validateConstant(symbol.value, types, symbols);
@@ -822,7 +939,8 @@ function validateInitializer(
             'initializer writes must not overlap');
         previousOffset = write.offset;
         previousEnd = write.offset + type.size;
-        validateConstant(write.value, types, symbols);
+        validateConstantForDestination(
+            write.value, type, types, symbols, `initializer write at ${write.offset}`);
     }
 }
 
@@ -841,8 +959,8 @@ function validateNodes(
             const expressionType = requireType(types, node.type, `expression node ${node.id} type`);
             validateExpressionCategory(node, expressionType, symbols);
             if (node.constant !== undefined) {
-                validateConstant(node.constant, types, symbols);
-                validateExpressionConstantType(node, expressionType, types);
+                validateConstantForDestination(
+                    node.constant, expressionType, types, symbols, `expression node ${node.id}`);
             }
         }
         if ('targetType' in node) {
@@ -856,36 +974,110 @@ function validateNodes(
                 assertInvariant(symbol.type === type.id, 'CROSS_KIND_REFERENCE',
                     `declaration node ${node.id} type disagrees with symbol ${symbol.id}`);
             }
+            if (node.kind === 'function-definition') {
+                assertInvariant(symbol.kind === 'function' && symbol.definition,
+                    'DECLARATION_SEMANTICS',
+                    `function-definition node ${node.id} requires a function symbol marked definition`);
+            }
         }
     }
     for (const declarationId of declarations) {
         const node = requireNode(nodes, declarationId, 'top-level declaration');
         assertInvariant(node.category === 'declaration', 'CROSS_KIND_REFERENCE',
             `top-level declaration ${declarationId} is not a declaration node`);
+        assertInvariant(node.kind !== 'parameter-declaration', 'DECLARATION_SEMANTICS',
+            `top-level declaration ${declarationId} is not a file-scope declaration kind`);
     }
     rejectNodeCycles(records, nodes);
 }
 
-function validateExpressionConstantType(
-    node: Extract<TypedNodeRecord, { category: 'expression' }>,
-    expressionType: TypedTypeRecord,
+function validateConstantForDestination(
+    constant: TypedConstant,
+    destinationType: TypedTypeRecord,
     types: ReadonlyMap<number, TypedTypeRecord>,
+    symbols: ReadonlyMap<number, TypedSymbolRecord>,
+    label: string,
 ): void {
-    if ((node.kind === 'integer-literal' || node.kind === 'character-literal')
-        && node.constant.kind === 'integer') {
-        const representation = integerRepresentation(expressionType, types);
-        assertInvariant(representation !== undefined
-            && node.constant.bits === representation.bits
-            && node.constant.signed === representation.signed,
-        'CONSTANT_TYPE', `integer literal ${node.id} constant disagrees with its expression type`);
-    } else if (node.kind === 'floating-literal' && node.constant.kind === 'floating') {
-        assertInvariant(node.constant.type === expressionType.id, 'CONSTANT_TYPE',
-            `floating literal ${node.id} constant type disagrees with its expression type`);
-    } else if (node.kind === 'string-literal' && node.constant.kind === 'string') {
-        const unaliased = unaliasType(expressionType, types);
-        assertInvariant(unaliased.kind === 'array' && unaliased.element === node.constant.elementType,
-            'CONSTANT_TYPE', `string literal ${node.id} element type disagrees with its expression type`);
+    validateConstant(constant, types, symbols);
+    const destination = unaliasType(destinationType, types);
+    switch (constant.kind) {
+        case 'integer': {
+            const representation = integerRepresentation(destination, types);
+            if (representation !== undefined) {
+                assertInvariant(constant.bits === representation.bits
+                    && constant.signed === representation.signed,
+                'CONSTANT_TYPE', `${label} integer width or signedness disagrees with its destination`);
+                if (destination.kind === 'builtin' && destination.name === '_Bool') {
+                    const value = parseExactInteger(constant.value, 'INTEGER_CONSTANT', 'boolean constant');
+                    assertInvariant(value === 0n || value === 1n, 'CONSTANT_TYPE',
+                        `${label} boolean destination accepts only integer zero or one`);
+                }
+                return;
+            }
+            assertInvariant(destination.kind === 'pointer' && constant.value === '0',
+                'CONSTANT_TYPE', `${label} pointer destination accepts only canonical integer zero as a null pointer`);
+            return;
+        }
+        case 'floating': {
+            const constantType = unaliasType(
+                requireType(types, constant.type, 'floating constant type'), types);
+            assertInvariant(destination.kind === 'builtin' && isFloatingBuiltin(destination.name),
+                'CONSTANT_TYPE', `${label} floating constant is incompatible with an integer destination`);
+            assertInvariant(constantType.kind === 'builtin'
+                && constantType.name === destination.name
+                && constantType.size === destination.size,
+            'CONSTANT_TYPE', `${label} floating constant type or width disagrees with its destination`);
+            return;
+        }
+        case 'address': {
+            assertInvariant(destination.kind === 'pointer', 'CONSTANT_TYPE',
+                `${label} address destination must be a pointer type`);
+            const pointee = unaliasType(
+                requireType(types, destination.pointee, `${label} pointer target`), types);
+            const symbol = requireSymbolKind(
+                symbols, constant.symbol, ['variable', 'function'], 'address constant symbol',
+                'ADDRESS_CONSTANT');
+            if (symbol.kind === 'function') {
+                const symbolType = unaliasType(
+                    requireType(types, symbol.type, `function symbol ${symbol.id} type`), types);
+                assertInvariant(pointee.kind === 'function'
+                    && sameResolvedType(pointee, symbolType),
+                'CONSTANT_TYPE', `${label} function address requires a compatible function pointer`);
+            } else {
+                assertInvariant(pointee.kind !== 'function', 'CONSTANT_TYPE',
+                    `${label} object address cannot initialize a function pointer`);
+                const symbolType = unaliasType(
+                    requireType(types, symbol.type, `variable symbol ${symbol.id} type`), types);
+                const pointsToVoid = pointee.kind === 'builtin' && pointee.name === 'void';
+                assertInvariant(pointsToVoid || sameResolvedType(pointee, symbolType),
+                    'CONSTANT_TYPE', `${label} address pointee type disagrees with its symbol`);
+            }
+            return;
+        }
+        case 'string': {
+            assertInvariant(destination.kind === 'array', 'CONSTANT_TYPE',
+                `${label} string destination must be an array type`);
+            const destinationElement = unaliasType(
+                requireType(types, destination.element, `${label} string array element`), types);
+            const constantElement = unaliasType(
+                requireType(types, constant.elementType, 'string constant element type'), types);
+            assertInvariant(destinationElement.kind === 'builtin'
+                && isCharacterBuiltin(destinationElement.name)
+                && constantElement.kind === 'builtin'
+                && constantElement.name === destinationElement.name,
+            'CONSTANT_TYPE', `${label} string destination has an incompatible element type`);
+            assertInvariant(constant.bytes.length === destination.size,
+                'CONSTANT_TYPE', `${label} string constant byte size disagrees with its array destination`);
+            return;
+        }
     }
+}
+
+function sameResolvedType(left: TypedTypeRecord, right: TypedTypeRecord): boolean {
+    if (left.id === right.id) {
+        return true;
+    }
+    return left.kind === 'builtin' && right.kind === 'builtin' && left.name === right.name;
 }
 
 function integerRepresentation(
@@ -968,7 +1160,8 @@ function validateConstant(
             validateIntegerValue(constant.value, constant.bits, constant.signed, 'integer constant');
             break;
         case 'floating': {
-            const type = requireType(types, constant.type, 'floating constant type');
+            const type = unaliasType(
+                requireType(types, constant.type, 'floating constant type'), types);
             assertInvariant(type.kind === 'builtin'
                 && (type.name === 'float' || type.name === 'double' || type.name === 'long double'),
             'FLOATING_CONSTANT', 'floating constant must reference a floating builtin type');
@@ -988,7 +1181,8 @@ function validateConstant(
             break;
         }
         case 'string': {
-            const element = requireType(types, constant.elementType, 'string constant element type');
+            const element = unaliasType(
+                requireType(types, constant.elementType, 'string constant element type'), types);
             assertInvariant(element.kind === 'builtin'
                 && ['char', 'signed char', 'unsigned char'].includes(element.name),
             'STRING_CONSTANT', 'string constant elementType must be a character builtin');
@@ -1007,7 +1201,7 @@ function validateIntegerValue(valueText: string, bits: number, signed: boolean, 
 }
 
 function parseExactInteger(text: string, invariant: string, label: string): bigint {
-    assertInvariant(/^-?(0|[1-9][0-9]*)$/.test(text), invariant,
+    assertInvariant(/^(0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(text), invariant,
         `${label} must be a canonical decimal integer string`);
     try {
         return BigInt(text);
@@ -1020,6 +1214,7 @@ function validateRange(
     range: SourceRange,
     files: ReadonlyMap<number, SourceFileRecord> | undefined,
     label: string,
+    positions: SourcePositionCoherence,
 ): void {
     const file = files?.get(range.file);
     if (files !== undefined) {
@@ -1036,10 +1231,41 @@ function validateRange(
     assertInvariant(range.start.line < range.end.line
         || (range.start.line === range.end.line && range.start.column <= range.end.column),
     'SOURCE_RANGE', `${label} has inverted line/column positions`);
-    if (range.start.byteOffset === range.end.byteOffset) {
-        assertInvariant(range.start.line === range.end.line && range.start.column === range.end.column,
-            'SOURCE_RANGE', `${label} has inconsistent positions for an empty byte range`);
-    }
+    const sameByteOffset = range.start.byteOffset === range.end.byteOffset;
+    const sameCoordinates = range.start.line === range.end.line
+        && range.start.column === range.end.column;
+    assertInvariant(sameByteOffset === sameCoordinates, 'SOURCE_RANGE',
+        `${label} violates source position coherence between byte offset and line/column`);
+    recordSourcePosition(range.file, range.start, label, positions);
+    recordSourcePosition(range.file, range.end, label, positions);
+}
+
+interface SourcePositionCoherence {
+    readonly coordinatesByByte: Map<string, string>;
+    readonly byteByCoordinates: Map<string, number>;
+}
+
+function createSourcePositionCoherence(): SourcePositionCoherence {
+    return { coordinatesByByte: new Map(), byteByCoordinates: new Map() };
+}
+
+function recordSourcePosition(
+    file: SourceFileId,
+    position: SourceRange['start'],
+    label: string,
+    coherence: SourcePositionCoherence,
+): void {
+    const coordinates = `${position.line}:${position.column}`;
+    const byteKey = `${file}:${position.byteOffset}`;
+    const coordinateKey = `${file}:${coordinates}`;
+    const knownCoordinates = coherence.coordinatesByByte.get(byteKey);
+    const knownByte = coherence.byteByCoordinates.get(coordinateKey);
+    assertInvariant(knownCoordinates === undefined || knownCoordinates === coordinates,
+        'SOURCE_RANGE', `${label} violates source position coherence for byte offset ${position.byteOffset}`);
+    assertInvariant(knownByte === undefined || knownByte === position.byteOffset,
+        'SOURCE_RANGE', `${label} violates source position coherence for line/column ${coordinates}`);
+    coherence.coordinatesByByte.set(byteKey, coordinates);
+    coherence.byteByCoordinates.set(coordinateKey, position.byteOffset);
 }
 
 function uniqueMap<T extends { readonly id: number }>(
@@ -1102,8 +1328,13 @@ function declarationSymbolKinds(kind: TypedNodeKind): readonly TypedSymbolRecord
     }
 }
 
-function isObjectType(type: TypedTypeRecord): boolean {
-    return type.kind !== 'function' && !(type.kind === 'builtin' && type.name === 'void');
+function isObjectType(
+    type: TypedTypeRecord,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): boolean {
+    const resolved = unaliasType(type, types);
+    return resolved.kind !== 'function'
+        && !(resolved.kind === 'builtin' && resolved.name === 'void');
 }
 
 function isIntegerType(type: TypedTypeRecord): boolean {
@@ -1112,6 +1343,14 @@ function isIntegerType(type: TypedTypeRecord): boolean {
 
 function isIntegerBuiltin(name: BuiltinTypeName): boolean {
     return name !== 'void' && name !== 'float' && name !== 'double' && name !== 'long double';
+}
+
+function isFloatingBuiltin(name: BuiltinTypeName): boolean {
+    return name === 'float' || name === 'double' || name === 'long double';
+}
+
+function isCharacterBuiltin(name: BuiltinTypeName): boolean {
+    return name === 'char' || name === 'signed char' || name === 'unsigned char';
 }
 
 function builtinIsSigned(name: BuiltinTypeName): boolean {
