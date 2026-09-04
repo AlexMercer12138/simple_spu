@@ -5,10 +5,10 @@ The pinned upstream snapshot remains byte-for-byte auditable through `UPSTREAM-M
 | Path | Reason |
 |---|---|
 | `src/aro.zig` | Export the explicit public MERC32 data-model value. |
-| `src/aro/Compilation.zig` | Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, and target-independent alias selection. |
+| `src/aro/Compilation.zig` | Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary, and freestanding I/O guards. |
 | `src/aro/DataModel.zig` | Define the explicit MERC32 ILP32 sizes, alignments, function alignment, and signed-char model. |
 | `src/aro/Parser.zig` | Route integer-literal and int128 capability behavior through the selected compilation model. |
-| `src/aro/Preprocessor.zig` | Route builtin and feature checks through model-aware compilation capability queries. |
+| `src/aro/Preprocessor.zig` | Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, and compile out verbose stderr logging for freestanding builds. |
 | `src/aro/Preprocessor/Parser.zig` | Validate preprocessor intmax width through the selected compilation model. |
 | `src/aro/TypeStore.zig` | Use compilation data-model queries for C type sizes, alignments, aliases, pointers, and functions. |
 | `src/aro/record_layout.zig` | Apply the selected model's maximum natural alignment without inheriting host record-layout identity. |

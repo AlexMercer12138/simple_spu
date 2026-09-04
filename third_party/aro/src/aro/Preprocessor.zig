@@ -1,4 +1,5 @@
 const std = @import("std");
+const target_builtin = @import("builtin");
 const mem = std.mem;
 const path = std.Io.Dir.path;
 const Allocator = mem.Allocator;
@@ -25,7 +26,6 @@ const TokenWithExpansionLocs = Tree.TokenWithExpansionLocs;
 
 const DefineMap = std.StringArrayHashMapUnmanaged(Macro);
 const RawTokenList = std.ArrayList(RawToken);
-const max_include_depth = 200;
 
 /// Errors that can be returned when expanding a macro.
 /// error.UnknownPragma can occur within Preprocessor.pragma() but
@@ -253,6 +253,7 @@ expansion_source_loc: Source.Location = undefined,
 poisoned_identifiers: std.StringHashMapUnmanaged(void) = .empty,
 /// Map from Source.Id to macro name in the `#ifndef` condition which guards the source, if any
 include_guards: std.AutoHashMapUnmanaged(Source.Id, []const u8) = .empty,
+active_sources: std.AutoHashMapUnmanaged(Source.Id, void) = .empty,
 
 /// Store `keyword_define` and `keyword_undef` tokens.
 /// Used to implement preprocessor debug dump options
@@ -395,6 +396,7 @@ pub fn deinit(pp: *Preprocessor) void {
     pp.char_buf.deinit(gpa);
     pp.poisoned_identifiers.deinit(gpa);
     pp.include_guards.deinit(gpa);
+    pp.active_sources.deinit(gpa);
     pp.top_expansion_buf.deinit(gpa);
     pp.hideset.deinit();
     for (pp.expansion_entries.items(.locs)) |locs| TokenWithExpansionLocs.free(locs, gpa);
@@ -579,6 +581,9 @@ fn findIncludeGuard(pp: *Preprocessor, source: Source) ?[]const u8 {
 
 fn preprocessExtra(pp: *Preprocessor, source: Source) MacroError!TokenWithExpansionLocs {
     const gpa = pp.comp.gpa;
+    const active = try pp.active_sources.getOrPut(gpa, source.id);
+    if (active.found_existing) return error.StopPreprocessing;
+    defer _ = pp.active_sources.remove(source.id);
     var guard_name = pp.findIncludeGuard(source);
 
     pp.preprocess_count += 1;
@@ -1112,6 +1117,7 @@ fn fatalNotFound(pp: *Preprocessor, tok: TokenWithExpansionLocs, filename: []con
 
 fn verboseLog(pp: *Preprocessor, raw: RawToken, comptime fmt: []const u8, args: anytype) void {
     @branchHint(.cold);
+    if (comptime target_builtin.os.tag == .freestanding) return;
     const source = pp.comp.getSource(raw.source);
     const line_col = source.lineCol(.{ .id = raw.source, .line = raw.line, .byte_offset = raw.start });
 
@@ -3474,10 +3480,16 @@ fn include(pp: *Preprocessor, tokenizer: *Tokenizer, which: Compilation.WhichInc
     };
     const gpa = pp.comp.gpa;
 
+    if (pp.active_sources.contains(new_source.id)) {
+        const loc: Source.Location = .{ .id = first.source, .byte_offset = first.start, .line = first.line };
+        try pp.err(loc, .too_many_includes, .{});
+        return error.StopPreprocessing;
+    }
+
     // Prevent stack overflow
     pp.include_depth += 1;
     defer pp.include_depth -= 1;
-    if (pp.include_depth > max_include_depth) {
+    if (pp.include_depth > pp.comp.max_include_depth) {
         const loc: Source.Location = .{ .id = first.source, .byte_offset = first.start, .line = first.line };
         try pp.err(loc, .too_many_includes, .{});
         return error.StopPreprocessing;

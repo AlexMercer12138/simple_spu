@@ -10,8 +10,8 @@
     {
       "path": "src/aro/Compilation.zig",
       "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
-      "sha256": "694058543fc1452097b988cbea7b3fb424b6cf45cc0440ebb9b80fba42d04266",
-      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, and target-independent alias selection."
+      "sha256": "ebae8139c654647e7e2ea5c81737f30bf69cec377e4460bd9899ff29fcec0ec2",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary, and freestanding I/O guards."
     },
     {
       "path": "src/aro/DataModel.zig",
@@ -28,8 +28,8 @@
     {
       "path": "src/aro/Preprocessor.zig",
       "upstreamSha256": "b514f987592d5113598c88c1ceb8361ac9a432fd8d455b63a202357a0704d29f",
-      "sha256": "1e488aac88beee0f61ffef40514d804bbd9ec8f41968a5e2cce4afaa1a437a18",
-      "reason": "Route builtin and feature checks through model-aware compilation capability queries."
+      "sha256": "6c8ff0c88f44881069a0ce95a533f14a621ab81d22261f6ad7593081dee9aff5",
+      "reason": "Route builtin and feature checks through model-aware compilation capability queries, enforce configurable include depth and canonical cycle checks, and compile out verbose stderr logging for freestanding builds."
     },
     {
       "path": "src/aro/Preprocessor/Parser.zig",

@@ -1,4 +1,5 @@
 const std = @import("std");
+const target_builtin = @import("builtin");
 const assert = std.debug.assert;
 const EpochSeconds = std.time.epoch.EpochSeconds;
 const Io = std.Io;
@@ -134,12 +135,25 @@ pub const Include = struct {
 
 const Compilation = @This();
 
+pub const SourceProvider = struct {
+    context: *anyopaque,
+    resolve: *const fn (
+        context: *anyopaque,
+        comp: *Compilation,
+        candidate: []const u8,
+        kind: Source.Kind,
+        includer_path: []const u8,
+    ) Allocator.Error!?Source,
+};
+
 gpa: Allocator,
 /// Allocations in this arena live all the way until `Compilation.deinit`.
 arena: Allocator,
 io: Io,
 cwd: std.Io.Dir,
 diagnostics: *Diagnostics,
+source_provider: ?SourceProvider,
+max_include_depth: u32,
 
 sources: std.StringArrayHashMapUnmanaged(Source) = .empty,
 source_aliases: std.ArrayList(Source) = .empty,
@@ -177,6 +191,8 @@ pub const InitOptions = struct {
     /// Defaults to `std.Io.Dir.cwd()`
     cwd: ?std.Io.Dir = null,
     data_model: ?DataModel = null,
+    source_provider: ?SourceProvider = null,
+    max_include_depth: u32 = 200,
 
     add_default_pragma_handlers: bool = true,
 
@@ -208,7 +224,9 @@ pub fn init(options: InitOptions) !Compilation {
         .arena = options.arena,
         .io = options.io,
         .diagnostics = options.diagnostics,
-        .cwd = options.cwd orelse if (comptime @import("builtin").os.tag == .freestanding)
+        .source_provider = options.source_provider,
+        .max_include_depth = options.max_include_depth,
+        .cwd = options.cwd orelse if (comptime target_builtin.os.tag == .freestanding)
             .{ .handle = undefined }
         else
             .cwd(),
@@ -2239,30 +2257,36 @@ pub fn initSearchPath(comp: *Compilation, includes: []const Include, verbose: bo
 
     try comp.removeDuplicateSearchPaths(quote_count, verbose);
 
-    if (verbose) {
-        std.debug.print("#include \"...\" search starts here:\n", .{});
-        for (comp.search_path.items, 0..) |include, i| {
-            if (i == quote_count) {
-                std.debug.print("#include <...> search starts here:\n", .{});
+    if (comptime target_builtin.os.tag != .freestanding) {
+        if (verbose) {
+            std.debug.print("#include \"...\" search starts here:\n", .{});
+            for (comp.search_path.items, 0..) |include, i| {
+                if (i == quote_count) {
+                    std.debug.print("#include <...> search starts here:\n", .{});
+                }
+                std.debug.print(" {s}{s}\n", .{
+                    include.path,
+                    if (include.kind.isFramework())
+                        " (framework directory)"
+                    else
+                        "",
+                });
             }
-            std.debug.print(" {s}{s}\n", .{
-                include.path,
-                if (include.kind.isFramework())
-                    " (framework directory)"
-                else
-                    "",
-            });
+            std.debug.print("End of search list.\n", .{});
         }
-        std.debug.print("End of search list.\n", .{});
     }
 }
 fn addToSearchPath(comp: *Compilation, include: Include, verbose: bool) !void {
-    comp.cwd.access(comp.io, include.path, .{}) catch {
-        if (verbose) {
-            std.debug.print("ignoring nonexistent directory \"{s}\"\n", .{include.path});
-            return;
+    if (comptime target_builtin.os.tag != .freestanding) {
+        if (comp.source_provider == null) {
+            comp.cwd.access(comp.io, include.path, .{}) catch {
+                if (verbose) {
+                    std.debug.print("ignoring nonexistent directory \"{s}\"\n", .{include.path});
+                    return;
+                }
+            };
         }
-    };
+    }
     try comp.search_path.append(comp.gpa, include);
 }
 fn removeDuplicateSearchPaths(comp: *Compilation, start: usize, verbose: bool) !void {
@@ -2308,10 +2332,12 @@ fn removeDuplicateSearchPaths(comp: *Compilation, start: usize, verbose: bool) !
             }
         }
 
-        if (verbose) {
-            std.debug.print("ignoring duplicate directory \"{s}\"\n", .{include.path});
-            if (removal_index != null)
-                std.debug.print(" as it is a non-system directory that duplicates a system directory\n", .{});
+        if (comptime target_builtin.os.tag != .freestanding) {
+            if (verbose) {
+                std.debug.print("ignoring duplicate directory \"{s}\"\n", .{include.path});
+                if (removal_index != null)
+                    std.debug.print(" as it is a non-system directory that duplicates a system directory\n", .{});
+            }
         }
 
         if (removal_index) |ri| {
@@ -2359,6 +2385,7 @@ pub fn hasInclude(
 const FindInclude = struct {
     comp: *Compilation,
     include_path: []const u8,
+    includer_path: []const u8,
     /// We won't actually consider any include directories until after this directory.
     wait_for: ?[]const u8,
 
@@ -2382,6 +2409,7 @@ const FindInclude = struct {
         var find: FindInclude = .{
             .comp = comp,
             .include_path = include_path,
+            .includer_path = includer_source.path,
             .wait_for = null,
         };
 
@@ -2510,7 +2538,10 @@ const FindInclude = struct {
         var bfa_buf: [path_buf_stack_limit]u8 = undefined;
         var bfa_state: std.heap.BufferFirstAllocator = .init(&bfa_buf, comp.gpa);
         const bfa = bfa_state.allocator();
-        const header_path = try std.fs.path.resolve(bfa, paths);
+        const header_path = if (comp.source_provider != null)
+            try std.fs.path.resolvePosix(bfa, paths)
+        else
+            try std.fs.path.resolve(bfa, paths);
         defer bfa.free(header_path);
         find.comp.normalizePath(header_path);
 
@@ -2518,6 +2549,22 @@ const FindInclude = struct {
             if (mem.eql(u8, header_dir, wait_for)) find.wait_for = null;
             return null;
         };
+
+        if (comp.source_provider) |provider| {
+            const source = try provider.resolve(
+                provider.context,
+                comp,
+                header_path,
+                kind,
+                find.includer_path,
+            ) orelse return null;
+            return .{
+                .source = source.id,
+                .kind = kind,
+                .used_ms_search_rule = used_ms_search_rule,
+            };
+        }
+        if (comptime target_builtin.os.tag == .freestanding) return null;
 
         const source = comp.addSourceFromPathExtra(header_path, kind) catch |err| switch (err) {
             error.OutOfMemory => |e| return e,
