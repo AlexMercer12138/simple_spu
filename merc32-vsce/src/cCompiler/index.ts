@@ -3,7 +3,7 @@ import { compileC as compileLegacyC, CompilerError, CompileOptions, CompileResul
 import { DebugLocation, Merc32Object } from '../linker/objectFormat';
 import { CFrontendError, SourceLocation } from './source';
 import { CType } from './types';
-import { Expression, Statement, TranslationUnit } from './declarations';
+import { CInitializer, Expression, Statement, TranslationUnit } from './declarations';
 import { tokenizeC } from './lexer';
 import { parseTranslationUnit } from './parser';
 import { analyzeTranslationUnit } from './sema';
@@ -107,19 +107,13 @@ function validateTypedObjectSubset(unit: TranslationUnit, fallback: SourceLocati
             if (!declarator.name) continue;
             if (declaration.kind === 'typedef') continue;
             if (declarator.type.kind !== 'function') {
-                if (declarator.initializer?.kind === 'initializer') {
-                    throw new CFrontendError(
-                        'typed C object backend does not support aggregate global initializers yet',
-                        declaration.location ?? fallback,
-                    );
-                }
                 if (!isSupportedObjectType(declarator.type)) {
                     throw new CFrontendError(
                         'typed C object backend does not support this global object type',
                         declaration.location ?? fallback,
                     );
                 }
-                if (declarator.initializer) validateTypedExpression(declarator.initializer, fallback);
+                if (declarator.initializer) validateTypedInitializer(declarator.initializer, fallback);
                 continue;
             }
             if (!declarator.body) continue;
@@ -173,6 +167,7 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
                         statement.location ?? fallback,
                     );
                 }
+                if (statement.initializer) validateTypedInitializer(statement.initializer, fallback);
                 break;
             case 'if': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.thenBranch, fallback); if (statement.elseBranch) validateTypedStatement(statement.elseBranch, fallback); break;
             case 'while': validateTypedExpression(statement.test, fallback); validateTypedStatement(statement.body, fallback); break;
@@ -185,6 +180,19 @@ function validateTypedStatements(statements: readonly Statement[], fallback: Sou
             case 'label': validateTypedStatement(statement.statement, fallback); break;
             case 'break': case 'continue': case 'goto': case 'empty': break;
         }
+    }
+}
+
+function validateTypedInitializer(initializer: CInitializer, fallback: SourceLocation): void {
+    if (initializer.kind !== 'initializer') {
+        validateTypedExpression(initializer, fallback);
+        return;
+    }
+    for (const entry of initializer.entries) {
+        for (const designator of entry.designators) {
+            if (designator.kind === 'index-designator') validateTypedExpression(designator.index, fallback);
+        }
+        validateTypedInitializer(entry.value, fallback);
     }
 }
 

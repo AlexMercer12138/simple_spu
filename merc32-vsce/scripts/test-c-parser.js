@@ -19,6 +19,9 @@ assert.strictEqual(callbackType.parameters[1].pointee.kind, 'array');
 const literals = tokenizeC('unsigned long long x = 1ULL; double y = 1.5e-2;');
 assert(literals.some(t => t.text === '1ULL'));
 assert(literals.some(t => t.text === '1.5e-2'));
+const hexadecimal = parse('unsigned int x = 0x11223344; unsigned int y = 0xDEAD;');
+assert.strictEqual(hexadecimal.declarations[0].declarators[0].initializer.value, 0x11223344);
+assert.strictEqual(hexadecimal.declarations[1].declarators[0].initializer.value, 0xDEAD);
 
 const expressionUnit = parse(`
 struct Pair { int value; };

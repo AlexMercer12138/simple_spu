@@ -1,7 +1,8 @@
 import { AnalyzedProgram, evaluateIntegerConstantExpression } from './sema';
-import { Expression, Statement, TranslationUnit } from './declarations';
+import { CInitializer, Expression, Statement, TranslationUnit } from './declarations';
 import { CType, pointerType, structLayout, typeAlignment, typeSize, unionLayout } from './types';
 import { IRBlock, IRFunction, IRGlobal, IRInstruction, Merc32Module } from './ir';
+import { lowerInitializer } from './initializers';
 
 export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32Module {
   const unit = 'unit' in program ? program.unit : program;
@@ -19,8 +20,8 @@ export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32
     for (const declarator of declaration.declarators) {
       if (declarator.name && declarator.type.kind !== 'function' && declaration.kind !== 'typedef') {
         globalTypes.set(declarator.name, declarator.type);
-        const initializer = declarator.initializer && declarator.initializer.kind !== 'initializer'
-          ? encodeScalarInitializer(declarator.type, evaluateIntegerConstantExpression(declarator.initializer))
+        const initializer = declarator.initializer
+          ? encodeStaticInitializer(declarator.type, declarator.initializer)
           : undefined;
         globals.push({ name: declarator.name, type: declarator.type, ...(initializer ? { initializer } : {}) });
       }
@@ -62,13 +63,20 @@ export function lowerProgram(program: AnalyzedProgram | TranslationUnit): Merc32
   };
 }
 
-function encodeScalarInitializer(type: CType, value: number): readonly number[] {
-  const size = typeSize(type);
-  if (size !== 1 && size !== 2 && size !== 4) {
-    throw new Error(`typed global initializer does not support ${size}-byte objects`);
+function encodeStaticInitializer(type: CType, initializer: CInitializer): readonly number[] {
+  const normalized = lowerInitializer(type, initializer, evaluateIntegerConstantExpression);
+  const bytes = new Uint8Array(normalized.size);
+  for (const write of normalized.writes) {
+    const size = typeSize(write.type);
+    if (size !== 1 && size !== 2 && size !== 4) {
+      throw new Error(`typed global initializer does not support ${size}-byte values`);
+    }
+    const bits = evaluateIntegerConstantExpression(write.value) >>> 0;
+    for (let index = 0; index < size; index++) {
+      bytes[write.offset + index] = (bits >>> (index * 8)) & 0xff;
+    }
   }
-  const bits = value >>> 0;
-  return Array.from({ length: size }, (_, index) => (bits >>> (index * 8)) & 0xff);
+  return [...bytes];
 }
 
 function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IRFunction {
@@ -131,6 +139,9 @@ class FunctionLowerer {
         this.localNames.push(statement.name);
         this.localTypes.push(statement.type);
         if (statement.initializer) {
+          if (statement.initializer.kind === 'initializer') {
+            throw new Error('typed code generation does not yet support local initializer lists');
+          }
           this.instructions.push({ op: 'store', args: [statement.name, this.lowerExpression(statement.initializer)], location: statement.location });
         }
         return;

@@ -33,7 +33,12 @@ export function tokenizeC(
     const l = line, c = column, start = i, ch = source[i];
     if (/[A-Za-z_]/.test(ch)) { advance(); while (i < source.length && /[A-Za-z0-9_]/.test(source[i])) advance(); const text = source.slice(start, i); out.push(token(keywords.has(text) ? 'keyword' : 'identifier', text, l, c)); continue; }
     if (/\d/.test(ch) || (ch === '.' && /\d/.test(source[i + 1] || ''))) {
-      advance(); while (i < source.length && /[0-9_.]/.test(source[i])) advance();
+      if (ch === '0' && /[xX]/.test(source[i + 1] || '')) {
+        advance(2);
+        while (i < source.length && /[0-9A-Fa-f]/.test(source[i])) advance();
+      } else {
+        advance(); while (i < source.length && /[0-9_.]/.test(source[i])) advance();
+      }
       if (i < source.length && /[eEpP]/.test(source[i])) { advance(); if (source[i] === '+' || source[i] === '-') advance(); while (i < source.length && /\d/.test(source[i])) advance(); }
       while (i < source.length && /[A-Za-z]/.test(source[i])) advance();
       const text = source.slice(start, i); const value = Number(text); out.push(token('number', text, l, c, Number.isNaN(value) ? undefined : value)); continue;

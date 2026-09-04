@@ -1,7 +1,7 @@
 import { Token } from './lexer';
 import { CFrontendError } from './source';
 import { arrayType, builtinType, CType, functionType, pointerType, qualifyType, structType, unionType, typedefType, TypeQualifiers } from './types';
-import { CompoundStatement, Declaration, Declarator, Expression, Initializer, Statement, TranslationUnit } from './declarations';
+import { CInitializer, CompoundStatement, Declaration, Declarator, Expression, Initializer, InitializerDesignator, Statement, TranslationUnit } from './declarations';
 
 type MutableQualifiers = { -readonly [K in keyof TypeQualifiers]?: boolean };
 
@@ -182,18 +182,40 @@ class Parser {
       : functionType(type, suffix.parameters.map(parameter => parameter.type), suffix.variadic);
   }
 
-  private consumeInitializer(): Expression | Initializer | undefined {
+  private consumeInitializer(): CInitializer | undefined {
     if (!this.is('=')) return undefined;
     this.take();
+    return this.parseInitializer();
+  }
+
+  private parseInitializer(): CInitializer {
     if (!this.is('{')) return this.parseAssignmentExpression();
-    const tokens: string[] = [];
-    let depth = 0;
-    while (this.peek().kind !== 'eof' && !(depth === 0 && (this.is(';') || this.is(',')))) {
-      if (this.is('{') || this.is('(') || this.is('[')) depth++;
-      if (this.is('}') || this.is(')') || this.is(']')) depth--;
-      tokens.push(this.take().text);
+    const start = this.take('{');
+    const entries: Initializer['entries'][number][] = [];
+    while (!this.is('}') && this.peek().kind !== 'eof') {
+      const entryLocation = this.peek().location;
+      const designators: InitializerDesignator[] = [];
+      while (this.is('.') || this.is('[')) {
+        if (this.is('.')) {
+          this.take();
+          const field = this.peek();
+          if (field.kind !== 'identifier') throw new CFrontendError('expected field name after initializer designator', field.location);
+          this.take();
+          designators.push({ kind: 'field-designator', field: field.text, location: field.location });
+        } else {
+          const location = this.take('[').location;
+          const index = this.parseConditionalExpression();
+          this.take(']');
+          designators.push({ kind: 'index-designator', index, location });
+        }
+      }
+      if (designators.length > 0) this.take('=');
+      entries.push({ designators, value: this.parseInitializer(), location: entryLocation });
+      if (!this.is(',')) break;
+      this.take();
     }
-    return { kind: 'initializer', tokens };
+    this.take('}');
+    return { kind: 'initializer', entries, location: start.location };
   }
 
   private parseCompoundStatement(): CompoundStatement {
@@ -281,7 +303,7 @@ class Parser {
     const type = this.parseBaseType();
     const declarator = this.parseDeclarator(type);
     if (!declarator.name) throw new CFrontendError('local declaration requires a name', start.location);
-    const initializer = this.is('=') ? (this.take(), this.parseExpression()) : undefined;
+    const initializer = this.is('=') ? (this.take(), this.parseInitializer()) : undefined;
     this.take(';');
     return { kind: 'local-declaration', name: declarator.name, type: declarator.type, initializer,
       location: start.location };
@@ -389,7 +411,8 @@ class Parser {
     const token = this.peek();
     if (token.kind === 'number') {
       this.take();
-      if (/[.eEpP]/.test(token.text)) {
+      const hexadecimal = /^0[xX]/.test(token.text);
+      if (/\./.test(token.text) || (hexadecimal ? /[pP]/.test(token.text) : /[eE]/.test(token.text))) {
         const value = Number(token.text.replace(/[fFlL]$/, ''));
         if (!Number.isFinite(value)) throw new CFrontendError(`invalid floating literal '${token.text}'`, token.location);
         return { kind: 'floating-literal', value, precision: /[fF]$/.test(token.text) ? 'float' : 'double', location: token.location };

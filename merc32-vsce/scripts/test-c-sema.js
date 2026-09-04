@@ -29,9 +29,16 @@ const layout = layoutAggregate(record);
 assert.strictEqual(layout.size, 8);
 assert.strictEqual(layout.fields[1].offset, 4);
 
-const normalized = lowerInitializer(record, { kind: 'initializer', tokens: ['{', '.', 'x', '=', '3', '}'] });
+const normalized = lowerInitializer(record, {
+  kind: 'initializer',
+  entries: [{
+    designators: [{ kind: 'field-designator', field: 'x' }],
+    value: { kind: 'integer-literal', value: 3 },
+  }],
+});
 assert.strictEqual(normalized.size, 8);
-assert.strictEqual(normalized.bytes[0], 0);
+assert.deepStrictEqual([...normalized.bytes], [0, 0, 0, 0, 0, 0, 0, 0]);
+assert.deepStrictEqual(normalized.writes.map(write => [write.offset, write.value.value]), [[4, 3]]);
 
 const unit = { kind: 'translation-unit', declarations: [
   { kind: 'typedef', type: builtinType('int'), declarators: [{ name: 'T', type: typedefType('T', builtinType('int')) }] },

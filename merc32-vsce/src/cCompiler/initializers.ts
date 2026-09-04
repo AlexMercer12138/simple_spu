@@ -1,34 +1,197 @@
-import { CType, typeSize, structLayout, unionLayout } from './types';
-import { Initializer } from './declarations';
+import { CFrontendError } from './source';
+import { CInitializer, Expression, Initializer, InitializerDesignator } from './declarations';
+import { CType, structLayout, typeSize, unionLayout } from './types';
 
 export interface NormalizedInitializer {
   readonly size: number;
   readonly bytes: Uint8Array;
   readonly entries: ReadonlyMap<string, number>;
+  readonly writes: readonly NormalizedInitializerWrite[];
 }
 
-export function lowerInitializer(type: CType, initializer: Initializer): NormalizedInitializer {
+export interface NormalizedInitializerWrite {
+  readonly offset: number;
+  readonly type: CType;
+  readonly value: Expression;
+}
+
+type ConstantEvaluator = (expression: Expression) => number;
+
+export function lowerInitializer(
+  type: CType,
+  initializer: CInitializer,
+  evaluateConstant: ConstantEvaluator = defaultConstantEvaluator,
+): NormalizedInitializer {
   const size = typeSize(type);
   const bytes = new Uint8Array(size);
   const entries = new Map<string, number>();
-  const tokens = initializer.tokens;
-  for (let i = 0; i + 2 < tokens.length; i++) {
-    if (tokens[i] === '.' && type.kind === 'struct') {
-      const field = tokens[i + 1];
-      const value = Number(tokens[i + 3]);
-      if (Number.isFinite(value)) {
-        const layout = structLayout(type.fields).fields.find(item => item.name === field);
-        if (layout) {
-          entries.set(field, value);
-          new DataView(bytes.buffer).setInt32(layout.offset, value, true);
-        }
-      }
+  const writes: NormalizedInitializerWrite[] = [];
+  normalizeInto(type, initializer, 0, writes, entries, evaluateConstant);
+  return { size, bytes, entries, writes };
+}
+
+function normalizeInto(
+  originalType: CType,
+  initializer: CInitializer,
+  baseOffset: number,
+  writes: NormalizedInitializerWrite[],
+  entries: Map<string, number>,
+  evaluateConstant: ConstantEvaluator,
+): void {
+  const type = unwrapType(originalType);
+  if (initializer.kind !== 'initializer') {
+    if (type.kind === 'array' && isCharacterType(type.element) && initializer.kind === 'string-literal') {
+      normalizeString(type, initializer, baseOffset, writes);
+      return;
     }
+    if (type.kind === 'array') throw initializerError('array initializer must be a brace list or string literal', initializer);
+    writes.push({ offset: baseOffset, type: originalType, value: initializer });
+    return;
   }
-  if (type.kind === 'union' && tokens.length >= 4 && tokens[1] === '=') {
-    const value = Number(tokens[2]);
-    if (Number.isFinite(value)) new DataView(bytes.buffer).setInt32(0, value, true);
-    unionLayout(type.fields);
+
+  if (!isAggregate(type)) {
+    if (initializer.entries.length !== 1 || initializer.entries[0].designators.length > 0) {
+      throw initializerError('scalar brace initializer must contain one undesignated value', initializer);
+    }
+    normalizeInto(originalType, initializer.entries[0].value, baseOffset, writes, entries, evaluateConstant);
+    return;
   }
-  return { size, bytes, entries };
+
+  let cursor = 0;
+  for (const entry of initializer.entries) {
+    let targetType: CType;
+    let targetOffset: number;
+    let remainingDesignators: readonly InitializerDesignator[] = [];
+    if (entry.designators.length > 0) {
+      const selection = selectDirectSubobject(type, entry.designators[0], baseOffset, evaluateConstant);
+      targetType = selection.type;
+      targetOffset = selection.offset;
+      cursor = selection.nextCursor;
+      remainingDesignators = entry.designators.slice(1);
+      if (entry.designators[0].kind === 'field-designator') {
+        const scalarValue = literalValue(entry.value);
+        if (scalarValue !== undefined) entries.set(entry.designators[0].field, scalarValue);
+      }
+    } else {
+      const selection = selectPositionalSubobject(type, cursor, baseOffset, entry.value);
+      targetType = selection.type;
+      targetOffset = selection.offset;
+      cursor = selection.nextCursor;
+    }
+    if (remainingDesignators.length > 0) {
+      const selection = selectDesignatorPath(targetType, remainingDesignators, targetOffset, evaluateConstant);
+      targetType = selection.type;
+      targetOffset = selection.offset;
+    }
+    normalizeInto(targetType, entry.value, targetOffset, writes, entries, evaluateConstant);
+  }
+}
+
+function selectPositionalSubobject(
+  type: Extract<CType, { kind: 'array' | 'struct' | 'union' }>,
+  cursor: number,
+  baseOffset: number,
+  initializer: CInitializer,
+): { readonly type: CType; readonly offset: number; readonly nextCursor: number } {
+  if (type.kind === 'array') {
+    if (type.length === null || cursor >= type.length) throw initializerError('too many array initializer elements', initializer);
+    return { type: type.element, offset: baseOffset + cursor * typeSize(type.element), nextCursor: cursor + 1 };
+  }
+  const layout = type.kind === 'struct' ? structLayout(type.fields) : unionLayout(type.fields);
+  if (cursor >= layout.fields.length || type.kind === 'union' && cursor > 0) {
+    throw initializerError(`too many ${type.kind} initializer elements`, initializer);
+  }
+  const field = layout.fields[cursor];
+  return { type: field.type, offset: baseOffset + field.offset, nextCursor: cursor + 1 };
+}
+
+function selectDirectSubobject(
+  type: Extract<CType, { kind: 'array' | 'struct' | 'union' }>,
+  designator: InitializerDesignator,
+  baseOffset: number,
+  evaluateConstant: ConstantEvaluator,
+): { readonly type: CType; readonly offset: number; readonly nextCursor: number } {
+  if (designator.kind === 'index-designator') {
+    if (type.kind !== 'array') throw initializerError('array designator requires an array initializer', designator);
+    const index = evaluateConstant(designator.index);
+    if (!Number.isSafeInteger(index) || index < 0 || type.length === null || index >= type.length) {
+      throw initializerError(`array designator index ${index} is out of bounds`, designator);
+    }
+    return { type: type.element, offset: baseOffset + index * typeSize(type.element), nextCursor: index + 1 };
+  }
+  if (type.kind !== 'struct' && type.kind !== 'union') {
+    throw initializerError('field designator requires a struct or union initializer', designator);
+  }
+  const layout = type.kind === 'struct' ? structLayout(type.fields) : unionLayout(type.fields);
+  const index = layout.fields.findIndex(field => field.name === designator.field);
+  if (index < 0) throw initializerError(`${type.kind} has no member '${designator.field}'`, designator);
+  const field = layout.fields[index];
+  return { type: field.type, offset: baseOffset + field.offset, nextCursor: index + 1 };
+}
+
+function selectDesignatorPath(
+  originalType: CType,
+  designators: readonly InitializerDesignator[],
+  baseOffset: number,
+  evaluateConstant: ConstantEvaluator,
+): { readonly type: CType; readonly offset: number } {
+  let type = originalType;
+  let offset = baseOffset;
+  for (const designator of designators) {
+    const aggregate = unwrapType(type);
+    if (!isAggregate(aggregate)) throw initializerError('initializer designator does not name an aggregate subobject', designator);
+    const selection = selectDirectSubobject(aggregate, designator, offset, evaluateConstant);
+    type = selection.type;
+    offset = selection.offset;
+  }
+  return { type, offset };
+}
+
+function normalizeString(
+  type: Extract<CType, { kind: 'array' }>,
+  initializer: Extract<Expression, { kind: 'string-literal' }>,
+  baseOffset: number,
+  writes: NormalizedInitializerWrite[],
+): void {
+  if (type.length === null) throw initializerError('incomplete character array must be completed before normalization', initializer);
+  const values = Array.from(initializer.value, character => character.charCodeAt(0) & 0xff);
+  if (values.length > type.length) throw initializerError('string initializer does not fit in character array', initializer);
+  if (values.length < type.length) values.push(0);
+  values.forEach((value, index) => writes.push({
+    offset: baseOffset + index,
+    type: type.element,
+    value: { kind: 'integer-literal', value, location: initializer.location },
+  }));
+}
+
+function defaultConstantEvaluator(expression: Expression): number {
+  if (expression.kind === 'integer-literal' || expression.kind === 'character-literal') return expression.value;
+  throw initializerError('array designator must be an integer constant expression', expression);
+}
+
+function literalValue(initializer: CInitializer): number | undefined {
+  return initializer.kind === 'integer-literal' || initializer.kind === 'character-literal' ? initializer.value : undefined;
+}
+
+function isAggregate(type: CType): type is Extract<CType, { kind: 'array' | 'struct' | 'union' }> {
+  return type.kind === 'array' || type.kind === 'struct' || type.kind === 'union';
+}
+
+function isCharacterType(type: CType): boolean {
+  const unwrapped = unwrapType(type);
+  return unwrapped.kind === 'builtin' && (unwrapped.name === 'char' || unwrapped.name === 'unsigned char');
+}
+
+function unwrapType(type: CType): CType {
+  let current = type;
+  const seen = new Set<CType>();
+  while (current.kind === 'typedef' && current.target && !seen.has(current)) {
+    seen.add(current);
+    current = current.target;
+  }
+  return current;
+}
+
+function initializerError(message: string, value: { readonly location?: import('./source').SourceLocation }): CFrontendError {
+  return new CFrontendError(message, value.location ?? { file: '', line: 1, column: 1 });
 }

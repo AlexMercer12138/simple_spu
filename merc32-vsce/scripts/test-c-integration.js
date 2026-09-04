@@ -126,6 +126,20 @@ assert.ok(initializedGlobalObject.symbols.some((symbol) =>
 assert.ok(initializedGlobalObject.symbols.some((symbol) =>
     symbol.name === '__merc32_init_globals' && symbol.defined && symbol.section === 'text'
 ), 'typed global objects must publish their startup initialization function');
+const aggregateGlobalObject = compileCToObject(`
+struct Record { char tag; int value; };
+struct Record global_record = { .value = 0x11223344, .tag = 5 };
+int global_values[4] = { [1] = 7, 8, [3] = 9 };
+int main(void) { return global_record.value + global_values[2]; }
+`);
+assert.deepStrictEqual(
+    aggregateGlobalObject.sections.find((section) => section.name === 'data').content,
+    [
+        5, 0, 0, 0, 0x44, 0x33, 0x22, 0x11,
+        0, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0,
+    ],
+    'typed aggregate globals must honor field/index designators, layout padding, and zero fill',
+);
 assert.throws(
     () => compileCToObject('float add(float left, float right) { return left + right; }'),
     /typed C object backend does not support floating-point function bodies/,

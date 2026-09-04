@@ -1,10 +1,11 @@
-import { CompoundStatement, Expression, Statement, TranslationUnit } from './declarations';
+import { CInitializer, CompoundStatement, Expression, Statement, TranslationUnit } from './declarations';
 import {
   AggregateLayout, CType, FunctionType, StructType, UnionType, arrayType, builtinType,
   isCompleteType, isIntegerType, isScalarType, pointerType, qualifyType, structLayout,
   typeAlignment, typeSize, unionLayout,
 } from './types';
 import { CFrontendError, SourceLocation } from './source';
+import { lowerInitializer } from './initializers';
 
 export interface SymbolEntry { readonly name: string; readonly type: CType; }
 
@@ -64,12 +65,15 @@ export function analyzeTranslationUnit(unit: TranslationUnit): AnalyzedProgram {
   }
   for (const declaration of unit.declarations) {
     for (const declarator of declaration.declarators) {
-      if (!declarator.initializer || declarator.initializer.kind === 'initializer') continue;
-      const initializerType = decay(analyzeExpression(declarator.initializer, scope, expressionTypes));
-      if (!isAssignable(declarator.type, initializerType)) {
-        throw frontendError(`initializer for '${declarator.name ?? '<anonymous>'}' has incompatible type`, declarator.location ?? declaration.location);
-      }
-      evaluateIntegerConstantExpression(declarator.initializer);
+      if (!declarator.initializer) continue;
+      analyzeInitializer(
+        declarator.type,
+        declarator.initializer,
+        scope,
+        expressionTypes,
+        `initializer for '${declarator.name ?? '<anonymous>'}' has incompatible type`,
+        true,
+      );
     }
   }
   for (const declaration of unit.declarations) {
@@ -107,10 +111,14 @@ function analyzeStatement(statement: Statement, scope: Scope, context: Statement
     case 'local-declaration':
       if (scope.resolveOwn(statement.name)) throw frontendError(`duplicate local '${statement.name}'`, statement.location);
       if (statement.initializer) {
-        const initializerType = analyzeExpression(statement.initializer, scope, expressionTypes);
-        if (!isAssignable(statement.type, decay(initializerType))) {
-          throw frontendError(`initializer for '${statement.name}' has incompatible type`, statement.location);
-        }
+        analyzeInitializer(
+          statement.type,
+          statement.initializer,
+          scope,
+          expressionTypes,
+          `initializer for '${statement.name}' has incompatible type`,
+          false,
+        );
       }
       scope.define(statement.name, statement.type);
       return;
@@ -368,6 +376,24 @@ function analyzeExpression(expression: Expression, scope: Scope, expressionTypes
       if (!isAssignable(targetType, valueType)) throw frontendError('assignment has incompatible type', expression.location);
       return record(targetType);
     }
+  }
+}
+
+function analyzeInitializer(
+  type: CType,
+  initializer: CInitializer,
+  scope: Scope,
+  expressionTypes: Map<Expression, CType>,
+  incompatibleMessage: string,
+  requireConstant: boolean,
+): void {
+  const normalized = lowerInitializer(type, initializer, evaluateIntegerConstantExpression);
+  for (const write of normalized.writes) {
+    const initializerType = decay(analyzeExpression(write.value, scope, expressionTypes));
+    if (!isAssignable(write.type, initializerType)) {
+      throw frontendError(incompatibleMessage, write.value.location);
+    }
+    if (requireConstant) evaluateIntegerConstantExpression(write.value);
   }
 }
 
