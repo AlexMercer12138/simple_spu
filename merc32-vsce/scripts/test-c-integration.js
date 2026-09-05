@@ -5,10 +5,22 @@ const path = require('path');
 const Module = require('module');
 
 const extensionRoot = path.resolve(__dirname, '..');
-for (const removed of ['tinyc.ts', 'lexer.ts', 'parser.ts', 'sema.ts', 'declarations.ts', 'initializers.ts', 'ast.ts']) {
+for (const removed of ['tinyc.ts', 'lexer.ts', 'parser.ts', 'sema.ts', 'declarations.ts', 'initializers.ts', 'ast.ts',
+    'legacyFrontend.ts', 'legacyLower.ts']) {
     assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'cCompiler', removed)), `${removed} must be removed`);
 }
 assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'cPreprocessor.ts')), 'cPreprocessor.ts must be removed');
+for (const removed of [
+    'scripts/c-frontend-differential.js',
+    'scripts/test-c-frontend-differential.js',
+    'scripts/test-c-parser.js',
+    'scripts/test-c-sema.js',
+]) {
+    assert.ok(!fs.existsSync(path.join(extensionRoot, removed)), `${removed} must be removed`);
+}
+const packageJson = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'));
+assert.ok(!Object.prototype.hasOwnProperty.call(packageJson.scripts, 'test:c:frontend-differential'),
+    'obsolete frontend differential command must be removed');
 function readTypeScriptTree(root) {
     return fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
         .map((entry) => entry.isDirectory()
@@ -19,6 +31,14 @@ function readTypeScriptTree(root) {
 const production = readTypeScriptTree(path.join(extensionRoot, 'src'));
 assert.doesNotMatch(production, /compileLegacyC|tokenizeC|parseTranslationUnit|analyzeTranslationUnit|preprocessCFile/,
     'production TypeScript must be owned by the Aro C frontend');
+for (const staleOutput of [
+    'cPreprocessor.js',
+    'cCompiler/legacyFrontend.js',
+    'cCompiler/legacyLower.js',
+]) {
+    assert.ok(!fs.existsSync(path.join(extensionRoot, 'out', staleOutput)),
+        `${staleOutput} must not survive a clean compile`);
+}
 
 const {
     compileC,

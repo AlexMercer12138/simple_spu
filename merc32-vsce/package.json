@@ -335,7 +335,7 @@
   "scripts": {
     "prepare:resources": "node scripts/prepare-resources.js",
     "vscode:prepublish": "npm run prepare:resources && npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "node scripts/clean-compile-output.js && tsc -p ./",
     "test:infrastructure": "npm run compile && node scripts/test-test-infrastructure.js",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
     "test:c:aro-vendor": "node scripts/test-aro-vendor.js",

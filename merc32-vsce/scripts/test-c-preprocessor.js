@@ -49,14 +49,16 @@ try {
     assert.ok(getCCompileSourceFiles(included).some((file) => file.path === 'values.h'),
         'Aro source traces must retain included source files');
 
+    const callbackEntry = path.join(root, 'callback-entry.c');
+    const callbackHeader = path.join(root, 'callback-header.h');
     const callbackFiles = new Map([
-        [path.resolve(entry), '#include "values.h"\nint main(void) { return VALUE; }\n'],
-        [path.resolve(header), '#define VALUE 12\n'],
+        [path.resolve(callbackEntry), '#include "callback-header.h"\nint main(void) { return VALUE; }\n'],
+        [path.resolve(callbackHeader), '#define VALUE 12\n#warning callback-header\n'],
     ]);
-    const callbackResult = compileCFileDetailed(entry, {
+    const callbackResult = compileCFileDetailed(callbackEntry, {
         moduleName: 'aro_callbacks',
         preprocess: {
-            realPath: (file) => file,
+            realPath: (file) => path.resolve(file),
             readFile: (file) => {
                 const source = callbackFiles.get(path.resolve(file));
                 if (source === undefined) throw new Error(`missing callback source: ${file}`);
@@ -65,6 +67,10 @@ try {
         },
     });
     assert.ok(callbackResult.artifact, 'compatibility readFile/realPath callbacks must feed Aro');
+    assert.ok(callbackResult.diagnostics.some((diagnostic) => /callback-header/u.test(diagnostic.message)),
+        'callback-only header content must reach Aro diagnostics');
+    assert.ok(getCCompileSourceFiles(callbackResult).some((file) => file.path === 'callback-header.h'),
+        'callback-only include must appear in the Aro source trace');
 
     fs.writeFileSync(path.join(root, 'cycle-a.h'), '#include "cycle-b.h"\n', 'utf8');
     fs.writeFileSync(path.join(root, 'cycle-b.h'), '#include "cycle-a.h"\n', 'utf8');
@@ -72,8 +78,10 @@ try {
     fs.writeFileSync(cycleMain, '#include "cycle-a.h"\nint main(void) { return 0; }\n', 'utf8');
     const cycle = compileCFileDetailed(cycleMain);
     assert.equal(cycle.artifact, undefined);
-    assert.ok(cycle.diagnostics.some((diagnostic) => /include nested too deeply|include cycle/i.test(diagnostic.message)),
-        'Aro must report recursive include depth/cycle diagnostics');
+    const cycleDiagnostic = cycle.diagnostics.find((diagnostic) => /include nested too deeply|include cycle/i.test(diagnostic.message));
+    assert.ok(cycleDiagnostic, 'Aro must report recursive include cycles');
+    assert.ok(cycleDiagnostic.includeTrace.length > 1,
+        'include-cycle diagnostics must retain the repeated include trace');
 
     fs.writeFileSync(path.join(root, 'depth-a.h'), '#include "depth-b.h"\n', 'utf8');
     fs.writeFileSync(path.join(root, 'depth-b.h'), 'int value = 1;\n', 'utf8');
@@ -81,8 +89,10 @@ try {
     fs.writeFileSync(depthMain, '#include "depth-a.h"\nint main(void) { return value; }\n', 'utf8');
     const depth = compileCFileDetailed(depthMain, { preprocess: { maxIncludeDepth: 1 } });
     assert.equal(depth.artifact, undefined);
-    assert.ok(depth.diagnostics.some((diagnostic) => /include nested too deeply/i.test(diagnostic.message)),
-        'compatibility maxIncludeDepth must constrain Aro include traversal');
+    const depthDiagnostic = depth.diagnostics.find((diagnostic) => /include nested too deeply/i.test(diagnostic.message));
+    assert.ok(depthDiagnostic, 'compatibility maxIncludeDepth must constrain Aro include traversal');
+    assert.ok(depthDiagnostic.includeTrace.length < cycleDiagnostic.includeTrace.length,
+        'max-depth diagnostics must retain their shorter include trace');
 } finally {
     fs.rmSync(root, { recursive: true, force: true });
 }
