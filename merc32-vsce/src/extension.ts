@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { AssemblyRunner } from './assemblyRunner';
+import { CDiagnostics } from './cDiagnostics';
 import { OUTPUT_CHANNEL_NAME, SOC_EDITOR_VIEW_TYPE, SOC_VIEW_IDS } from './constants';
 import { registerAssemblerCommands, ToolchainCommandState } from './extensionCommands';
 import { loadCatalog, ModuleCatalog } from './soc';
@@ -19,6 +20,7 @@ import { DEFAULT_COMPILE_MODE } from './types';
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
     const runner = new AssemblyRunner(output);
+    const cDiagnostics = new CDiagnostics();
     const state: ToolchainCommandState = {
         currentMode: DEFAULT_COMPILE_MODE,
     };
@@ -51,6 +53,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         output,
         runner,
+        cDiagnostics,
         artifactStore,
         configurationsProvider,
         actionProvider,
@@ -60,7 +63,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.registerTreeDataProvider(SOC_VIEW_IDS.generate, actionProvider),
         vscode.window.registerTreeDataProvider(SOC_VIEW_IDS.build, toolchainProvider),
         vscode.window.registerTreeDataProvider(SOC_VIEW_IDS.artifacts, artifactsProvider),
-        ...registerAssemblerCommands(runner, state, artifactStore, () => toolchainProvider.refresh()),
+        ...registerAssemblerCommands(
+            runner,
+            state,
+            artifactStore,
+            () => toolchainProvider.refresh(),
+            cDiagnostics,
+        ),
         ...registerSocExplorerCommands(configurationsProvider, artifactsProvider, vscode),
     );
 

@@ -3,7 +3,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { preprocessCFile, CPreprocessorError } = require('../out/cPreprocessor');
-const { compileC, compileCFile, CompilerError } = require('../out/cCompiler');
+const cCompiler = require('../out/cCompiler');
+const { CompilerError } = cCompiler;
+const compileC = cCompiler.compileLegacyC || cCompiler.compileC;
+const compileCFile = cCompiler.compileLegacyCFile || cCompiler.compileCFile;
 const { SimpleCPUAssembler } = require('../out/assembler');
 
 function writeFile(root, relativePath, contents) {
@@ -43,6 +46,26 @@ function expectPreprocessorError(run, expected) {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-cpp-'));
 try {
+    const aroHeader = writeFile(root, 'aro/function-like.h', [
+        '#define ADD(left, right) ((left) + (right))',
+        '#warning included-warning',
+        '',
+    ].join('\n'));
+    const aroMain = writeFile(root, 'aro/main.c', [
+        '#include "function-like.h"',
+        'int main(void) { return ADD(2, 3); }',
+        '',
+    ].join('\n'));
+    assert.strictEqual(typeof cCompiler.compileCFileDetailed, 'function',
+        'the public file API must expose compileCFileDetailed');
+    const aroFileResult = cCompiler.compileCFileDetailed(aroMain, { moduleName: 'aro_file' });
+    assert.ok(aroFileResult.artifact && typeof aroFileResult.artifact.assembly === 'string',
+        'file compilation must send original sources through Aro');
+    assert.ok(aroFileResult.diagnostics.some((item) =>
+        item.severity === 'warning' && item.message === 'included-warning'
+            && item.range.start.line === 2),
+    `included Aro warning must retain its header range (${aroHeader})`);
+
     writeFile(root, 'include/demo_soc.h', [
         '#ifndef DEMO_SOC_H',
         '#define DEMO_SOC_H',

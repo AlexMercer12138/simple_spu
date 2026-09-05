@@ -1,6 +1,111 @@
 const assert = require('assert');
-const { compileC, CompilerError } = require('../out/cCompiler');
+const cCompiler = require('../out/cCompiler');
+const { CompilerError } = cCompiler;
+// Task 12 removes this retained legacy regression surface. Task 11 verifies the
+// public entry point independently before keeping the old backend tests here.
+const compileC = cCompiler.compileLegacyC || cCompiler.compileC;
 const { SimpleCPUAssembler } = require('../out/assembler');
+
+assert.strictEqual(typeof cCompiler.compileCDetailed, 'function',
+    'the public C API must expose compileCDetailed');
+const publicDetailed = cCompiler.compileCDetailed(
+    '#warning public-warning\nint main(void) { return 0; }\n',
+    { sourceName: 'public-shape.c', moduleName: 'public-shape', codeBase: 0x1000 },
+);
+assert.deepStrictEqual(Object.keys(publicDetailed.artifact), ['assembly'],
+    'the detailed public API must preserve the { assembly } success shape');
+assert.match(publicDetailed.artifact.assembly, /^\.prog public_shape$/m,
+    'moduleName must remain visible in linked assembly metadata');
+assert.match(publicDetailed.artifact.assembly, /^\.org 0x1000$/m,
+    'codeBase must remain visible in linked assembly metadata');
+assert.ok(publicDetailed.diagnostics.some((item) =>
+    item.severity === 'warning' && item.message === 'public-warning'),
+'Aro warnings must accompany a successful assembly artifact');
+
+const relocatedData = cCompiler.compileCDetailed(
+    'int global_value; int main(void) { return global_value; }',
+    { dataBase: 0x08000100 },
+);
+assert.ok(relocatedData.artifact);
+assert.match(relocatedData.artifact.assembly, /mov r\d+, 0x800[\s\S]*mov r\d+, r\d+ \+ 0x100/,
+    'dataBase must relocate linked DLB references');
+
+for (const [options, message] of [
+    [{ standard: 'c11' }, /unsupported C standard.*c11/i],
+    [{ dlbAddrWidth: 0 }, /dlbAddrWidth.*1\.\.25/],
+    [{ dlbAddrWidth: 26 }, /dlbAddrWidth.*1\.\.25/],
+    [{ tempSlots: 8 }, /tempSlots.*not supported.*Aro/i],
+]) {
+    const result = cCompiler.compileCDetailed('int main(void) { return 0; }', options);
+    assert.strictEqual(result.artifact, undefined, 'invalid/unsupported options must not produce assembly');
+    assert.ok(result.diagnostics.some((item) =>
+        item.severity === 'error' && message.test(item.message)),
+    `missing precise option diagnostic for ${JSON.stringify(options)}`);
+}
+
+const unsupportedObjectStandard = cCompiler.compileCToObjectDetailed(
+    'int main(void) { return 0; }',
+    { standard: 'c11', sourceName: 'unsupported-object-standard.c' },
+);
+assert.strictEqual(unsupportedObjectStandard.artifact, undefined);
+assert.ok(unsupportedObjectStandard.diagnostics.some((item) =>
+    item.code === 'MERC32_C_OPTION' && /unsupported C standard.*c11/i.test(item.message)),
+'object detailed compilation must normalize an unsupported standard as an option diagnostic');
+
+const dlbOverflow = cCompiler.compileCDetailed(
+    'char image[9] = { 1 }; int main(void) { return image[0]; }',
+    { dataBase: 0x08000000, dlbAddrWidth: 1 },
+);
+assert.strictEqual(dlbOverflow.artifact, undefined);
+assert.ok(dlbOverflow.diagnostics.some((item) =>
+    item.code === 'MERC32_C_DLB_CAPACITY' && /DLB image.*8 bytes/i.test(item.message)),
+'linked data and bss must fit the selected DLB image');
+assert.throws(() => cCompiler.validateDlbImage({
+    assembly: '',
+    sections: [{ objectIndex: 0, name: 'data', address: 0x07fffffc, size: 4, content: [0, 0, 0, 0] }],
+    symbols: new Map(),
+}, 0x08000000, 1), /outside.*DLB|before dataBase/i,
+'validateDlbImage must reject sections below the selected DLB window');
+
+const ilbOverflow = cCompiler.compileCDetailed(
+    'int main(void) { return 0; }',
+    { codeBase: 0x7ff0 },
+);
+assert.strictEqual(ilbOverflow.artifact, undefined);
+assert.ok(ilbOverflow.diagnostics.some((item) =>
+    item.code === 'MERC32_C_ILB_CAPACITY' && /ILB image.*0x00008000/i.test(item.message)),
+'linked text must remain within the configured direct-label ILB range');
+
+const backendCapability = cCompiler.compileCDetailed(
+    'float add(float left, float right) { return left + right; }',
+    { sourceName: 'backend-capability.c' },
+);
+assert.strictEqual(backendCapability.artifact, undefined);
+assert.ok(backendCapability.diagnostics.some((item) =>
+    item.range.start.line === 1 && /float.*not supported/i.test(item.message)),
+'backend capability diagnostics must retain the rejected construct range');
+
+const multipleErrors = cCompiler.compileCDetailed(
+    'int first = @;\nint second = @;\n',
+    { sourceName: 'multiple-errors.c' },
+);
+assert.strictEqual(multipleErrors.artifact, undefined);
+assert.strictEqual(multipleErrors.diagnostics.filter((item) => item.severity === 'error').length, 2,
+    'detailed compilation must retain every Aro error instead of throwing only the first');
+assert.throws(
+    () => cCompiler.compileC('int first = @;\nint second = @;\n', { sourceName: 'throwing-errors.c' }),
+    (error) => error instanceof cCompiler.CFrontendError && error.diagnostics.length === 2,
+    'the compatibility API must throw one CFrontendError containing every normalized diagnostic');
+
+const unicodeLinkSource =
+    'extern int missing(void); const char text[] = "\u{1f600}"; int main(void) { return missing(); }';
+const unicodeLink = cCompiler.compileCDetailed(unicodeLinkSource, { sourceName: 'unicode-link.c' });
+const unicodeLinkDiagnostic = unicodeLink.diagnostics.find((item) => item.code === 'MERC32_C_LINK');
+assert.ok(unicodeLinkDiagnostic, 'an unresolved symbol must produce a normalized linker diagnostic');
+assert.strictEqual(
+    unicodeLinkDiagnostic.range.start.byteOffset,
+    Buffer.byteLength(unicodeLinkSource.slice(0, unicodeLinkSource.lastIndexOf('missing')), 'utf8'),
+    'linker debug columns must be converted from Unicode scalar columns to UTF-8 byte offsets');
 
 function expectCompilerError(testSource, pattern, expectedLocation, options = {}) {
     assert.throws(

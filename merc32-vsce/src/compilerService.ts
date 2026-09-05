@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileCFile } from './cCompiler';
+import {
+    CCompileDetailedResult,
+    CFrontendError,
+    compileCFileDetailed,
+    getCCompileSourceFiles,
+    mapCCompileDetailedResult,
+} from './cCompiler';
 import { assembleFile } from './assemblyService';
 import { getAssemblerSettings } from './configuration';
 import { CompileMode, FileAssemblyResult, ToolchainArtifact } from './types';
@@ -16,26 +22,34 @@ export interface CBuildResult extends CCompileResult {
 }
 
 export function compileCFileToAssembly(sourceFile: string): CCompileResult {
+    return requireArtifact(compileCFileToAssemblyDetailed(sourceFile));
+}
+
+export function compileCFileToAssemblyDetailed(sourceFile: string): CCompileDetailedResult<CCompileResult> {
     const settings = getAssemblerSettings(sourceFile);
     const baseName = path.basename(sourceFile, path.extname(sourceFile));
     const assemblyFile = path.join(settings.outputDir, `${baseName}.asm`);
-    const result = compileCFile(sourceFile, {
+    const result = compileCFileDetailed(sourceFile, {
         dataBase: settings.cDataBase,
         dlbAddrWidth: settings.cDlbAddrWidth,
         codeBase: settings.cCodeBase,
         moduleName: baseName,
     });
 
-    fs.mkdirSync(settings.outputDir, { recursive: true });
-    fs.writeFileSync(assemblyFile, result.assembly, 'utf-8');
+    if (result.artifact === undefined) {
+        return mapCCompileDetailedResult<import('./cCompiler').CompileResult, CCompileResult>(result, undefined);
+    }
 
-    return {
-        assembly: result.assembly,
+    fs.mkdirSync(settings.outputDir, { recursive: true });
+    fs.writeFileSync(assemblyFile, result.artifact.assembly, 'utf-8');
+
+    return mapCCompileDetailedResult(result, {
+        assembly: result.artifact.assembly,
         assemblyFile,
         artifacts: [
             { label: `${baseName}.asm`, file: assemblyFile, description: 'Generated assembly' },
         ],
-    };
+    });
 }
 
 export function compileCFileToLinkedAssembly(sourceFile: string): CCompileResult {
@@ -43,17 +57,25 @@ export function compileCFileToLinkedAssembly(sourceFile: string): CCompileResult
 }
 
 export function buildCFileToRom(sourceFile: string, mode: CompileMode): CBuildResult {
-    const compiled = compileCFileToAssembly(sourceFile);
+    return requireArtifact(buildCFileToRomDetailed(sourceFile, mode));
+}
+
+export function buildCFileToRomDetailed(sourceFile: string,
+    mode: CompileMode): CCompileDetailedResult<CBuildResult> {
+    const compiled = compileCFileToAssemblyDetailed(sourceFile);
+    if (compiled.artifact === undefined) {
+        return mapCCompileDetailedResult<CCompileResult, CBuildResult>(compiled, undefined);
+    }
     const settings = getAssemblerSettings(sourceFile);
     const assemblyResult = assembleFile(
-        compiled.assembly,
-        compiled.assemblyFile,
+        compiled.artifact.assembly,
+        compiled.artifact.assemblyFile,
         settings.outputFormat,
         mode,
         settings.outputDir,
     );
 
-    const artifacts = [...compiled.artifacts];
+    const artifacts = [...compiled.artifact.artifacts];
     if (assemblyResult.outputFile) {
         artifacts.push({
             label: path.basename(assemblyResult.outputFile),
@@ -62,13 +84,18 @@ export function buildCFileToRom(sourceFile: string, mode: CompileMode): CBuildRe
         });
     }
 
-    if (!settings.cKeepAssembly && fs.existsSync(compiled.assemblyFile)) {
-        fs.unlinkSync(compiled.assemblyFile);
+    if (!settings.cKeepAssembly && fs.existsSync(compiled.artifact.assemblyFile)) {
+        fs.unlinkSync(compiled.artifact.assemblyFile);
     }
 
-    return {
-        ...compiled,
+    return mapCCompileDetailedResult(compiled, {
+        ...compiled.artifact,
         assemblyResult,
         artifacts,
-    };
+    });
+}
+
+function requireArtifact<T>(result: CCompileDetailedResult<T>): T {
+    if (result.artifact !== undefined) return result.artifact;
+    throw new CFrontendError(result.diagnostics, getCCompileSourceFiles(result));
 }

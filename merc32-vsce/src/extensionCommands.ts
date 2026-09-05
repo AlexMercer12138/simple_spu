@@ -1,8 +1,13 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { AssemblyRunner } from './assemblyRunner';
+import { CFrontendError, getCCompileSourceFiles } from './cCompiler';
+import { CDiagnostics } from './cDiagnostics';
 import { COMMANDS } from './constants';
-import { buildCFileToRom, compileCFileToAssembly } from './compilerService';
+import {
+    buildCFileToRomDetailed,
+    compileCFileToAssemblyDetailed,
+} from './compilerService';
 import { getActiveAsmFile, getActiveCFile, getActiveMerc32SourceFile } from './editor';
 import { getCompileModeLabel, getCompileModeQuickPickItems, getCompileModeShortName } from './compileModes';
 import {
@@ -21,6 +26,7 @@ export function registerAssemblerCommands(
     state: ToolchainCommandState,
     artifactStore: CompilerArtifactStore,
     onArtifactsChanged: () => void,
+    cDiagnostics: CDiagnostics,
 ): vscode.Disposable[] {
     let currentMode: CompileMode = state.currentMode || DEFAULT_COMPILE_MODE;
 
@@ -42,6 +48,25 @@ export function registerAssemblerCommands(
         }
     };
 
+    const runC = <T extends { readonly artifacts: ToolchainArtifact[] }>(
+        file: string,
+        compile: () => import('./cCompiler').CCompileDetailedResult<T>,
+        successMessage: (artifact: T) => string,
+    ): void => {
+        cDiagnostics.clear(file);
+        try {
+            const result = compile();
+            cDiagnostics.update(result);
+            if (result.artifact === undefined) {
+                throw new CFrontendError(result.diagnostics, getCCompileSourceFiles(result));
+            }
+            setArtifacts([...result.artifact.artifacts]);
+            vscode.window.showInformationMessage(successMessage(result.artifact));
+        } catch (error) {
+            runner.showError(error);
+        }
+    };
+
     return [
         vscode.commands.registerCommand(COMMANDS.compile, () => {
             const source = getActiveMerc32SourceFile();
@@ -50,13 +75,9 @@ export function registerAssemblerCommands(
                 runAsm(source.file, currentMode);
                 return;
             }
-            try {
-                const result = buildCFileToRom(source.file, currentMode);
-                setArtifacts(result.artifacts);
-                vscode.window.showInformationMessage(`MERC32 C build complete: ${result.assemblyResult.outputFile || result.assemblyFile}`);
-            } catch (error) {
-                runner.showError(error);
-            }
+            runC(source.file,
+                () => buildCFileToRomDetailed(source.file, currentMode),
+                (result) => `MERC32 C build complete: ${result.assemblyResult.outputFile || result.assemblyFile}`);
         }),
         vscode.commands.registerCommand(COMMANDS.assembleActive, () => {
             const file = getActiveAsmFile();
@@ -73,24 +94,16 @@ export function registerAssemblerCommands(
         vscode.commands.registerCommand(COMMANDS.compileCToAsm, () => {
             const file = getActiveCFile();
             if (!file) return;
-            try {
-                const result = compileCFileToAssembly(file);
-                setArtifacts(result.artifacts);
-                vscode.window.showInformationMessage(`MERC32 C compiled to assembly: ${result.assemblyFile}`);
-            } catch (error) {
-                runner.showError(error);
-            }
+            runC(file,
+                () => compileCFileToAssemblyDetailed(file),
+                (result) => `MERC32 C compiled to assembly: ${result.assemblyFile}`);
         }),
         vscode.commands.registerCommand(COMMANDS.buildCToRom, () => {
             const file = getActiveCFile();
             if (!file) return;
-            try {
-                const result = buildCFileToRom(file, currentMode);
-                setArtifacts(result.artifacts);
-                vscode.window.showInformationMessage(`MERC32 C build complete: ${result.assemblyResult.outputFile || result.assemblyFile}`);
-            } catch (error) {
-                runner.showError(error);
-            }
+            runC(file,
+                () => buildCFileToRomDetailed(file, currentMode),
+                (result) => `MERC32 C build complete: ${result.assemblyResult.outputFile || result.assemblyFile}`);
         }),
         vscode.commands.registerCommand(COMMANDS.openLastArtifact, async (artifact?: ToolchainArtifact) => {
             const artifacts = artifactStore.getCompilerArtifacts();

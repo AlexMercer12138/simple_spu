@@ -30,9 +30,12 @@ function functionAssemblyBody(assembly, functionName) {
 }
 
 const source = 'int included(void) { return 7; }\nint main(void) { return included(); }\n';
-const legacy = compileC(source, { moduleName: 'legacy_api' });
-assert.strictEqual(typeof legacy.assembly, 'string', 'compileC must continue returning assembly');
-assert.match(legacy.assembly, /\.entry __start/, 'legacy public compile must retain startup entry');
+const publicAssembly = compileC(source, { moduleName: 'public_api' });
+assert.strictEqual(typeof publicAssembly.assembly, 'string', 'compileC must continue returning assembly');
+assert.match(publicAssembly.assembly, /^\.prog public_api$/m,
+    'public assembly compilation must retain module metadata after the Aro cutover');
+assert.match(publicAssembly.assembly, /^included:$/m,
+    'public assembly compilation must link Aro-produced function symbols');
 assert.ok(compileCFile, 'compileCFile must remain available to legacy callers');
 
 const object = compileCToObject(source, { moduleName: 'object_api' });
@@ -566,10 +569,11 @@ try {
     try {
         const { buildCFileToRom, compileCFileToAssembly } = require('../out/compilerService');
         const defaultCompile = compileCFileToAssembly(entry);
-        assert.match(defaultCompile.assembly, /\.entry __start/,
-            'the default service build must retain the legacy bootable startup contract');
-        assert.match(defaultCompile.assembly, /mov r13, 0x804\r?\nmov r13, r13 << 16/,
-            'the default service build must initialize the configured legacy stack');
+        assert.match(defaultCompile.assembly, /^\.prog main$/m,
+            'the default service build must retain the configured module name');
+        assert.ok(new SimpleCPUAssembler().assemble(defaultCompile.assembly, {
+            sourceFileName: 'main.asm',
+        }).machineCodes.length > 0, 'the default Aro-linked service output must remain assembleable');
         const result = buildCFileToRom(entry, 'normal');
         assert.deepStrictEqual(result.artifacts.map((artifact) => artifact.label), ['main.asm', 'main.v']);
     } finally {

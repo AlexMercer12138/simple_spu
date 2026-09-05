@@ -6,6 +6,7 @@ export interface LinkedSection {
   readonly objectIndex: number;
   readonly name: ObjectSectionName;
   readonly address: number;
+  readonly size: number;
   readonly content: readonly number[];
 }
 
@@ -127,7 +128,8 @@ function patchSource(
 export function applyRelocations(layout: LayoutResult): LinkedSections {
   const objects = layout.objects ?? [];
   const layoutEntries = Array.from(layout.sections.entries());
-  const sections: Array<{ objectIndex: number; name: ObjectSectionName; address: number; content: number[] }> = [];
+  const sections: Array<{ objectIndex: number; name: ObjectSectionName; address: number;
+    size: number; content: number[] }> = [];
   let layoutIndex = 0;
   for (const name of sectionOrder) {
     for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
@@ -135,7 +137,8 @@ export function applyRelocations(layout: LayoutResult): LinkedSections {
       if (!section) continue;
       const entry = layoutEntries[layoutIndex++];
       if (!entry || !entry[0].startsWith(`${name}:`)) throw new LinkerError('invalid section layout', undefined, objectIndex, name);
-      sections.push({ objectIndex, name, address: entry[1], content: [...normalizeSectionContent(section)] });
+      sections.push({ objectIndex, name, address: entry[1], size: section.size,
+        content: [...normalizeSectionContent(section)] });
     }
   }
 

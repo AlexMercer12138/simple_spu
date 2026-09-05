@@ -3,6 +3,18 @@ export type BuiltinTypeName =
     | 'int' | 'unsigned int' | 'long' | 'unsigned long'
     | 'long long' | 'unsigned long long' | 'float' | 'double' | 'long double';
 
+export interface BackendCompileOptions {
+    readonly dataBase?: number;
+    readonly dlbAddrWidth?: number;
+    readonly codeBase?: number;
+    readonly moduleName?: string;
+    readonly tempSlots?: number;
+}
+
+export interface CompileResult {
+    readonly assembly: string;
+}
+
 export interface TypeQualifiers {
     readonly const: boolean;
     readonly volatile: boolean;
