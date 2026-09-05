@@ -2,21 +2,8 @@ import { Relocation } from '../linker/objectFormat';
 import { IRBlock, IRFunction, IRGlobal, IRInstruction, Merc32Module } from './ir';
 import { CType, pointerType, typeAlignment, typeSize } from './types';
 import { LoweringExpression, LoweringFunction, LoweringGlobal, LoweringProgram, LoweringStatement } from './loweringModel';
-import { lowerProgram as lowerLegacyProgram } from './legacyLower';
 
-export function lowerProgram(program: LoweringProgram): Merc32Module;
-export function lowerProgram(program: unknown): Merc32Module;
-export function lowerProgram(program: unknown): Merc32Module {
-    if (isLoweringProgram(program)) return lowerTypedProgram(program);
-    return lowerLegacyProgram(program as never);
-}
-
-function isLoweringProgram(value: unknown): value is LoweringProgram {
-    return !!value && typeof value === 'object' && (value as { abi?: unknown }).abi === 'merc32-c-v1'
-        && Array.isArray((value as { functions?: unknown }).functions);
-}
-
-function lowerTypedProgram(program: LoweringProgram): Merc32Module {
+export function lowerProgram(program: LoweringProgram): Merc32Module {
     const globals = program.globals.map(lowerGlobal);
     const occupiedNames = new Set([...globals.map((global) => global.name), ...program.functions.map((func) => func.name)]);
     const functions = program.functions.map((func) => lowerFunction(func, occupiedNames));

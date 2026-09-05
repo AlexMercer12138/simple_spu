@@ -24,7 +24,7 @@ assert.ok(isScalarType(builtinType('long double')));
 assert.ok(!isCompleteType(builtinType('void')));
 assert.deepStrictEqual(
     builtinType('int', { const: true, restrict: true }).qualifiers,
-    { const: true, volatile: false, restrict: true },
+    { const: true, volatile: false, restrict: true, atomic: false },
     'the typed model must preserve every accepted C qualifier',
 );
 console.log('C type model tests passed');

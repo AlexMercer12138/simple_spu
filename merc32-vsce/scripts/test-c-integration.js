@@ -4,6 +4,22 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 
+const extensionRoot = path.resolve(__dirname, '..');
+for (const removed of ['tinyc.ts', 'lexer.ts', 'parser.ts', 'sema.ts', 'declarations.ts', 'initializers.ts', 'ast.ts']) {
+    assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'cCompiler', removed)), `${removed} must be removed`);
+}
+assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'cPreprocessor.ts')), 'cPreprocessor.ts must be removed');
+function readTypeScriptTree(root) {
+    return fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+        .map((entry) => entry.isDirectory()
+            ? readTypeScriptTree(path.join(root, entry.name))
+            : entry.name.endsWith('.ts') ? fs.readFileSync(path.join(root, entry.name), 'utf8') : '')
+        .join('\n');
+}
+const production = readTypeScriptTree(path.join(extensionRoot, 'src'));
+assert.doesNotMatch(production, /compileLegacyC|tokenizeC|parseTranslationUnit|analyzeTranslationUnit|preprocessCFile/,
+    'production TypeScript must be owned by the Aro C frontend');
+
 const {
     compileC,
     compileCFile,
@@ -12,11 +28,8 @@ const {
     compileCFileToObject,
     compileCFileToObjectDetailed,
     splitCompileOptions,
-    analyzeTranslationUnit,
     lowerProgram,
     loadRuntimeObjects,
-    parseTranslationUnit,
-    tokenizeC,
 } = require('../out/cCompiler');
 const { linkObjects } = require('../out/linker');
 const { SimpleCPUAssembler } = require('../out/assembler');
@@ -36,7 +49,7 @@ assert.match(publicAssembly.assembly, /^\.prog public_api$/m,
     'public assembly compilation must retain module metadata after the Aro cutover');
 assert.match(publicAssembly.assembly, /^included:$/m,
     'public assembly compilation must link Aro-produced function symbols');
-assert.ok(compileCFile, 'compileCFile must remain available to legacy callers');
+assert.ok(compileCFile, 'compileCFile must remain available through the Aro file API');
 
 const object = compileCToObject(source, { moduleName: 'object_api' });
 assert.strictEqual(object.version, 1, 'compileCToObject must return versioned MERC32 objects');
@@ -503,23 +516,6 @@ assert.throws(
     /(?:continue used outside loop|'continue' statement not in a loop)/,
     'typed continue must be rejected outside a loop',
 );
-for (const [statement, pattern] of [
-    ['break;', /break used outside loop or switch/],
-    ['continue;', /continue used outside loop/],
-]) {
-    const unit = parseTranslationUnit(tokenizeC(`int main(void) { ${statement} return 0; }`));
-    assert.throws(
-        () => analyzeTranslationUnit(unit),
-        pattern,
-        'typed semantic analysis must reject an invalid control-flow jump',
-    );
-    assert.throws(
-        () => lowerProgram(unit),
-        pattern,
-        'typed lowering must not silently discard an invalid control-flow jump',
-    );
-}
-
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-c-integration-'));
 try {
     const header = path.join(root, 'included.h');

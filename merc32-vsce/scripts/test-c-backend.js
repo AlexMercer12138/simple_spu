@@ -7,7 +7,7 @@ const allocator = new VirtualRegisterAllocator();
 assert(!allocator.isReserved('r4'));
 assert(allocator.isReserved('r0'));
 assert(allocator.isReserved('r12'));
-const irModule = lowerProgram({ kind: 'translation-unit', declarations: [] });
+const irModule = lowerProgram({ abi: 'merc32-c-v1', globals: [], functions: [] });
 assert.deepStrictEqual(irModule.functions.map((func) => func.name), ['__merc32_init_globals']);
 assert.match(generateAssembly(irModule), /^__merc32_init_globals:/);
 const object = generateObject(irModule);

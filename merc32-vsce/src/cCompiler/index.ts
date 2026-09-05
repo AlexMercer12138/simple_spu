@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { CPreprocessOptions } from '../cPreprocessor';
+import type { CPreprocessOptions } from '../cFrontend/sourceProvider';
 import type {
     CCompileDetailedResult,
     CFrontendDiagnostic,
@@ -22,17 +22,10 @@ import { generateObject } from './codegen';
 import { lowerProgram } from './lower';
 import { CFrontendError } from './source';
 import { BackendCompileOptions, CompileResult } from './types';
-import { compileC as compileLegacyC, CompilerError } from './tinyc';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
 export * from './source';
-export * from './ast';
-export * from './lexer';
-export * from './parser';
-export * from './declarations';
-export * from './sema';
-export * from './initializers';
 export * from './ir';
 export * from './lower';
 export * from './loweringModel';
@@ -70,21 +63,6 @@ function copyDefined<T extends object>(source: T, target: Record<string, unknown
     for (const key of keys) {
         const value = source[key];
         if (value !== undefined) target[String(key)] = value;
-    }
-}
-
-/** Retained only until Task 12 removes the handwritten frontend regression suite. */
-export function compileLegacyCFile(sourceFile: string, options: CompileFileOptions = {}): CompileResult {
-    const { preprocess, ...compileOptions } = options;
-    const { preprocessCFile } = require('../cPreprocessor') as typeof import('../cPreprocessor');
-    const preprocessed = preprocessCFile(sourceFile, preprocess);
-    try {
-        return compileLegacyC(preprocessed.code, compileOptions);
-    } catch (error) {
-        if (!(error instanceof CompilerError) || error.line === undefined) throw error;
-        const location = preprocessed.lineMap[error.line - 1];
-        if (!location) throw error;
-        throw new CompilerError(error.detail, location.line, error.column, location.file);
     }
 }
 
@@ -511,11 +489,6 @@ function sanitizeIdentifier(name: string): string {
     const sanitized = name.replace(/[^A-Za-z0-9_]/gu, '_');
     return /^[A-Za-z_]/u.test(sanitized) ? sanitized : `_${sanitized}`;
 }
-
-export { compileLegacyC };
-export {
-    CompilerError,
-} from './tinyc';
 
 export type { BackendCompileOptions, CompileResult } from './types';
 
