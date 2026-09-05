@@ -190,11 +190,13 @@ int main(void) {
 
 function irqSource() {
     return `
-unsigned int status_addr = 0x080003C0;
-unsigned int ready_code = 0x1234;
 int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)status_addr;
-    *status = ready_code;
+    unsigned int status_word = 0x800;
+    volatile unsigned int *status;
+    status_word = status_word << 16;
+    status_word = status_word + 0x3C0;
+    status = (volatile unsigned int *)status_word;
+    *status = 0x1234;
     while (1) { }
     return 0;
 }
@@ -213,14 +215,7 @@ __aro_irq_setup:
   jmp __merc32_init_globals, r14
   mov r2, 4
   mov r1, ${mode}
-  jmp __irq_main, r14
-__irq_main:
-  mov r4, 0x800
-  mov r4, r4 << 16
-  mov r4, r4 + 0x3C0
-  mov r5, 0x1234
-  sw [r4], r5
-  jmp __irq_main
+  jmp main, r14
 __irq_handler:
   mov r13, r13 - 8
   sw [r13 + 0], r4

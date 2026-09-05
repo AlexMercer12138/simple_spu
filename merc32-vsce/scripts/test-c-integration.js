@@ -31,14 +31,32 @@ function readTypeScriptTree(root) {
 const production = readTypeScriptTree(path.join(extensionRoot, 'src'));
 assert.doesNotMatch(production, /compileLegacyC|tokenizeC|parseTranslationUnit|analyzeTranslationUnit|preprocessCFile/,
     'production TypeScript must be owned by the Aro C frontend');
-for (const staleOutput of [
+const staleOutputNames = new Set([
     'cPreprocessor.js',
-    'cCompiler/legacyFrontend.js',
-    'cCompiler/legacyLower.js',
-]) {
-    assert.ok(!fs.existsSync(path.join(extensionRoot, 'out', staleOutput)),
-        `${staleOutput} must not survive a clean compile`);
+    'legacyFrontend.js',
+    'legacyLower.js',
+    'tinyc.js',
+    'lexer.js',
+    'parser.js',
+    'sema.js',
+    'declarations.js',
+    'initializers.js',
+    'ast.js',
+]);
+function findStaleOutputs(root) {
+    if (!fs.existsSync(root)) return [];
+    return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = path.join(root, entry.name);
+        if (entry.isDirectory()) return findStaleOutputs(entryPath);
+        return staleOutputNames.has(entry.name) || staleOutputNames.has(entry.name.replace(/\.map$/u, ''))
+            ? [entryPath]
+            : [];
+    });
 }
+// `compile` removes this package's exact `out` directory before TypeScript emits;
+// recurse anyway so stale deleted frontend output cannot hide in a nested path.
+assert.deepStrictEqual(findStaleOutputs(path.join(extensionRoot, 'out')), [],
+    'deleted frontend JavaScript must not survive anywhere under out');
 
 const {
     compileC,

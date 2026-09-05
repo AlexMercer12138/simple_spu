@@ -76,12 +76,32 @@ try {
     fs.writeFileSync(path.join(root, 'cycle-b.h'), '#include "cycle-a.h"\n', 'utf8');
     const cycleMain = path.join(root, 'cycle.c');
     fs.writeFileSync(cycleMain, '#include "cycle-a.h"\nint main(void) { return 0; }\n', 'utf8');
-    const cycle = compileCFileDetailed(cycleMain);
+    const cycle = compileCFileDetailed(cycleMain, { preprocess: { maxIncludeDepth: 2 } });
     assert.equal(cycle.artifact, undefined);
-    const cycleDiagnostic = cycle.diagnostics.find((diagnostic) => /include nested too deeply|include cycle/i.test(diagnostic.message));
+    const cycleDiagnostic = cycle.diagnostics.find((diagnostic) => diagnostic.message === '#include nested too deeply');
     assert.ok(cycleDiagnostic, 'Aro must report recursive include cycles');
-    assert.ok(cycleDiagnostic.includeTrace.length > 1,
-        'include-cycle diagnostics must retain the repeated include trace');
+    const cycleSourceFiles = new Map(getCCompileSourceFiles(cycle).map((file) => [file.id, file.path]));
+    const cycleTracePaths = cycleDiagnostic.includeTrace.map((frame) => cycleSourceFiles.get(frame.file));
+    assert.strictEqual(cycleSourceFiles.get(cycleDiagnostic.range.file), 'cycle-b.h',
+        'cycle diagnostics must point at the include that closes the cycle');
+    assert.deepStrictEqual(
+        cycleTracePaths,
+        ['cycle-a.h', 'cycle.c'],
+        'include-cycle diagnostics must retain the parent header and entry include site',
+    );
+    assert.deepStrictEqual(
+        [...cycleSourceFiles.values()].filter((file) => file === 'cycle-a.h' || file === 'cycle-b.h'),
+        ['cycle-a.h', 'cycle-b.h'],
+        'cycle diagnostics must register both canonical cycle headers',
+    );
+
+    fs.writeFileSync(path.join(root, 'acyclic-a.h'), '#include "acyclic-b.h"\n', 'utf8');
+    fs.writeFileSync(path.join(root, 'acyclic-b.h'), 'int acyclic_value = 1;\n', 'utf8');
+    const acyclicMain = path.join(root, 'acyclic.c');
+    fs.writeFileSync(acyclicMain, '#include "acyclic-a.h"\nint main(void) { return acyclic_value; }\n', 'utf8');
+    const acyclic = compileCFileDetailed(acyclicMain, { preprocess: { maxIncludeDepth: 2 } });
+    assert.ok(acyclic.artifact,
+        'two-level acyclic includes must compile at the cycle fixture maximum depth');
 
     fs.writeFileSync(path.join(root, 'depth-a.h'), '#include "depth-b.h"\n', 'utf8');
     fs.writeFileSync(path.join(root, 'depth-b.h'), 'int value = 1;\n', 'utf8');
@@ -89,8 +109,14 @@ try {
     fs.writeFileSync(depthMain, '#include "depth-a.h"\nint main(void) { return value; }\n', 'utf8');
     const depth = compileCFileDetailed(depthMain, { preprocess: { maxIncludeDepth: 1 } });
     assert.equal(depth.artifact, undefined);
-    const depthDiagnostic = depth.diagnostics.find((diagnostic) => /include nested too deeply/i.test(diagnostic.message));
+    const depthDiagnostic = depth.diagnostics.find((diagnostic) => diagnostic.message === '#include nested too deeply');
     assert.ok(depthDiagnostic, 'compatibility maxIncludeDepth must constrain Aro include traversal');
+    const depthSourceFiles = new Map(getCCompileSourceFiles(depth).map((file) => [file.id, file.path]));
+    assert.deepStrictEqual(
+        depthDiagnostic.includeTrace.map((frame) => depthSourceFiles.get(frame.file)),
+        ['depth.c'],
+        'max-depth diagnostics must retain only the entry include frame',
+    );
     assert.ok(depthDiagnostic.includeTrace.length < cycleDiagnostic.includeTrace.length,
         'max-depth diagnostics must retain their shorter include trace');
 } finally {
