@@ -236,6 +236,7 @@ export class NodeSourceProvider implements SourceProvider {
     private readonly includeLogicalNames: readonly string[];
     private readonly packagedHeaderRoot?: string;
     private readonly readFile: (file: string) => string;
+    private readonly allowMissingFiles: boolean;
     private readonly realPath: (file: string) => string;
     private readonly mainCanonical: string;
     private readonly canonicalMainDirectory: string;
@@ -249,6 +250,7 @@ export class NodeSourceProvider implements SourceProvider {
             ? { mainFile: optionsOrMainFile, includePaths, packagedHeaderRoot }
             : optionsOrMainFile;
         this.readFile = options.readFile ?? readUtf8File;
+        this.allowMissingFiles = options.readFile !== undefined;
         this.realPath = options.realPath ?? ((file) => fs.realpathSync.native(file));
         const mainFile = options.mainFile
             ?? (options.mainDirectory === undefined ? undefined : path.join(options.mainDirectory, 'main.c'));
@@ -346,15 +348,17 @@ export class NodeSourceProvider implements SourceProvider {
         if (!this.roots.some((root) => isContained(root, canonical))) {
             return { status: 'error', message: `source path escapes an allowed include root: ${requested}` };
         }
-        let status: fs.Stats;
+        let status: fs.Stats | undefined;
         try {
             status = fs.statSync(canonical);
         } catch (error) {
             const code = (error as { code?: string }).code;
-            if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'not-found' };
-            return { status: 'error', message: `cannot stat source file: ${String(error)}` };
+            if (code === 'ENOENT' || code === 'ENOTDIR') {
+                if (!this.allowMissingFiles) return { status: 'not-found' };
+            }
+            else return { status: 'error', message: `cannot stat source file: ${String(error)}` };
         }
-        if (!status.isFile()) return { status: 'not-found' };
+        if (status !== undefined && !status.isFile()) return { status: 'not-found' };
         let source: string;
         try {
             source = this.readFile(canonical);

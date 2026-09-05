@@ -104,14 +104,14 @@ export function compileCFileToObjectDetailed(
     sourceFile: string,
     options: CompileFileOptions = {},
 ): CCompileDetailedResult<Merc32Object> {
-    const standardFailure = validateStandard<Merc32Object>(options,
-        readSourceForDiagnostic(sourceFile), sourceFile);
-    if (standardFailure) return standardFailure;
     const { preprocess, ...compileOptions } = options;
+    const standardFailure = validateStandard<Merc32Object>(options,
+        readSourceForDiagnostic(sourceFile, preprocess), sourceFile);
+    if (standardFailure) return standardFailure;
     const { frontend } = splitCompileOptions(compileOptions);
     const envelope = getAroFrontend().analyzeFile(sourceFile, frontend, preprocess);
     const sources = envelopeSources(envelope);
-    return compileEnvelope(envelope, fileSnapshots(sourceFile, sources, frontend));
+    return compileEnvelope(envelope, fileSnapshots(sourceFile, sources, frontend, preprocess));
 }
 
 export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
@@ -199,7 +199,7 @@ export function compileCDetailed(source: string,
 
 export function compileCFileDetailed(sourceFile: string,
     options: CompileFileOptions = {}): CCompileDetailedResult<CompileResult> {
-    const source = readSourceForDiagnostic(sourceFile);
+    const source = readSourceForDiagnostic(sourceFile, options.preprocess);
     const optionFailure = validateAssemblyOptions(options, source, sourceFile);
     if (optionFailure) return optionFailure;
     const objectResult = compileCFileToObjectDetailed(sourceFile, options);
@@ -261,6 +261,10 @@ export function validateDlbImage(image: LinkedImage, dataBase: number, dlbAddrWi
             'dataBase must be within DLB 0x08000000..0x0FFFFFFF');
     }
     const capacity = 2 ** (dlbAddrWidth + 2);
+    if (dataBase + capacity > DLB_EXCLUSIVE_LIMIT) {
+        throw new ImageCapacityError('MERC32_C_DLB_CAPACITY',
+            'DLB data range exceeds exclusive limit 0x10000000');
+    }
     const limit = dataBase + capacity;
     const dataSections = image.sections.filter((section) => section.name === 'data' || section.name === 'bss');
     if (dataSections.some((section) => section.address < dataBase)) {
@@ -413,7 +417,7 @@ function sourceSnapshots(files: readonly SourceFileRecord[], source: string,
 }
 
 function fileSnapshots(sourceFile: string, files: readonly SourceFileRecord[],
-    options: CFrontendOptions): readonly CCompileDiagnosticSource[] {
+    options: CFrontendOptions, access: CPreprocessOptions = {}): readonly CCompileDiagnosticSource[] {
     const mainDirectory = path.dirname(path.resolve(sourceFile));
     const includePaths = options.includePaths ?? [];
     const includeNames = uniqueIncludeNames(includePaths);
@@ -427,10 +431,25 @@ function fileSnapshots(sourceFile: string, files: readonly SourceFileRecord[],
         if (includeIndex >= 0) candidate = path.join(path.resolve(includePaths[includeIndex]), ...segments.slice(1));
         else if (segments[0] === 'packaged') candidate = path.join(packagedRoot, ...segments.slice(1));
         else candidate = path.join(mainDirectory, ...segments);
-        const text = virtual.get(logical) ?? readSourceForDiagnostic(candidate);
-        if (text === '' && !fs.existsSync(candidate)) return [];
-        return [Object.freeze({ file, canonicalPath: canonicalPath(candidate), source: text })];
+        const virtualSource = virtual.get(logical);
+        if (virtualSource !== undefined) {
+            return [Object.freeze({ file, canonicalPath: diagnosticPath(candidate, access), source: virtualSource })];
+        }
+        const text = readDiagnosticSnapshot(candidate, access);
+        if (text === undefined) return [];
+        return [Object.freeze({ file, canonicalPath: diagnosticPath(candidate, access), source: text })];
     }));
+}
+
+function readDiagnosticSnapshot(file: string, access: CPreprocessOptions): string | undefined {
+    try {
+        const canonical = diagnosticPath(file, access);
+        return access.readFile === undefined
+            ? new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(canonical))
+            : access.readFile(canonical);
+    } catch {
+        return undefined;
+    }
 }
 
 function uniqueIncludeNames(includePaths: readonly string[]): string[] {
@@ -468,17 +487,21 @@ function utf8BoundaryBitmap(source: string): string {
     return bitmap.toString('hex');
 }
 
-function readSourceForDiagnostic(sourceFile: string): string {
+function readSourceForDiagnostic(sourceFile: string, access: CPreprocessOptions = {}): string {
     try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(sourceFile));
+        const canonical = diagnosticPath(sourceFile, access);
+        return access.readFile === undefined
+            ? new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(canonical))
+            : access.readFile(canonical);
     } catch {
         return '';
     }
 }
 
-function canonicalPath(file: string): string {
+function diagnosticPath(file: string, access: CPreprocessOptions = {}): string {
     try {
-        return fs.realpathSync.native(file);
+        const resolved = access.realPath === undefined ? fs.realpathSync.native(file) : access.realPath(file);
+        return path.resolve(resolved);
     } catch {
         return path.resolve(file);
     }

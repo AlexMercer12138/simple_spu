@@ -66,6 +66,32 @@ try {
             && item.range.start.line === 2),
     `included Aro warning must retain its header range (${aroHeader})`);
 
+    const callbackMain = path.join(root, 'callback', 'main.c');
+    const callbackHeader = path.join(root, 'callback', 'callback.h');
+    const callbackSources = new Map([
+        [path.resolve(callbackMain), '#include "callback.h"\nint main(void) { return 0; }\n'],
+        [path.resolve(callbackHeader), '#warning callback-header-warning\n'],
+    ]);
+    const callbackResult = cCompiler.compileCFileDetailed(callbackMain, {
+        preprocess: {
+            realPath: (file) => file,
+            readFile: (file) => {
+                const source = callbackSources.get(path.resolve(file));
+                if (source === undefined) throw new Error(`missing callback source: ${file}`);
+                return source;
+            },
+        },
+    });
+    assert.ok(callbackResult.artifact,
+        'file compilation must allow compatibility callbacks to provide an absent main file');
+    assert.ok(callbackResult.diagnostics.some((item) =>
+        item.severity === 'warning' && item.message === 'callback-header-warning'),
+    'callback-provided headers must remain visible to the Aro file API');
+    assert.deepStrictEqual(
+        cCompiler.getCCompileDiagnosticSources(callbackResult).map((item) => item.source),
+        [...callbackSources.values()],
+        'diagnostic snapshots must read callback-provided main and header sources');
+
     writeFile(root, 'include/demo_soc.h', [
         '#ifndef DEMO_SOC_H',
         '#define DEMO_SOC_H',

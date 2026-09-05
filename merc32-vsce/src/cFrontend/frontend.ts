@@ -158,6 +158,8 @@ export class AroFrontendService implements AroFrontend {
             mainFile: sourceFile,
             includePaths,
             packagedHeaderRoot: this.packagedHeaderRoot(),
+            readFile: preprocessCompatibility?.readFile,
+            realPath: preprocessCompatibility?.realPath,
         });
         let source: string;
         try {

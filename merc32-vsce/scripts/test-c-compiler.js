@@ -66,6 +66,12 @@ assert.throws(() => cCompiler.validateDlbImage({
     symbols: new Map(),
 }, 0x08000000, 1), /outside.*DLB|before dataBase/i,
 'validateDlbImage must reject sections below the selected DLB window');
+assert.throws(() => cCompiler.validateDlbImage({
+    assembly: '',
+    sections: [],
+    symbols: new Map(),
+}, 0x08000004, 25), /DLB data range exceeds.*0x10000000/i,
+'validateDlbImage must reject a DLB window that crosses the exclusive address limit');
 
 const ilbOverflow = cCompiler.compileCDetailed(
     'int main(void) { return 0; }',
