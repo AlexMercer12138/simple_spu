@@ -19,6 +19,12 @@ const productionPackages = Object.entries(packageLock.packages)
 
 assert.ok(productionPackages.includes('node_modules/ajv'));
 assert.ok(productionPackages.includes('node_modules/jsonc-parser'));
+assert.ok(!ignoreLines.some((pattern) => {
+    const normalized = pattern.replace(/^\//u, '').replace(/\\/gu, '/');
+    return normalized === 'resources' || normalized.startsWith('resources/');
+}), '.vscodeignore must retain the packaged resources tree');
+assert.strictEqual(typeof packageJson.scripts['test:c:frontend:package'], 'string',
+    'the c-frontend package boundary gate must be exposed by package.json');
 assert.match(packageJson.scripts['test:soc'], /(?:^|&&\s*)npm run test:vsix:deps(?:\s*&&|$)/,
     'the normal SoC verification gate must include the VSIX runtime dependency contract');
 assert.doesNotMatch(packageJson.scripts['test:vsix:deps'], /npm run test:soc/,

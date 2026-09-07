@@ -28,6 +28,10 @@ function run() {
         'isolated preparation did not produce the packaged license');
     assert.ok(result.files.includes('schema/merc32.schema.json'),
         'isolated preparation did not produce the generated schema');
+    assert.ok(result.files.includes('c-frontend/aro-merc32.wasm'),
+        'isolated preparation did not retain the committed Aro WASM');
+    assert.ok(result.files.includes('c-frontend/include/stdint.h'),
+        'isolated preparation did not retain the committed freestanding headers');
     assert.deepStrictEqual(snapshotLiveGeneratedResources(), liveSnapshot,
         'isolated preparation changed live extension resources');
     assert.strictEqual(lstatOptional(stageRoot), undefined,

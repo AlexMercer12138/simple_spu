@@ -34,6 +34,8 @@ function run() {
             testOrdinaryAncestorSwap],
         ['cleans the exact owned stage after preparation fails',
             testPreparationFailureCleanup],
+        ['rejects preparation that rewrites a c-frontend input',
+            testCFrontendMutation],
         ['requires absolute explicit preparation roots', testExplicitRootValidation],
         ['keeps wrapper defaults module-relative', testWrapperDefaults],
         ['rejects a relative wrapper repository override before mutation',
@@ -95,6 +97,10 @@ function run() {
             testConcreteInputOutputHardlinks],
         ['rejects stale generated hardlinks to every authoritative input class',
             testStaleGeneratedHardlinks],
+        ['rejects an unexpected c-frontend resource before mutation',
+            testUnexpectedCFrontendResource],
+        ['rejects a hard-linked c-frontend resource before mutation',
+            testHardLinkedCFrontendResource],
         ['deletes unrelated stale generated files and directories',
             testUnrelatedStaleGeneratedEntries],
         ['accepts distinct concrete input and output identities',
@@ -752,6 +758,82 @@ function copyAuthoritativeExtensionInputs(destinationResourcesRoot) {
         path.join(destinationResourcesRoot, 'templates'), { recursive: true });
     fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'webview'),
         path.join(destinationResourcesRoot, 'webview'), { recursive: true });
+    fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'c-frontend'),
+        path.join(destinationResourcesRoot, 'c-frontend'), { recursive: true });
+}
+
+function testCFrontendMutation() {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-stage-c-frontend-mutation-'));
+    try {
+        assert.throws(
+            () => stageApi.runIsolatedResourcePreparation({
+                extensionRoot: sourceExtensionRoot,
+                repositoryRoot: sourceRepositoryRoot,
+                socApi: fixtureSocApi,
+                sourceRevision: 'c-frontend-mutation-revision',
+                tempRoot: fixtureRoot,
+                prepareResourcesFn(options) {
+                    fs.appendFileSync(path.join(
+                        options.extensionRoot,
+                        'resources',
+                        'c-frontend',
+                        'include',
+                        'stddef.h'), '\n/* rewritten */\n');
+                    return prepareApi.prepareResourcesAtRoots(options);
+                },
+            }),
+            /changed authoritative c-frontend input/u,
+        );
+        assert.deepStrictEqual(fs.readdirSync(fixtureRoot), [],
+            'c-frontend mutation failure leaked its staging root');
+    } finally {
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+}
+
+function testUnexpectedCFrontendResource() {
+    withTopologyFixture('unexpected c-frontend resource', (root) => ({
+        repositoryRoot: path.join(root, 'repository'),
+        extensionRoot: path.join(root, 'extension'),
+    }), ({ fixtureRoot, repositoryRoot, extensionRoot }) => {
+        fs.writeFileSync(path.join(
+            extensionRoot, 'resources', 'c-frontend', 'include', 'unexpected.h'),
+        '#define UNEXPECTED 1\n');
+        assertRejectedWithoutMutation(
+            fixtureRoot,
+            () => prepareApi.prepareResourcesAtRoots({
+                repositoryRoot,
+                extensionRoot,
+                socApi: fixtureSocApi,
+                sourceRevision: 'unexpected-c-frontend-revision',
+            }),
+            /c-frontend resource file set/u,
+            'unexpected c-frontend resource',
+        );
+    });
+}
+
+function testHardLinkedCFrontendResource() {
+    withTopologyFixture('hard-linked c-frontend resource', (root) => ({
+        repositoryRoot: path.join(root, 'repository'),
+        extensionRoot: path.join(root, 'extension'),
+    }), ({ fixtureRoot, repositoryRoot, extensionRoot }) => {
+        const includeRoot = path.join(extensionRoot, 'resources', 'c-frontend', 'include');
+        const alias = path.join(includeRoot, 'stddef.h');
+        fs.unlinkSync(alias);
+        fs.linkSync(path.join(includeRoot, 'stdint.h'), alias);
+        assertRejectedWithoutMutation(
+            fixtureRoot,
+            () => prepareApi.prepareResourcesAtRoots({
+                repositoryRoot,
+                extensionRoot,
+                socApi: fixtureSocApi,
+                sourceRevision: 'hard-linked-c-frontend-revision',
+            }),
+            /c-frontend resource is hard-linked/u,
+            'hard-linked c-frontend resource',
+        );
+    });
 }
 
 function writeVictimOutputs(resourcesRoot, marker) {

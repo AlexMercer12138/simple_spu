@@ -339,6 +339,8 @@
     "test:infrastructure": "npm run compile && node scripts/test-test-infrastructure.js",
     "test:pseudo": "npm run compile && node scripts/test-pseudo-instructions.js",
     "test:c:aro-vendor": "node scripts/test-aro-vendor.js",
+    "test:c:frontend:package": "node scripts/test-c-frontend-package.js",
+    "benchmark:c:frontend": "npm run compile && node scripts/benchmark-c-frontend.js",
     "test:c:preprocessor": "npm run compile && node scripts/test-c-preprocessor.js",
     "test:c:frontend-contract": "npm run compile && node scripts/test-c-frontend-contract.js",
     "test:c:frontend-host": "npm run compile && node scripts/test-c-frontend-host.js",

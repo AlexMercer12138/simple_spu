@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://merc32.invalid/schema/typed-c-unit-v1.schema.json",
+  "title": "MERC32 typed C unit v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "target",
+    "abi",
+    "dataModel",
+    "language",
+    "sourceFiles",
+    "types",
+    "symbols",
+    "nodes",
+    "declarations"
+  ],
+  "properties": {
+    "schema": { "const": "merc32.typed-c-unit" },
+    "schemaVersion": { "const": 1 },
+    "target": { "const": "merc32" },
+    "abi": { "const": "merc32-c-v1" },
+    "dataModel": { "const": "merc32-ilp32" },
+    "language": { "const": "c17-freestanding" },
+    "sourceFiles": { "type": "array", "items": { "$ref": "#/$defs/sourceFile" } },
+    "types": { "type": "array", "items": { "type": "object" } },
+    "symbols": { "type": "array", "items": { "type": "object" } },
+    "nodes": { "type": "array", "items": { "type": "object" } },
+    "declarations": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+  },
+  "$defs": {
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "byteLength", "utf8BoundaryBitmap"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "utf8BoundaryBitmap": { "type": "string", "pattern": "^[0-9a-f]*$" }
+      }
+    }
+  }
+}

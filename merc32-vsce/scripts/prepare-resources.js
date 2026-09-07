@@ -13,6 +13,21 @@ const BASE_RTL_FILES = [
     'rtl/misc/spram.v',
     'rtl/bridge/lb2apb.v',
 ];
+const C_FRONTEND_FILES = Object.freeze([
+    'aro-merc32.wasm',
+    'build-manifest.json',
+    'include/float.h',
+    'include/iso646.h',
+    'include/limits.h',
+    'include/stdalign.h',
+    'include/stdbool.h',
+    'include/stddef.h',
+    'include/stdint.h',
+    'include/stdnoreturn.h',
+    'licenses/ARO-LICENSE',
+    'licenses/UNICODE-LICENSE',
+    'typed-c-unit-v1.schema.json',
+].sort());
 const DEFAULT_EXTENSION_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_REPOSITORY_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -42,7 +57,13 @@ function prepareResourcesAtRoots(options) {
     const inputs = discoverResourceInputs({ extensionRoot, repositoryRoot });
     const resourcesRoot = path.join(extensionRoot, 'resources');
     const socApi = options.socApi || loadSocApi(extensionRoot);
-    const { catalogRoot, catalogFiles, rtlFiles: sortedRtlFiles, staticFiles } = inputs;
+    const {
+        catalogRoot,
+        catalogFiles,
+        rtlFiles: sortedRtlFiles,
+        staticFiles,
+        cFrontendFiles,
+    } = inputs;
     validateConcreteResourceTopology({ extensionRoot, repositoryRoot }, inputs);
     validateGeneratedRootsForDeletion({ extensionRoot, repositoryRoot }, inputs);
 
@@ -77,6 +98,7 @@ function prepareResourcesAtRoots(options) {
     const files = [
         ...sortedRtlFiles,
         ...staticFiles,
+        ...cFrontendFiles,
         'licenses/LICENSE',
         'schema/merc32.schema.json',
     ].sort();
@@ -139,13 +161,64 @@ function discoverResourceInputs(options) {
             path.join(resourcesRoot, ...logicalPath.split('/')), logicalPath);
     }
     requireSourceFile(repositoryRoot, 'LICENSE');
+    const cFrontendFiles = discoverCFrontendFiles(resourcesRoot);
 
     return Object.freeze({
         catalogRoot,
         catalogFiles: Object.freeze(catalogFiles),
         rtlFiles: Object.freeze(sortedRtlFiles),
         staticFiles: Object.freeze(staticFiles),
+        cFrontendFiles: Object.freeze(cFrontendFiles),
     });
+}
+
+function discoverCFrontendFiles(resourcesRoot) {
+    const root = path.join(resourcesRoot, 'c-frontend');
+    requireExactDirectory(resourcesRoot, root, 'c-frontend');
+    const files = [];
+    const visit = (directory, prefix) => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })
+            .sort((left, right) => left.name.localeCompare(right.name))) {
+            const logicalPath = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+            const target = path.join(directory, entry.name);
+            const status = fs.lstatSync(target);
+            if (status.isSymbolicLink()) {
+                throw new Error(`c-frontend resource is a symbolic link: ${logicalPath}`);
+            }
+            if (entry.isDirectory()) {
+                if (!sameCanonicalPath(target, fs.realpathSync.native(target))) {
+                    throw new Error(`c-frontend resource directory is redirected: ${logicalPath}`);
+                }
+                visit(target, logicalPath);
+                continue;
+            }
+            if (!entry.isFile() || !status.isFile()) {
+                throw new Error(`c-frontend resource is not a regular file: ${logicalPath}`);
+            }
+            if (status.nlink !== 1) {
+                throw new Error(`c-frontend resource is hard-linked: ${logicalPath}`);
+            }
+            if (!sameCanonicalPath(target, fs.realpathSync.native(target))) {
+                throw new Error(`c-frontend resource is redirected: ${logicalPath}`);
+            }
+            files.push(`c-frontend/${logicalPath}`);
+        }
+    };
+    visit(root, '');
+    const actual = files.sort();
+    const expected = C_FRONTEND_FILES.map((logicalPath) => `c-frontend/${logicalPath}`);
+    const expectedSet = new Set(expected);
+    const actualSet = new Set(actual);
+    const missing = expected.filter((logicalPath) => !actualSet.has(logicalPath));
+    const extra = actual.filter((logicalPath) => !expectedSet.has(logicalPath));
+    if (missing.length > 0 || extra.length > 0) {
+        throw new Error([
+            'c-frontend resource file set changed:',
+            `missing ${JSON.stringify(missing)},`,
+            `extra ${JSON.stringify(extra)}`,
+        ].join(' '));
+    }
+    return actual;
 }
 
 function requireExplicitRoots(options) {
@@ -192,6 +265,7 @@ function validateResourceRootTopology(roots) {
         { label: 'extension catalog input', target: path.join(resourcesRoot, 'catalog') },
         { label: 'extension templates input', target: path.join(resourcesRoot, 'templates') },
         { label: 'extension webview input', target: path.join(resourcesRoot, 'webview') },
+        { label: 'extension c-frontend input', target: path.join(resourcesRoot, 'c-frontend') },
     ];
     const outputs = [
         { label: 'generated RTL output', target: path.join(resourcesRoot, 'rtl') },
@@ -279,6 +353,10 @@ function collectAuthoritativeInputs(roots, inputs) {
     const resourcesRoot = path.join(roots.extensionRoot, 'resources');
     return [
         ...inputs.staticFiles.map((logicalPath) => ({
+            label: `extension resource input ${logicalPath}`,
+            target: path.join(resourcesRoot, ...logicalPath.split('/')),
+        })),
+        ...inputs.cFrontendFiles.map((logicalPath) => ({
             label: `extension resource input ${logicalPath}`,
             target: path.join(resourcesRoot, ...logicalPath.split('/')),
         })),

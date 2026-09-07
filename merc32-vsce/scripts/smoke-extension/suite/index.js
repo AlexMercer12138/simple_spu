@@ -1,4 +1,5 @@
 const assert = require('assert');
+const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -125,6 +126,21 @@ async function run() {
         assert.strictEqual(fs.existsSync(path.join(outputDir, ...logicalPath.split('/'))), false,
             `generated output retained legacy path ${logicalPath}`);
     }
+
+    const cSmokeRoot = path.join(workspaceRoot, 'c-frontend-smoke');
+    const cMain = path.join(cSmokeRoot, 'main.c');
+    const cSibling = path.join(cSmokeRoot, 'sibling.h');
+    fs.mkdirSync(cSmokeRoot, { recursive: true });
+    fs.writeFileSync(cSibling, '#define MERC32_SMOKE_VALUE 7\n');
+    fs.writeFileSync(cMain,
+        '#include "sibling.h"\n#include <stdint.h>\nint smoke_value = MERC32_SMOKE_VALUE + (int)UINT32_MAX;\n');
+    const cDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(cMain));
+    await vscode.window.showTextDocument(cDocument, { preview: false });
+    await withProcessLaunchBlocked(async () => {
+        await vscode.commands.executeCommand('merc32-asm.compileCToAsm');
+    });
+    requireExactFile(path.join(cSmokeRoot, 'main.asm'),
+        'offline C frontend smoke assembly');
 
     const hardwareFile = path.join(outputDir, 'hardware', 'all_peripherals_soc.v');
     assert.ok(!pathsOverlap(repositoryRoot, hardwareFile),
@@ -309,3 +325,17 @@ function comparablePath(value) {
 }
 
 module.exports = { activate, run };
+
+async function withProcessLaunchBlocked(action) {
+    const names = ['exec', 'execFile', 'execFileSync', 'fork', 'spawn', 'spawnSync'];
+    const originals = names.map((name) => [name, childProcess[name]]);
+    const blocked = (name) => () => {
+        throw new Error(`host process launch is forbidden during packaged C smoke: ${name}`);
+    };
+    try {
+        for (const [name] of originals) childProcess[name] = blocked(name);
+        return await action();
+    } finally {
+        for (const [name, original] of originals) childProcess[name] = original;
+    }
+}

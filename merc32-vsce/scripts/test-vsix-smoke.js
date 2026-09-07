@@ -352,6 +352,21 @@ function assertVsixContents(audit, extensionRoot) {
         RESOURCE_MANIFEST,
     ];
     for (const logicalPath of requiredFiles) requireArchiveFile(audit, logicalPath);
+    for (const logicalPath of [
+        'c-frontend/aro-merc32.wasm',
+        'c-frontend/build-manifest.json',
+        'c-frontend/typed-c-unit-v1.schema.json',
+        'c-frontend/include/stdint.h',
+        'c-frontend/licenses/ARO-LICENSE',
+        'c-frontend/licenses/UNICODE-LICENSE',
+    ]) {
+        requireArchiveFile(audit, `extension/resources/${logicalPath}`);
+    }
+    for (const entry of audit.fileMap) {
+        assert.doesNotMatch(entry.path,
+            /(?:^|\/)extension\/(?:tools|third_party\/aro)(?:\/|$)|(?:^|\/)zig(?:\.exe)?$/iu,
+            `VSIX contains development Aro/Zig source: ${entry.path}`);
+    }
     assert.ok(
         hasArchiveFile(audit, 'extension/LICENSE')
             || hasArchiveFile(audit, 'extension/LICENSE.txt'),

@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "aroRevision": "ec463262c14c1111fc9323086b708ad3b0b9ca11",
+  "zigVersion": "0.17.0-dev.1936+5a625d5f3",
+  "bridgeProtocolVersion": 1,
+  "typedUnitSchemaVersion": 1,
+  "target": "merc32",
+  "abi": "merc32-c-v1",
+  "dataModel": "merc32-ilp32",
+  "bridgeBuildId": "merc32-aro-v1-58502f21fa9c03d3e484c17e806b72e3fd6cc7bf40320b5b304988615bdfe009",
+  "sourceTreeSha256": "58502f21fa9c03d3e484c17e806b72e3fd6cc7bf40320b5b304988615bdfe009",
+  "wasmSha256": "e0836ce096f41d9cbffc196216a8778610a694858a5b8296a078d0a829592f8c"
+}
