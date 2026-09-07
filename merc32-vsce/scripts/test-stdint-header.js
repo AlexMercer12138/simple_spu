@@ -13,6 +13,16 @@ const stdint = fs.readFileSync(path.join(resourceRoot, 'include', 'stdint.h'), '
 const bridge = instantiateAuditedBridge(bytes, manifest);
 const source = [
     '#include <stdint.h>',
+    '_Static_assert(_Generic((UINT8_MAX), int: 1, default: 0), "UINT8_MAX type");',
+    '_Static_assert(_Generic((UINT16_MAX), int: 1, default: 0), "UINT16_MAX type");',
+    '_Static_assert(_Generic((UINT_LEAST8_MAX), int: 1, default: 0), "UINT_LEAST8_MAX type");',
+    '_Static_assert(_Generic((UINT_LEAST16_MAX), int: 1, default: 0), "UINT_LEAST16_MAX type");',
+    '_Static_assert(_Generic((UINT_FAST8_MAX), int: 1, default: 0), "UINT_FAST8_MAX type");',
+    '_Static_assert(_Generic((UINT_FAST16_MAX), int: 1, default: 0), "UINT_FAST16_MAX type");',
+    '_Static_assert(_Generic((UINT32_MAX), unsigned int: 1, default: 0), "UINT32_MAX type");',
+    '_Static_assert(_Generic((UINT_LEAST32_MAX), unsigned int: 1, default: 0), "UINT_LEAST32_MAX type");',
+    '_Static_assert(_Generic((UINT_FAST32_MAX), unsigned int: 1, default: 0), "UINT_FAST32_MAX type");',
+    '_Static_assert(_Generic((UINT64_MAX), unsigned long long: 1, default: 0), "UINT64_MAX type");',
     '_Static_assert(sizeof(int_least8_t) == 1 && sizeof(uint_least8_t) == 1, "least8");',
     '_Static_assert(sizeof(int_least16_t) == 2 && sizeof(uint_least16_t) == 2, "least16");',
     '_Static_assert(sizeof(int_least32_t) == 4 && sizeof(uint_least32_t) == 4, "least32");',

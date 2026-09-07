@@ -276,6 +276,67 @@ for (const originals of [
     }
 }
 
+for (const originals of [
+    { wasm: undefined, manifest: undefined },
+    { wasm: 'old-wasm', manifest: undefined },
+    { wasm: undefined, manifest: 'old-manifest' },
+    { wasm: 'old-wasm', manifest: 'old-manifest' },
+]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-recover-orphan-new-'));
+    try {
+        if (originals.wasm !== undefined) fs.writeFileSync(path.join(root, 'aro-merc32.wasm'), originals.wasm);
+        if (originals.manifest !== undefined) {
+            fs.writeFileSync(path.join(root, 'build-manifest.json'), originals.manifest);
+        }
+        const orphanNames = [
+            '.c-frontend-install.json.gen-orphan-journal.new',
+            '.aro-merc32.wasm.gen-orphan-wasm.new',
+            '.build-manifest.json.gen-orphan-manifest.new',
+        ];
+        const unrelatedNames = [
+            '.c-frontend-install.json.gen-orphan-journal.new.keep',
+            '.aro-merc32.wasm.gen-ORPHAN.new',
+            '.build-manifest.json.gen-orphan-manifest.old',
+            'unrelated.txt',
+        ];
+        for (const name of [...orphanNames, ...unrelatedNames]) {
+            fs.writeFileSync(path.join(root, name), name);
+        }
+        const descriptors = new Map();
+        let directorySyncs = 0;
+        const operations = Object.create(fs);
+        operations.openSync = (target, flags, mode) => {
+            const descriptor = fs.openSync(target, flags, mode);
+            descriptors.set(descriptor, path.resolve(target));
+            return descriptor;
+        };
+        operations.fsyncSync = (descriptor) => {
+            if (descriptors.get(descriptor) === path.resolve(root)) directorySyncs += 1;
+            return fs.fsyncSync(descriptor);
+        };
+        operations.closeSync = (descriptor) => {
+            descriptors.delete(descriptor);
+            return fs.closeSync(descriptor);
+        };
+
+        assert.strictEqual(recoverPair({ resourceRoot: root, fileSystem: operations }), true,
+            'restart must report orphan generation cleanup');
+        assertPair(root, originals.wasm, originals.manifest);
+        assert.deepStrictEqual(fs.readdirSync(root).sort(), [
+            ...unrelatedNames,
+            ...[
+                ['aro-merc32.wasm', originals.wasm],
+                ['build-manifest.json', originals.manifest],
+            ].filter(([, value]) => value !== undefined).map(([name]) => name),
+        ].sort(), 'restart removed unrelated files or retained owned orphan generation files');
+        assert.ok(directorySyncs >= 1, 'orphan generation cleanup must sync directory metadata');
+        assert.strictEqual(recoverPair({ resourceRoot: root, fileSystem: operations }), false,
+            'a second restart must find no owned recovery work');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 function writeInterruptedTransaction(root, phase) {
     const generation = `interrupted-${phase}`;
     const names = {

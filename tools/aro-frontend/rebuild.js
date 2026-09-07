@@ -16,6 +16,7 @@ const RESOURCE_ROOT = path.join(REPOSITORY_ROOT, 'merc32-vsce', 'resources', 'c-
 const WASM_LIMIT = 4 * 1024 * 1024;
 const MEMORY_LIMIT_PAGES = (128 * 1024 * 1024) / 65536;
 const GENERATED_FRONTEND_DIRECTORIES = new Set(['.zig-cache', 'zig-out']);
+const ORPHAN_GENERATION_NEW = /^\.(?:c-frontend-install\.json|aro-merc32\.wasm|build-manifest\.json)\.gen-[a-z0-9][a-z0-9-]{0,127}\.new$/u;
 
 function main() {
     const zig = resolveZig(process.argv.slice(2));
@@ -380,13 +381,16 @@ function recoverPair(options = {}) {
     const resourceRoot = path.resolve(options.resourceRoot || RESOURCE_ROOT);
     fileSystem.mkdirSync(resourceRoot, { recursive: true });
     const journalPath = path.join(resourceRoot, '.c-frontend-install.json');
-    if (!fileSystem.existsSync(journalPath)) return false;
+    if (!fileSystem.existsSync(journalPath)) {
+        return removeOrphanGenerationNewFiles(resourceRoot, fileSystem);
+    }
     const journal = readJournal(journalPath, fileSystem);
     const paths = transactionPaths(resourceRoot, journal.generation);
     if (journal.phase === 'committed') {
         requireExactTransactionFile(paths.wasmTarget, 'committed WASM', fileSystem);
         requireExactTransactionFile(paths.manifestTarget, 'committed manifest', fileSystem);
         finishCommittedCleanup(paths, fileSystem);
+        removeOrphanGenerationNewFiles(resourceRoot, fileSystem);
         return true;
     }
 
@@ -403,6 +407,20 @@ function recoverPair(options = {}) {
     ], fileSystem);
     syncDirectory(resourceRoot, fileSystem);
     fileSystem.rmSync(paths.journal, { force: true });
+    syncDirectory(resourceRoot, fileSystem);
+    removeOrphanGenerationNewFiles(resourceRoot, fileSystem);
+    return true;
+}
+
+function removeOrphanGenerationNewFiles(resourceRoot, fileSystem) {
+    const orphanPaths = fileSystem.readdirSync(resourceRoot)
+        .filter((name) => ORPHAN_GENERATION_NEW.test(name))
+        .map((name) => path.join(resourceRoot, name));
+    for (const orphanPath of orphanPaths) {
+        requireExactTransactionFile(orphanPath, 'orphan transaction generation file', fileSystem);
+    }
+    if (orphanPaths.length === 0) return false;
+    removePaths(orphanPaths, fileSystem);
     syncDirectory(resourceRoot, fileSystem);
     return true;
 }
