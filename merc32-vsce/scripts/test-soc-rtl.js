@@ -466,6 +466,19 @@ const expectedPreparedRtl = [
 
 const expectedPreparedResources = [
     ...expectedPreparedRtl,
+    'c-frontend/aro-merc32.wasm',
+    'c-frontend/build-manifest.json',
+    'c-frontend/include/float.h',
+    'c-frontend/include/iso646.h',
+    'c-frontend/include/limits.h',
+    'c-frontend/include/stdalign.h',
+    'c-frontend/include/stdbool.h',
+    'c-frontend/include/stddef.h',
+    'c-frontend/include/stdint.h',
+    'c-frontend/include/stdnoreturn.h',
+    'c-frontend/licenses/ARO-LICENSE',
+    'c-frontend/licenses/UNICODE-LICENSE',
+    'c-frontend/typed-c-unit-v1.schema.json',
     'catalog/modules/apb_can.json',
     'catalog/modules/apb_gpio.json',
     'catalog/modules/apb_i2c.json',
@@ -504,6 +517,8 @@ function makePreparationFixture(name) {
         path.join(extensionRoot, 'resources', 'templates'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'webview'),
         path.join(extensionRoot, 'resources', 'webview'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'c-frontend'),
+        path.join(extensionRoot, 'resources', 'c-frontend'), { recursive: true });
     fs.mkdirSync(path.join(extensionRoot, 'resources'), { recursive: true });
     fs.writeFileSync(path.join(extensionRoot, 'resources', 'keep.txt'), 'preserve\n');
     return { sourceRepository, extensionRoot };

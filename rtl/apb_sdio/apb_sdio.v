@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 module apb_sdio #(
-    parameter FIFO_DEPTH = 128
+    parameter FIFO_DEPTH = 128,
     parameter BUS_WIDTH = 8 // 4 or 8
 ) (
     input  wire        s_apb_pclk,
