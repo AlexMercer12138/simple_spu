@@ -842,6 +842,7 @@ async function runInstalledSmoke(options) {
         'package.json',
         'suite/icarus.js',
         'suite/index.js',
+        'suite/process-launch-guard.js',
     ], 'installed smoke harness is missing or contains unexpected checkout files');
 
     const guardPackageRoot = path.join(options.tempRoot, 'smoke-network-guard');

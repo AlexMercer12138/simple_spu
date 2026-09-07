@@ -562,8 +562,10 @@ try {
     fs.writeFileSync(entry, '#include "included.h"\nint main(void) { int result = included(3, 4); result = result + 1; return result; }\n');
     const badHeader = path.join(root, 'bad.h');
     const badEntry = path.join(root, 'bad.c');
+    const stdintEntry = path.join(root, 'stdint-main.c');
     fs.writeFileSync(badHeader, 'float broken(float value) { return value + value; }\n');
     fs.writeFileSync(badEntry, '#include "bad.h"\nint main(void) { return 0; }\n');
+    fs.writeFileSync(stdintEntry, '#include <stdint.h>\nint smoke_value = (int)UINT32_MAX;\n');
 
     const legacyFile = compileCFile(entry, { moduleName: 'legacy_file_api' });
     assert.strictEqual(typeof legacyFile.assembly, 'string', 'compileCFile must continue returning assembly');
@@ -582,6 +584,11 @@ try {
             && relocation.debug?.file === 'included.h'
             && relocation.debug.line === 2,
     ), 'typed relocation debug locations must retain included-source origins');
+    assert.strictEqual(
+        compileCFileToObject(stdintEntry).target,
+        'merc32',
+        'unused 64-bit stdint typedefs must not block supported 32-bit compilation',
+    );
     assert.throws(
         () => compileCFileToObject(badEntry, { moduleName: 'bad_preprocessed_object' }),
         (error) => error && error.location && error.location.file === 'bad.h'

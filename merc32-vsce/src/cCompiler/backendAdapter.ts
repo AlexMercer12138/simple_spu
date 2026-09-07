@@ -144,10 +144,16 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                 shell.values = Object.freeze(Object.fromEntries(record.enumerators.map((entry) => [entry.name, Number(parseInteger(entry.value))])));
                 shell.nominalId = record.nominalId === undefined ? undefined : Number(record.nominalId);
                 break;
-            case 'builtin':
-                if (isUnsupportedBuiltin(record.name)) fail(`${record.name} operations are not supported by the MERC32 backend`, findRange(record, unit), files);
-                break;
+            case 'builtin': break;
         }
+    }
+    for (const symbol of unit.symbols) {
+        const consumesValueType = symbol.kind === 'function' && symbol.definition
+            || symbol.kind === 'variable' && symbol.definition && symbol.storage !== 'automatic';
+        if (!consumesValueType) continue;
+        const type = shells.get(Number(symbol.type));
+        if (!type) throw new CFrontendInternalError(`${symbol.kind} ${symbol.name} references unknown type`);
+        requireSupportedValueType(type, symbol.range, files);
     }
     for (const record of unit.types) {
         const shell = shells.get(Number(record.id)) as CType;
@@ -185,6 +191,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const node = nodeRecords.get(id); if (!node || node.category !== 'expression') throw new CFrontendInternalError(`node ${id} is not an expression`);
         const typed = node as Extract<TypedNodeRecord, { category: 'expression' }>;
         const type = shells.get(Number(typed.type)); if (!type) throw new CFrontendInternalError(`expression ${id} references unknown type`);
+        requireSupportedValueType(type, typed.range, files);
         if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'string-literal') {
             fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
         }
@@ -255,7 +262,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                     if (symbol.storage !== 'automatic') fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
                     const initializer = declaration.children.length === 1 ? adaptExpression(Number(declaration.children[0])) : undefined;
                     const binding = localBinding(symbol);
-                    return { kind: 'declaration' as const, name: symbol.name, ...(binding ? { binding } : {}), symbolId: Number(symbol.id), type: shells.get(Number(symbol.type)) as CType, ...(initializer ? { initializer } : {}), location };
+                    const type = shells.get(Number(symbol.type)) as CType;
+                    requireSupportedValueType(type, symbol.range, files);
+                    return { kind: 'declaration' as const, name: symbol.name, ...(binding ? { binding } : {}), symbolId: Number(symbol.id), type, ...(initializer ? { initializer } : {}), location };
                 });
                 statement = statements.length === 1 ? statements[0] : { kind: 'compound', statements, location };
                 break;
@@ -284,6 +293,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         if (symbol.storage === 'automatic' || !symbol.definition) continue;
         if (functionScopedVariables.has(Number(symbol.id))) fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
         const type = shells.get(Number(symbol.type)); if (!type) throw new CFrontendInternalError(`global ${symbol.name} references unknown type`);
+        requireSupportedValueType(type, symbol.range, files);
         const initializer = symbol.initializer?.writes.length
             ? adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range)
             : undefined;
@@ -294,6 +304,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         if (symbol.kind !== 'function' || !symbol.definition) continue;
         const type = unwrapType(shells.get(Number(symbol.type)) as CType);
         if (type.kind !== 'function') throw new CFrontendInternalError(`function ${symbol.name} has non-function type`);
+        requireSupportedValueType(type, symbol.range, files);
         if (type.variadic) fail('variadic functions are not supported by the MERC32 backend', symbol.range, files);
         const definition = unit.declarations.map((id) => nodeRecords.get(Number(id))).find((node) => node?.kind === 'function-definition' && 'symbol' in node && Number(node.symbol) === Number(symbol.id));
         const bodyNode = definition?.children.map((id) => nodeRecords.get(Number(id))).find((node) => node?.category === 'statement' && node.kind === 'compound');
@@ -356,6 +367,30 @@ function unwrapType(type: CType): CType {
     return current;
 }
 
+function requireSupportedValueType(type: CType, range: SourceRange,
+    files: ReadonlyMap<number, string>): void {
+    const unsupported = unsupportedValueBuiltin(type, new Set());
+    if (unsupported) fail(`${unsupported} operations are not supported by the MERC32 backend`, range, files);
+}
+
+function unsupportedValueBuiltin(type: CType, seen: Set<CType>): string | undefined {
+    type = unwrapType(type);
+    if (seen.has(type)) return undefined;
+    seen.add(type);
+    if (type.kind === 'builtin') return isUnsupportedBuiltin(type.name) ? type.name : undefined;
+    if (type.kind === 'array') return unsupportedValueBuiltin(type.element, seen);
+    if (type.kind === 'function') {
+        return unsupportedValueBuiltin(type.returnType, seen)
+            ?? type.parameters.map((parameter) => unsupportedValueBuiltin(parameter, seen))
+                .find((name) => name !== undefined);
+    }
+    if (type.kind === 'struct' || type.kind === 'union') {
+        return type.fields.map((field) => unsupportedValueBuiltin(field.type, seen))
+            .find((name) => name !== undefined);
+    }
+    return undefined;
+}
+
 function isSupportedIdentityCast(source: CType, target: CType): boolean {
     source = unwrapType(source);
     target = unwrapType(target);
@@ -387,11 +422,15 @@ function symbolBinding(id: number, symbols: ReadonlyMap<number, TypedSymbolRecor
 }
 
 function adaptInitializer(initializer: NonNullable<Extract<TypedSymbolRecord, { kind: 'variable' }>['initializer']>, _type: CType, unit: TypedCUnitV1, _types: ReadonlyMap<number, CType>, symbols: ReadonlyMap<number, TypedSymbolRecord>, files: ReadonlyMap<number, string>, ownerRange: SourceRange): LoweringInitializer {
-    const writes: LoweringInitializerWrite[] = initializer.writes.map((write) => ({
-        offset: write.offset,
-        type: _types.get(Number(write.type)) as CType,
-        value: constantValue(write.value, symbols, files, ownerRange),
-        location: rangeLocation(ownerRange, files),
-    }));
+    const writes: LoweringInitializerWrite[] = initializer.writes.map((write) => {
+        const type = _types.get(Number(write.type)) as CType;
+        requireSupportedValueType(type, ownerRange, files);
+        return {
+            offset: write.offset,
+            type,
+            value: constantValue(write.value, symbols, files, ownerRange),
+            location: rangeLocation(ownerRange, files),
+        };
+    });
     return { size: initializer.size, writes: Object.freeze(writes) };
 }
