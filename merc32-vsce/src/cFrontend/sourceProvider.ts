@@ -14,6 +14,7 @@ export type SourceResolution =
 
 export interface SourceProvider {
     resolve(candidate: SourceCandidate): SourceResolution;
+    resolveExact?(logicalPath: string): SourceResolution;
 }
 
 export interface VirtualSourceFile {
@@ -440,6 +441,16 @@ export class CompositeSourceProvider implements SourceProvider {
             ? providers[0] as readonly (SourceProvider | undefined)[]
             : providers;
         this.providers = supplied.filter((provider): provider is SourceProvider => provider !== undefined);
+    }
+
+    public resolveExact(logicalPath: string): SourceResolution {
+        for (const provider of this.providers) {
+            const result = provider.resolveExact
+                ? provider.resolveExact(logicalPath)
+                : provider.resolve({ path: logicalPath, includeKind: 'quoted' });
+            if (result.status !== 'not-found') return result;
+        }
+        return { status: 'not-found' };
     }
 
     public resolve(candidate: SourceCandidate): SourceResolution {

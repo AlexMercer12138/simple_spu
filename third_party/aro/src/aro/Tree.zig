@@ -2464,13 +2464,13 @@ pub fn setNode(tree: *Tree, node: Node, index: usize) !void {
                 repr.data[1] = packOptIndex(@"for".incr);
             } else if (init) {
                 repr.tag = .for_init;
-                repr.data[0] = packOptIndex(@"for".cond);
+                repr.data[0] = packOptIndex(@"for".init);
             } else if (cond) {
                 repr.tag = .for_cond;
                 repr.data[0] = packOptIndex(@"for".cond);
             } else if (incr) {
                 repr.tag = .for_incr;
-                repr.data[0] = packOptIndex(@"for".cond);
+                repr.data[0] = packOptIndex(@"for".incr);
             } else {
                 repr.tag = .for_ever;
             }

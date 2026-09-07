@@ -321,13 +321,13 @@ enumeratorReference.unit.types.push({
     enumerators: [{ name: 'choice', value: '1', range: nodeRange }],
     qualifiers: [], size: 4, alignment: 4,
 }, {
-    id: 3, kind: 'builtin', name: 'unsigned int', qualifiers: [], size: 4, alignment: 4,
+    id: 3, kind: 'builtin', name: 'int', qualifiers: [], size: 4, alignment: 4,
 });
 enumeratorReference.unit.symbols.push({
     id: 1, kind: 'enum', name: 'Choice', type: 2, range: nodeRange,
 }, {
     id: 2, kind: 'enumerator', name: 'choice', type: 2, owner: 1, range: nodeRange,
-    value: { kind: 'integer', bits: 32, signed: false, value: '1' },
+    value: { kind: 'integer', bits: 32, signed: true, value: '1' },
 });
 enumeratorReference.unit.nodes.push({
     id: 1, category: 'expression', kind: 'declaration-reference', symbol: 2, type: 1,
@@ -631,8 +631,8 @@ assert.doesNotThrow(() => validateEnvelope(paddedStringInitializer, 'test-build'
 
 const typedefRepresentations = clone(validFixture);
 typedefRepresentations.unit.types = [
-    { id: 1, kind: 'builtin', name: 'unsigned int', qualifiers: [], size: 4, alignment: 4 },
-    { id: 2, kind: 'typedef', name: 'UInt', target: 1, qualifiers: [], size: 4, alignment: 4 },
+    { id: 1, kind: 'builtin', name: 'int', qualifiers: [], size: 4, alignment: 4 },
+    { id: 2, kind: 'typedef', name: 'Int', target: 1, qualifiers: [], size: 4, alignment: 4 },
     {
         id: 3, kind: 'enum', name: 'Choice', underlyingType: 2,
         enumerators: [{ name: 'choice', value: '0', range: {

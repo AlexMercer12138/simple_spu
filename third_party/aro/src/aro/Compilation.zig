@@ -1980,6 +1980,7 @@ pub fn maxArrayBytes(comp: *const Compilation) u64 {
 /// specify it here.
 /// TODO: likely incomplete
 pub fn fixedEnumTagType(comp: *const Compilation) ?QualType {
+    if (comp.data_model != null) return .int;
     switch (comp.langopts.emulate) {
         .msvc => return .int,
         .no, .clang => if ((comp.target.os.tag == .windows or comp.target.os.tag == .uefi) and comp.target.abi == .msvc) return .int,

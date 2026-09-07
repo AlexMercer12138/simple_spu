@@ -15,7 +15,7 @@ export function lowerProgram(program: LoweringProgram): Merc32Module {
 }
 
 function lowerGlobal(global: LoweringGlobal): IRGlobal {
-    if (!global.initializer) return { name: global.name, type: global.type };
+    if (!global.initializer) return { name: global.name, binding: global.binding, type: global.type };
     const bytes = new Uint8Array(global.initializer.size);
     const relocations: Relocation[] = [];
     for (const write of global.initializer.writes) {
@@ -33,7 +33,7 @@ function lowerGlobal(global: LoweringGlobal): IRGlobal {
             write.value.bytes.forEach((value, index) => { bytes[write.offset + index] = value; });
         }
     }
-    return { name: global.name, type: global.type, initializerBytes: [...bytes], initializerRelocations: relocations };
+    return { name: global.name, binding: global.binding, type: global.type, initializerBytes: [...bytes], initializerRelocations: relocations };
 }
 
 function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IRFunction {
@@ -47,16 +47,32 @@ function createGlobalInitializer(name: string, globals: readonly IRGlobal[]): IR
             if (offset !== 0) { const off = nextValue++; instructions.push({ op: 'constant', args: [offset], dest: off }); address = nextValue++; instructions.push({ op: 'binary', args: ['+', base, off], dest: address }); }
             const value = nextValue++; instructions.push({ op: 'constant', args: [byte], dest: value }, { op: 'store-memory', args: [address, value, 1] });
         });
+        for (const relocation of global.initializerRelocations ?? []) {
+            const offset = nextValue++;
+            const address = nextValue++;
+            const target = nextValue++;
+            instructions.push({ op: 'constant', args: [relocation.offset], dest: offset },
+                { op: 'binary', args: ['+', base, offset], dest: address },
+                { op: 'address-symbol', args: [relocation.symbol], dest: target, location: relocation.debug });
+            let value = target;
+            if (relocation.addend !== 0) {
+                const addend = nextValue++;
+                value = nextValue++;
+                instructions.push({ op: 'constant', args: [relocation.addend], dest: addend },
+                    { op: 'binary', args: ['+', target, addend], dest: value });
+            }
+            instructions.push({ op: 'store-memory', args: [address, value, 4] });
+        }
     }
     const zero = nextValue++; instructions.push({ op: 'constant', args: [0], dest: zero }, { op: 'ret', args: [zero] });
-    return { name, parameters: [], parameterNames: [], localNames: [], localTypes: [], blocks: [{ label: `${name}.entry`, instructions }] };
+    return { name, binding: 'local', parameters: [], parameterNames: [], localNames: [], localTypes: [], blocks: [{ label: `${name}.entry`, instructions }] };
 }
 
 function lowerFunction(func: LoweringFunction, occupiedNames: Set<string>): IRFunction {
     const lowerer = new FunctionLowerer(func, occupiedNames);
     lowerer.lowerStatement(func.body);
     if (lowerer.instructions.length === 0 || lowerer.instructions[lowerer.instructions.length - 1].op !== 'ret') lowerer.instructions.push({ op: 'ret', args: [lowerer.constant(0)] });
-    return { name: func.name, returnType: func.returnType, parameters: func.parameters, parameterNames: func.parameterNames, localNames: lowerer.localNames, localTypes: lowerer.localTypes, returnLabel: lowerer.returnLabel(), blocks: [{ label: `${func.name}.entry`, instructions: lowerer.instructions }] };
+    return { name: func.name, binding: func.binding, returnType: func.returnType, parameters: func.parameters, parameterNames: func.parameterNames, localNames: lowerer.localNames, localTypes: lowerer.localTypes, returnLabel: lowerer.returnLabel(), blocks: [{ label: `${func.name}.entry`, instructions: lowerer.instructions }] };
 }
 
 class FunctionLowerer {
@@ -97,9 +113,23 @@ class FunctionLowerer {
         if (expression.constant !== undefined) { if (typeof expression.constant === 'bigint') return this.constant(Number(expression.constant), expression.location); if ('symbol' in expression.constant) { const address = this.addressSymbol(expression.constant.symbol, expression.location); if (expression.constant.addend !== 0n) return this.addAddressOffset(address, this.constant(Number(expression.constant.addend), expression.location), expression.location); return address; } throw new Error('string expression constants are not scalar values'); }
         switch (expression.kind) {
             case 'declaration-reference': case 'identifier': { const baseType = unwrapType(expression.type); if (expression.valueCategory === 'function' || baseType.kind === 'function' || baseType.kind === 'array') return this.lowerLValueAddress(expression); if (expression.constant !== undefined) return this.lowerExpression({ ...expression, kind: 'integer-literal' }); return this.loadLValue(expression); }
-            case 'conversion': { const value = this.lowerExpression(expression.operands[0]); if (expression.conversion === 'pointer-to-bool' || expression.conversion === 'int-to-bool') { const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['!=', value, this.constant(0, expression.location)], dest: result, location: expression.location }); return result; } return value; }
+            case 'conversion': {
+                const value = this.lowerExpression(expression.operands[0]);
+                const target = unwrapType(expression.targetType ?? expression.type);
+                if (target.kind === 'builtin' && target.name === '_Bool') {
+                    const result = this.allocateValue();
+                    this.instructions.push({ op: 'binary', args: ['!=', value, this.constant(0, expression.location)], dest: result, location: expression.location });
+                    return result;
+                }
+                if (typeSize(target) > 0 && typeSize(target) < 4) {
+                    const result = this.allocateValue();
+                    this.instructions.push({ op: 'convert-integer', args: [value, typeSize(target) * 8, isSigned(target) ? 1 : 0], dest: result, location: expression.location });
+                    return result;
+                }
+                return value;
+            }
             case 'unary': if (expression.operator === '&') return this.lowerLValueAddress(expression.operands[0]); if (expression.operator === '*') return this.loadLValue(expression); { const value = this.lowerExpression(expression.operands[0]); if (expression.operator === '+' || expression.operator === 'parentheses' || expression.operator === 'cast') return value; const result = this.allocateValue(); if (expression.operator === '-') { this.instructions.push({ op: 'binary', args: ['-', this.constant(0, expression.location), value], dest: result, location: expression.location }); return result; } if (expression.operator === '!') { this.instructions.push({ op: 'binary', args: ['==', value, this.constant(0, expression.location)], dest: result, location: expression.location }); return result; } if (expression.operator === '~') { this.instructions.push({ op: 'binary', args: ['^', value, this.constant(-1, expression.location)], dest: result, location: expression.location }); return result; } throw new Error(`typed lowering does not support unary operator '${expression.operator}'`); }
-            case 'binary': if (expression.operator === '&&' || expression.operator === '||') return this.lowerLogical(expression); { let left = this.lowerExpression(expression.operands[0]); let right = this.lowerExpression(expression.operands[1]); const leftType = decay(expression.operands[0].type); const rightType = decay(expression.operands[1].type); if ((expression.operator === '+' || expression.operator === '-') && leftType.kind === 'pointer' && rightType.kind !== 'pointer') right = this.scalePointerOffset(right, typeSize(leftType.pointee), expression.location); else if (expression.operator === '+' && rightType.kind === 'pointer' && leftType.kind !== 'pointer') left = this.scalePointerOffset(left, typeSize(rightType.pointee), expression.location); if (expression.operator === '-' && leftType.kind === 'pointer' && rightType.kind === 'pointer') { const difference = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['-', left, right], dest: difference, location: expression.location }); const size = typeSize(leftType.pointee); if (size !== 1) return this.divideBy(difference, size, expression.location); return difference; } const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: [expression.operator ?? '', left, right], dest: result, location: expression.location }); return result; }
+            case 'binary': if (expression.operator === '&&' || expression.operator === '||') return this.lowerLogical(expression); { let left = this.lowerExpression(expression.operands[0]); let right = this.lowerExpression(expression.operands[1]); const leftType = decay(expression.operands[0].type); const rightType = decay(expression.operands[1].type); if ((expression.operator === '+' || expression.operator === '-') && leftType.kind === 'pointer' && rightType.kind !== 'pointer') right = this.scalePointerOffset(right, typeSize(leftType.pointee), expression.location); else if (expression.operator === '+' && rightType.kind === 'pointer' && leftType.kind !== 'pointer') left = this.scalePointerOffset(left, typeSize(rightType.pointee), expression.location); if (expression.operator === '-' && leftType.kind === 'pointer' && rightType.kind === 'pointer') { const difference = this.allocateValue(); this.instructions.push({ op: 'binary', args: ['-', left, right], dest: difference, location: expression.location }); const size = typeSize(leftType.pointee); if (size !== 1) return this.divideBy(difference, size, expression.location); return difference; } const result = this.allocateValue(); this.instructions.push({ op: 'binary', args: [expression.operator ?? '', left, right, isSigned(leftType) ? 0 : 1], dest: result, location: expression.location }); return result; }
             case 'assignment': { const value = this.lowerExpression(expression.operands[1]); const target = expression.operands[0]; const binding = target.binding ?? target.symbol; if (binding && this.variables.has(binding)) this.instructions.push({ op: 'store', args: [binding, value], location: expression.location }); else this.instructions.push({ op: 'store-memory', args: [this.lowerLValueAddress(target), value, typeSize(target.type)], location: expression.location }); return value; }
             case 'call': { const callee = expression.operands[0]; const directCallee = callee.kind === 'conversion' && callee.conversion === 'function-to-pointer' ? callee.operands[0] : callee; const args = expression.operands.slice(1).map((operand) => this.lowerExpression(operand)); const dest = this.allocateValue(); if (directCallee.symbol) this.instructions.push({ op: 'call', args: [directCallee.symbol, ...args], dest, location: directCallee.location }); else this.instructions.push({ op: 'call-indirect', args: [this.lowerExpression(callee), ...args], dest, location: expression.location }); return dest; }
             case 'conditional': { const result = this.allocateValue(); const alternateLabel = this.label('conditional_alternate'); const endLabel = this.label('conditional_end'); const condition = this.lowerExpression(expression.operands[0]); this.instructions.push({ op: 'branch-zero', args: [condition, alternateLabel], location: expression.location }); const consequent = this.lowerExpression(expression.operands[1]); this.instructions.push({ op: 'move-value', args: [consequent], dest: result, location: expression.operands[1].location }, { op: 'jump', args: [endLabel] }, { op: 'label', args: [alternateLabel] }); const alternate = this.lowerExpression(expression.operands[2]); this.instructions.push({ op: 'move-value', args: [alternate], dest: result, location: expression.operands[2].location }, { op: 'label', args: [endLabel] }); return result; }
@@ -127,7 +157,7 @@ function isStatement(value: LoweringExpression | LoweringStatement): value is Lo
     return ['compound', 'declaration', 'expression', 'return', 'if', 'while', 'do-while', 'for', 'switch', 'case', 'default', 'break', 'continue', 'goto', 'label', 'empty'].includes(value.kind);
 }
 function collectCases(statement: LoweringStatement, makeLabel: (prefix: string) => string): Array<{ statement: LoweringStatement; label: string }> { const entries: Array<{ statement: LoweringStatement; label: string }> = []; const visit = (current: LoweringStatement): void => { if (current.kind === 'compound') current.statements.forEach(visit); else if (current.kind === 'case' || current.kind === 'default') { entries.push({ statement: current, label: makeLabel(current.kind) }); visit(current.statement); } else if (current.kind === 'if') { visit(current.thenBranch); if (current.elseBranch) visit(current.elseBranch); } else if (current.kind === 'label') { if (current.statement) visit(current.statement); } else if (current.kind === 'switch') { return; } else if ('body' in current && current.body) visit(current.body); }; visit(statement); return entries; }
-function isSigned(type: CType): boolean { const unwrapped = unwrapType(type); return unwrapped.kind === 'builtin' && ['_Bool', 'char', 'signed char', 'short', 'int', 'long'].includes(unwrapped.name); }
+function isSigned(type: CType): boolean { const unwrapped = unwrapType(type); return unwrapped.kind === 'enum' || unwrapped.kind === 'builtin' && ['char', 'signed char', 'short', 'int', 'long'].includes(unwrapped.name); }
 function unwrapType(type: CType): CType { const seen = new Set<CType>(); let current = type; while (current.kind === 'typedef' && current.target && !seen.has(current)) { seen.add(current); current = current.target; } return current; }
 function decay(type: CType): CType { const unwrapped = unwrapType(type); return unwrapped.kind === 'array' ? pointerType(unwrapped.element) : unwrapped.kind === 'function' ? pointerType(unwrapped) : unwrapped; }
 

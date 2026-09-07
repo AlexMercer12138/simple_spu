@@ -33,6 +33,7 @@ const Record = struct {
     type_info_value: ?u64 = null,
     case_value_node: ?aro.Tree.Node.Index = null,
     declaration_node: ?aro.Tree.Node.Index = null,
+    for_clause_mask: ?u3 = null,
 };
 
 pub const Store = struct {
@@ -246,7 +247,10 @@ pub const Store = struct {
                 break :blk id;
             },
             .for_stmt => |statement| blk: {
-                const id = try store.addRecord(.{ .category = .statement, .kind = "for", .token = statement.for_tok });
+                const id = try store.addRecord(.{ .category = .statement, .kind = "for", .token = statement.for_tok,
+                    .for_clause_mask = @as(u3, if (statement.init != null) 1 else 0) |
+                        @as(u3, if (statement.cond != null) 2 else 0) |
+                        @as(u3, if (statement.incr != null) 4 else 0) });
                 if (statement.init) |initializer_node| try store.addChild(id, try store.serializeBlockItem(initializer_node));
                 if (statement.cond) |expr| try store.addChild(id, try store.serializeExpression(expr));
                 if (statement.incr) |expr| try store.addChild(id, try store.serializeExpression(expr));
@@ -876,6 +880,10 @@ pub const Store = struct {
             try output.add(",\"operator\":");
             try output.string(operator);
         }
+        if (record.for_clause_mask) |mask| {
+            try output.add(",\"forClauseMask\":");
+            try output.integer(mask);
+        }
         if (record.label) |label| {
             try output.add(",\"label\":");
             try output.string(label);
@@ -948,15 +956,14 @@ pub const Store = struct {
     }
 
     fn sourceTokenLength(store: *const Store, loc: aro.Source.Location, fallback: u32) u32 {
-        const source = store.tree.comp.getSource(loc.id).buf;
-        if (loc.byte_offset >= source.len) return fallback;
-        const start: usize = loc.byte_offset;
-        if (isIdentifierStart(source[start])) {
-            var end = start + 1;
-            while (end < source.len and isIdentifierContinue(source[end])) : (end += 1) {}
-            return @intCast(end - start);
-        }
-        return fallback;
+        const source = store.tree.comp.getSource(loc.id);
+        if (loc.byte_offset >= source.buf.len) return fallback;
+        var tokenizer: aro.Tokenizer = .{
+            .buf = source.buf, .source = source.id, .index = loc.byte_offset,
+            .langopts = store.tree.comp.langopts, .splice_locs = source.splice_locs,
+        };
+        const token = tokenizer.next();
+        return token.end - token.start;
     }
 
     pub fn writeDeclarations(store: *Store, output: anytype) !void {
@@ -988,14 +995,6 @@ fn isBoundaryCast(kind: aro.Tree.Node.Cast.Kind) bool {
         .lval_to_rval, .array_to_pointer, .function_to_pointer => false,
         else => true,
     };
-}
-
-fn isIdentifierStart(byte: u8) bool {
-    return byte == '_' or std.ascii.isAlphabetic(byte);
-}
-
-fn isIdentifierContinue(byte: u8) bool {
-    return isIdentifierStart(byte) or std.ascii.isDigit(byte);
 }
 
 fn writeRange(output: anytype, range: Range) !void {

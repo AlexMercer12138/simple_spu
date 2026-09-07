@@ -146,7 +146,7 @@
         "type": { "$ref": "#/$defs/id" },
         "offset": { "$ref": "#/$defs/nonNegativeInteger" },
         "bitOffset": { "$ref": "#/$defs/nonNegativeInteger" },
-        "bitWidth": { "$ref": "#/$defs/positiveInteger" },
+        "bitWidth": { "$ref": "#/$defs/nonNegativeInteger" },
         "range": { "$ref": "#/$defs/range" }
       }
     },
@@ -181,6 +181,7 @@
         "variadic": { "type": "boolean" },
         "nominalId": { "$ref": "#/$defs/id" },
         "complete": { "type": "boolean" },
+        "packed": { "type": "boolean" },
         "members": { "type": "array", "items": { "$ref": "#/$defs/aggregateMember" } },
         "underlyingType": { "$ref": "#/$defs/id" },
         "enumerators": { "type": "array", "items": { "$ref": "#/$defs/enumValue" } },
@@ -246,7 +247,7 @@
             "propertyNames": {
               "enum": [
                 "id", "kind", "qualifiers", "size", "alignment", "name",
-                "nominalId", "complete", "members"
+                "nominalId", "complete", "members", "packed"
               ]
             }
           }
@@ -384,6 +385,7 @@
         "range": { "$ref": "#/$defs/range" },
         "spellingRange": { "$ref": "#/$defs/range" },
         "children": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "forClauseMask": { "type": "integer", "minimum": 0, "maximum": 7 },
         "type": { "$ref": "#/$defs/id" },
         "symbol": { "$ref": "#/$defs/id" },
         "valueCategory": { "enum": ["lvalue", "function", "rvalue"] },
@@ -447,7 +449,7 @@
               "kind": {
                 "enum": [
                   "compound", "declaration-statement", "expression-statement", "return",
-                  "if", "while", "do-while", "for", "switch", "default", "break",
+                  "if", "while", "do-while", "switch", "default", "break",
                   "continue", "empty"
                 ]
               }
@@ -457,6 +459,15 @@
             "properties": { "category": { "const": "statement" } },
             "propertyNames": {
               "enum": ["id", "category", "kind", "range", "spellingRange", "children"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "for" } } },
+          "then": {
+            "properties": { "category": { "const": "statement" }, "forClauseMask": {} },
+            "propertyNames": {
+              "enum": ["id", "category", "kind", "range", "spellingRange", "children", "forClauseMask"]
             }
           }
         },

@@ -22,6 +22,7 @@ import { generateObject } from './codegen';
 import { lowerProgram } from './lower';
 import { CFrontendError } from './source';
 import { BackendCompileOptions, CompileResult } from './types';
+import { createCStartupObject } from '../runtime/startup';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -200,11 +201,21 @@ function linkDetailed(objectResult: CCompileDetailedResult<Merc32Object>,
     try {
         const dataBase = options.dataBase ?? 0x0800_0000;
         const codeBase = options.codeBase ?? 0;
-        const image = linkObjects([objectResult.artifact], { textBase: codeBase, dataBase });
+        const object = objectResult.artifact;
+        const occupied = new Set(object.symbols.map(symbol => symbol.name));
+        let entry = '__merc32_startup';
+        while ([entry, `${entry}_halt`, `${entry}_vector`].some(name => occupied.has(name))) entry += '_';
+        const startup = createCStartupObject({
+            stackTop: dataBase + 2 ** ((options.dlbAddrWidth ?? 16) + 2),
+            vectorAddress: codeBase + 4,
+            entry,
+            irqHandler: object.symbols.some(symbol => symbol.name === '__irq_handler' && symbol.defined),
+        });
+        const image = linkObjects([startup, object], { textBase: codeBase + 4, dataBase, entrySymbol: entry });
         validateIlbImage(image);
         validateDlbImage(image, dataBase, options.dlbAddrWidth ?? 16);
         const moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
-        const prefix = [`.prog ${moduleName}`, ...(codeBase === 0 ? [] : [`.org 0x${codeBase.toString(16)}`])];
+        const prefix = [`.prog ${moduleName}`, ...(codeBase === 0 ? [] : [`.org 0x${codeBase.toString(16)}`]), `.entry ${entry}`];
         const artifact = Object.freeze({ assembly: `${prefix.join('\n')}\n${image.assembly}` });
         return mapCCompileDetailedResult(objectResult, artifact);
     } catch (error) {

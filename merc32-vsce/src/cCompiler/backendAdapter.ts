@@ -132,6 +132,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             case 'function': shell.returnType = shells.get(Number(record.returnType)); shell.parameters = Object.freeze(record.parameters.map((id) => shells.get(Number(id)))); break;
             case 'typedef': shell.target = shells.get(Number(record.target)); break;
             case 'struct': case 'union':
+                if (record.packed) fail('packed record layout is not supported by the MERC32 backend', findRange(record, unit), files);
                 shell.fields = Object.freeze(record.members.map((member) => ({
                     name: member.name, type: shells.get(Number(member.type)), offset: member.offset,
                     ...(member.bitOffset === undefined ? {} : { bitOffset: member.bitOffset }),
@@ -274,7 +275,15 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             case 'if': statement = { kind: 'if', test: expr(0), thenBranch: child(1), ...(node.children.length > 2 ? { elseBranch: child(2) } : {}), location }; break;
             case 'while': statement = { kind: 'while', test: expr(0), body: child(1), location }; break;
             case 'do-while': statement = { kind: 'do-while', body: child(0), test: expr(1), location }; break;
-            case 'for': statement = { kind: 'for', ...(node.children.length > 0 ? { init: nodeRecords.get(Number(node.children[0]))?.category === 'expression' ? expr(0) : child(0) } : {}), ...(node.children.length > 1 ? { test: expr(1) } : {}), ...(node.children.length > 2 ? { step: expr(2) } : {}), body: child(node.children.length - 1), location }; break;
+            case 'for': {
+                const mask = node.forClauseMask ?? (node.children.length === 1 ? 0 : 7);
+                let index = 0;
+                const init = mask & 1 ? nodeRecords.get(Number(node.children[index]))?.category === 'expression' ? expr(index++) : child(index++) : undefined;
+                const test = mask & 2 ? expr(index++) : undefined;
+                const step = mask & 4 ? expr(index++) : undefined;
+                statement = { kind: 'for', init, test, step, body: child(index), location };
+                break;
+            }
             case 'switch': statement = { kind: 'switch', test: expr(0), body: child(1), location }; break;
             case 'case': statement = { kind: 'case', value: parseInteger(node.caseValue.value), statement: child(node.children.length - 1), location }; break;
             case 'default': statement = { kind: 'default', statement: child(0), location }; break;
@@ -297,7 +306,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const initializer = symbol.initializer?.writes.length
             ? adaptInitializer(symbol.initializer, type, unit, shells, symbols, files, symbol.range)
             : undefined;
-        globals.push({ name: symbol.name, type, ...(initializer ? { initializer } : {}), location: rangeLocation(symbol.range, files) });
+        globals.push({ name: symbol.name, binding: symbol.linkage === 'internal' ? 'local' : 'global', type, ...(initializer ? { initializer } : {}), location: rangeLocation(symbol.range, files) });
     }
     const functions: LoweringFunction[] = [];
     for (const symbol of unit.symbols) {
@@ -309,8 +318,15 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const definition = unit.declarations.map((id) => nodeRecords.get(Number(id))).find((node) => node?.kind === 'function-definition' && 'symbol' in node && Number(node.symbol) === Number(symbol.id));
         const bodyNode = definition?.children.map((id) => nodeRecords.get(Number(id))).find((node) => node?.category === 'statement' && node.kind === 'compound');
         const body: LoweringStatement = bodyNode ? adaptStatement(Number(bodyNode.id)) : { kind: 'compound', statements: [], location: rangeLocation(symbol.range, files) };
-        const parameters = unit.symbols.filter((candidate) => candidate.kind === 'parameter' && Number(candidate.owner) === Number(symbol.id))
-            .sort((left, right) => left.range.start.byteOffset - right.range.start.byteOffset);
+        const parameters = (definition?.children ?? []).flatMap((id) => {
+            const declaration = nodeRecords.get(Number(id));
+            if (declaration?.kind !== 'parameter-declaration') return [];
+            const parameter = symbols.get(Number(declaration.symbol));
+            if (parameter?.kind !== 'parameter' || parameter.owner !== symbol.id) {
+                throw new CFrontendInternalError('function definition has an invalid parameter binding');
+            }
+            return [parameter];
+        });
         const locals: TypedSymbolRecord[] = [];
         const collectLocals = (statement: LoweringStatement): void => {
             if (statement.kind === 'declaration') {
@@ -325,9 +341,18 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         };
         collectLocals(body);
         const parameterNames = type.parameters.map((_parameter, index) => parameters[index] ? localBinding(parameters[index]) ?? parameters[index].name : '');
-        functions.push({ name: symbol.name, returnType: type.returnType, parameters: type.parameters, parameterNames, localNames: locals.map((local) => localBinding(local) ?? local.name), localTypes: locals.map((local) => shells.get(Number((local as Extract<TypedSymbolRecord, { kind: 'variable' }>).type)) as CType), body, location: rangeLocation(symbol.range, files) });
+        functions.push({ name: symbol.name, binding: symbol.linkage === 'internal' ? 'local' : 'global', returnType: type.returnType, parameters: type.parameters, parameterNames, localNames: locals.map((local) => localBinding(local) ?? local.name), localTypes: locals.map((local) => shells.get(Number((local as Extract<TypedSymbolRecord, { kind: 'variable' }>).type)) as CType), body, location: rangeLocation(symbol.range, files) });
     }
-    return Object.freeze({ abi: 'merc32-c-v1', globals: Object.freeze(globals), functions: Object.freeze(functions) });
+    return freezeLowering({ abi: 'merc32-c-v1' as const, globals, functions });
+}
+
+function freezeLowering<T>(value: T, seen = new Set<object>()): T {
+    if (value !== null && typeof value === 'object' && !seen.has(value)) {
+        seen.add(value);
+        for (const child of Object.values(value)) freezeLowering(child, seen);
+        Object.freeze(value);
+    }
+    return value;
 }
 
 function findRange(record: TypedTypeRecord, unit: TypedCUnitV1): SourceRange {

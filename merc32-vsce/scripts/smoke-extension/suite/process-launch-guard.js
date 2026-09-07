@@ -3,7 +3,7 @@
 const childProcess = require('child_process');
 
 const PROCESS_METHODS = Object.freeze([
-    'exec', 'execFile', 'execFileSync', 'fork', 'spawn', 'spawnSync',
+    'exec', 'execSync', 'execFile', 'execFileSync', 'fork', 'spawn', 'spawnSync',
 ]);
 const COMPILER_ENVIRONMENT = new Set([
     'AR', 'AS', 'CC', 'CXX', 'LD', 'PATH', 'PATHEXT',

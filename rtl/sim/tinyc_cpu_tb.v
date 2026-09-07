@@ -48,6 +48,10 @@ module tinyc_cpu_tb();
     integer i;
     integer rom_words   = 0;
     integer cycle_count = 0;
+    integer halt_pc = -1;
+    integer stack_top = 32'h0804_0000;
+    integer return_value = 0;
+    integer vector_address = -1;
     reg     done        = 1'b0;
 
     merc32_core #(
@@ -118,6 +122,10 @@ module tinyc_cpu_tb();
         end
 
         $readmemh(rom_file, program_rom, 0, rom_words - 1);
+        if ($value$plusargs("HALT_PC=%d", halt_pc)) begin end
+        if ($value$plusargs("STACK_TOP=%d", stack_top)) begin end
+        if ($value$plusargs("RETURN_VALUE=%d", return_value)) begin end
+        if ($value$plusargs("VECTOR_ADDRESS=%d", vector_address)) begin end
     end
 
     always @(posedge clk) begin
@@ -172,7 +180,7 @@ module tinyc_cpu_tb();
                 $finish;
             end else if (dlb_wren &&
                          (dlb_addr == STATUS_ADDR)) begin
-                if (dlb_wdata == PASS_CODE) begin
+                if ((dlb_wdata == PASS_CODE) && (halt_pc < 0)) begin
                     done <= 1'b1;
                     $display("TEST PASS");
                     $finish;
@@ -182,6 +190,20 @@ module tinyc_cpu_tb();
                              dlb_wdata, dlb_ram[FAIL_ADDR]);
                     $finish;
                 end
+            end
+
+            if ((halt_pc >= 0) && (merc32_core_inst.prog_addr == halt_pc)) begin
+                done <= 1'b1;
+                if ((dlb_ram[STATUS_ADDR] === PASS_CODE) &&
+                    (merc32_core_inst.read_register(4'd13) === stack_top) &&
+                    (merc32_core_inst.read_register(4'd4) === return_value) &&
+                    ((vector_address < 0) || (merc32_core_inst.regi_r2 === vector_address)))
+                    $display("TEST PASS");
+                else
+                    $display("TEST FAIL: public return path stack=%h value=%h vector=%h",
+                             merc32_core_inst.read_register(4'd13),
+                             merc32_core_inst.read_register(4'd4), merc32_core_inst.regi_r2);
+                $finish;
             end
 
             if (cycle_count >= MAX_CYCLES) begin

@@ -7,7 +7,6 @@ import { AroWasmHost } from './wasmHost';
 import {
     CPreprocessOptions,
     CompositeSourceProvider,
-    CompatiblePreprocessSourceProvider,
     MemorySourceProvider,
     NodeSourceProvider,
     SourceProviderError,
@@ -195,9 +194,7 @@ export class AroFrontendService implements AroFrontend {
             includePaths: request.includePaths,
             sourceName: request.mainPath,
         });
-        const compatibility = preprocessCompatibility === undefined
-            ? undefined : new CompatiblePreprocessSourceProvider(preprocessCompatibility);
-        return this.host.analyze(request, new CompositeSourceProvider(memory, node, compatibility));
+        return this.host.analyze(request, new CompositeSourceProvider(memory, node));
     }
 
     private packagedHeaderRoot(): string | undefined {

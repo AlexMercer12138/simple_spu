@@ -142,7 +142,7 @@ const aggregateMemberSchema = objectSchema({
     type: idSchema,
     offset: nonNegativeIntegerSchema,
     bitOffset: nonNegativeIntegerSchema,
-    bitWidth: positiveIntegerSchema,
+    bitWidth: nonNegativeIntegerSchema,
     range: rangeReference,
 }, ['name', 'type', 'offset', 'range']);
 
@@ -163,12 +163,14 @@ const typeRecordSchema: JsonSchema = {
             variadic: { type: 'boolean' },
         }, ['returnType', 'parameters', 'variadic']),
         typeSchema('struct', {
+            packed: { type: 'boolean' },
             name: { type: 'string' },
             nominalId: idSchema,
             complete: { type: 'boolean' },
             members: { type: 'array', items: aggregateMemberSchema },
         }, ['complete', 'members']),
         typeSchema('union', {
+            packed: { type: 'boolean' },
             name: { type: 'string' },
             nominalId: idSchema,
             complete: { type: 'boolean' },
@@ -255,7 +257,7 @@ const declarationKinds = [
 ] as const;
 const plainStatementKinds = [
     'compound', 'declaration-statement', 'expression-statement', 'return', 'if', 'while',
-    'do-while', 'for', 'switch', 'default', 'break', 'continue', 'empty',
+    'do-while', 'switch', 'default', 'break', 'continue', 'empty',
 ] as const;
 const expressionProperties: Readonly<Record<string, JsonSchema>> = {
     type: idSchema,
@@ -280,6 +282,7 @@ const nodeRecordSchema: JsonSchema = {
             kind, 'declaration', { type: idSchema, symbol: idSchema }, ['type', 'symbol'])),
         nodeSchema('static-assert', 'declaration'),
         ...plainStatementKinds.map((kind) => nodeSchema(kind, 'statement')),
+        nodeSchema('for', 'statement', { forClauseMask: { type: 'integer', minimum: 0, maximum: 7 } }),
         nodeSchema('case', 'statement', { caseValue: integerConstantSchema }, ['caseValue']),
         nodeSchema('goto', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
         nodeSchema('label', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
@@ -428,18 +431,32 @@ export function normalizeDiagnostics(
         left.range.file - right.range.file
         || left.range.start.byteOffset - right.range.start.byteOffset
         || severityOrder[left.severity] - severityOrder[right.severity]
-        || left.code.localeCompare(right.code)
-        || left.message.localeCompare(right.message));
+        || compareText(left.code, right.code)
+        || compareText(left.message, right.message)
+        || compareText(canonicalJson(left), canonicalJson(right)));
     const unique: CFrontendDiagnostic[] = [];
     const seen = new Set<string>();
     for (const record of cloned) {
-        const key = JSON.stringify(record);
+        const key = canonicalJson(record);
         if (!seen.has(key)) {
             unique.push(record);
             seen.add(key);
         }
     }
     return deepFreeze(unique);
+}
+
+function compareText(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+    if (value !== null && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map((key) =>
+            `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
 }
 
 export function hasErrors(diagnostics: readonly CFrontendDiagnostic[]): boolean {
@@ -706,8 +723,8 @@ function validateTypeReferences(
             case 'enum': {
                 const underlying = unaliasType(
                     requireType(types, type.underlyingType, `enum type ${type.id} underlying`), types);
-                assertInvariant(underlying.kind === 'builtin' && isIntegerBuiltin(underlying.name),
-                    'CROSS_KIND_REFERENCE', `enum type ${type.id} underlying type must be an integer builtin`);
+                assertInvariant(underlying.kind === 'builtin' && underlying.name === 'int',
+                    'CROSS_KIND_REFERENCE', `MERC32 enum type ${type.id} underlying type must be int`);
                 for (const enumerator of type.enumerators) {
                     validateIntegerValue(enumerator.value, underlying.size * 8,
                         builtinIsSigned(underlying.name), 'enum value');
@@ -823,6 +840,11 @@ function validateAggregateLayout(
     assertInvariant(aggregate.members.length > 0, 'AGGREGATE_LAYOUT',
         `complete ${aggregate.kind} type ${aggregate.id} must contain a member`);
 
+    if (aggregate.packed) {
+        validateNoncanonicalAggregate(aggregate, types);
+        return;
+    }
+
     // V1 retains frontend bit metadata, but MERC32_ABI does not yet define canonical bit placement.
     if (aggregate.members.some((member) =>
         member.bitOffset !== undefined || member.bitWidth !== undefined)) {
@@ -898,11 +920,40 @@ function validateAggregateWithBitFields(
             previousStart = startBit;
             previousEnd = endBit;
         }
-        extent = Math.max(extent, member.offset + memberType.size);
+        if (member.bitWidth === 0) {
+            assertInvariant(member.name === '' && member.bitOffset === 0, 'AGGREGATE_LAYOUT',
+                'zero-width bit-fields must be unnamed and begin at a storage boundary');
+        }
+        extent = Math.max(extent, member.offset + (member.bitWidth === 0 ? 0 : memberType.size));
     }
     const expectedSize = roundUp(extent, expectedAlignment);
     assertInvariant(aggregate.alignment === expectedAlignment && aggregate.size === expectedSize,
         'AGGREGATE_LAYOUT', `${aggregate.kind} type ${aggregate.id} expected layout ${expectedSize}/${expectedAlignment}`);
+}
+
+function validateNoncanonicalAggregate(
+    aggregate: Extract<TypedTypeRecord, { kind: 'struct' | 'union' }>,
+    types: ReadonlyMap<number, TypedTypeRecord>,
+): void {
+    let previousEnd = 0;
+    for (const member of aggregate.members) {
+        const type = unaliasType(requireType(types, member.type, 'packed member'), types);
+        assertInvariant(type.size > 0, 'AGGREGATE_LAYOUT', 'packed member must be complete');
+        assertInvariant((member.bitOffset === undefined) === (member.bitWidth === undefined),
+            'AGGREGATE_LAYOUT', 'bitOffset and bitWidth must be supplied together');
+        if (member.bitWidth !== undefined) {
+            assertInvariant(isIntegerType(type) && member.bitOffset! + member.bitWidth <= type.size * 8,
+                'AGGREGATE_LAYOUT', 'packed bit-field exceeds its declared storage unit');
+            assertInvariant(member.bitWidth !== 0 || member.name === '', 'AGGREGATE_LAYOUT', 'zero-width bit-field must be unnamed');
+        }
+        const start = member.offset * 8 + (member.bitOffset ?? 0);
+        const end = start + (member.bitWidth ?? type.size * 8);
+        assertInvariant(end <= aggregate.size * 8, 'AGGREGATE_LAYOUT', 'packed member exceeds record extent');
+        if (aggregate.kind === 'union') assertInvariant(start === 0, 'AGGREGATE_LAYOUT', 'union members must begin at zero');
+        else assertInvariant(start >= previousEnd, 'AGGREGATE_LAYOUT', 'packed members overlap or are out of order');
+        previousEnd = end;
+    }
+    assertInvariant(aggregate.size % aggregate.alignment === 0, 'AGGREGATE_LAYOUT', 'packed record size must satisfy its alignment');
 }
 
 function validateSymbols(
@@ -1141,6 +1192,18 @@ function validateNodeChildren(
         case 'for': {
             count(1, 4);
             category(children.length - 1, 'statement');
+            if (node.forClauseMask !== undefined) {
+                let index = 0;
+                for (const mask of [1, 2, 4]) {
+                    if (!(node.forClauseMask & mask)) continue;
+                    assertInvariant(index < children.length - 1, 'NODE_CHILDREN', 'for clause mask exceeds its children');
+                    if (mask === 1) assertInvariant(children[index].category === 'expression' || children[index].category === 'statement', 'NODE_CHILDREN', 'for initializer is not an expression or statement');
+                    else category(index, 'expression');
+                    index++;
+                }
+                assertInvariant(index === children.length - 1, 'NODE_CHILDREN', 'for clause mask does not describe its children');
+                break;
+            }
             const clauses = children.slice(0, -1);
             const statementClauses = clauses.filter((child) => child.category === 'statement');
             assertInvariant(statementClauses.length <= 1

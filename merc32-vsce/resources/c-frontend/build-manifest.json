@@ -7,7 +7,7 @@
   "target": "merc32",
   "abi": "merc32-c-v1",
   "dataModel": "merc32-ilp32",
-  "bridgeBuildId": "merc32-aro-v1-eba9ddd559bb908badd1ebff37676a554439f1efb747200401a2488aa8e56389",
-  "sourceTreeSha256": "eba9ddd559bb908badd1ebff37676a554439f1efb747200401a2488aa8e56389",
-  "wasmSha256": "d67ba092c6bd548a275a05232d7d544becd76e6e2e2fd81ae36965419c961fef"
+  "bridgeBuildId": "merc32-aro-v1-daf90b267091c4fb233d9986ced146fa96eb545260c1c0743d47c8b4d21b60b3",
+  "sourceTreeSha256": "daf90b267091c4fb233d9986ced146fa96eb545260c1c0743d47c8b4d21b60b3",
+  "wasmSha256": "8e240485f8000f086f43ea12442bbc2b14ff52272d4890a1ced9eba9b5ee4d99"
 }

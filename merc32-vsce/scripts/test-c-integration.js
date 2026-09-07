@@ -154,8 +154,8 @@ assert.strictEqual(object.abi, 'merc32-c-v1');
 assert.strictEqual(typeof object.sections[0].content, 'string');
 assert.deepStrictEqual(
     object.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-    ['included', 'main', '__merc32_init_globals'],
-    'typed object generation must publish each function definition and its runtime initializer entry',
+    ['included', 'main'],
+    'typed object generation must publish its external function definitions',
 );
 assert.ok(object.relocations.some((relocation) =>
     relocation.kind === 'CALL16' && relocation.symbol === 'included'
@@ -193,7 +193,7 @@ const scalarObject = compileCToObject(scalarSource, { moduleName: 'typed_scalar_
 const scalarAssembly = linkObjects([scalarObject]).assembly;
 assert.deepStrictEqual(
     scalarObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-    ['scale', 'main', '__merc32_init_globals'],
+    ['scale', 'main'],
     'typed objects must define scalar functions with parameters, locals, and runtime initialization',
 );
 assert.ok(scalarObject.relocations.some((relocation) =>
@@ -576,7 +576,7 @@ try {
     assert.deepStrictEqual(detailedFileObject.diagnostics.filter((item) => item.severity === 'error'), []);
     assert.deepStrictEqual(
         preprocessedObject.symbols.filter((symbol) => symbol.defined && symbol.binding === 'global').map((symbol) => symbol.name),
-        ['helper', 'included', 'main', '__merc32_init_globals'],
+        ['helper', 'included', 'main'],
     );
     assert.ok(preprocessedObject.relocations.some((relocation) => relocation.symbol === 'included'));
     assert.ok(preprocessedObject.relocations.some((relocation) =>

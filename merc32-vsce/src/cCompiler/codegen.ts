@@ -24,7 +24,7 @@ export function generateObject(module: Merc32Module): Merc32Object {
       dataAlignment = Math.max(dataAlignment, alignment);
       while (data.length < alignUp(data.length, alignment)) data.push(0);
       const dataOffset = data.length;
-      symbols.push({ name: global.name, binding: 'global', section: 'data', offset: dataOffset, defined: true });
+      symbols.push({ name: global.name, binding: global.binding ?? 'global', section: 'data', offset: dataOffset, defined: true });
       data.push(...initializer);
       for (const relocation of global.initializerRelocations ?? []) {
         emittedDataRelocations.push({ ...relocation, section: 'data', offset: dataOffset + relocation.offset });
@@ -32,7 +32,7 @@ export function generateObject(module: Merc32Module): Merc32Object {
     } else {
       bssAlignment = Math.max(bssAlignment, alignment);
       bssSize = alignUp(bssSize, alignment);
-      symbols.push({ name: global.name, binding: 'global', section: 'bss', offset: bssSize, defined: true });
+      symbols.push({ name: global.name, binding: global.binding ?? 'global', section: 'bss', offset: bssSize, defined: true });
       bssSize += typeSize(global.type);
     }
   }
@@ -85,7 +85,7 @@ function emitModule(module: Merc32Module): EmittedModule {
   };
 
   for (const func of module.functions) {
-    symbols.push({ name: func.name, binding: 'global', section: 'text', offset, defined: true });
+    symbols.push({ name: func.name, binding: func.binding ?? 'global', section: 'text', offset, defined: true });
     lines.push(`${func.name}:`);
     const returnLabel = allocateLabel(func.returnLabel ?? `__${func.name}_return`, occupiedLabels);
     emitFunction(func, returnLabel, emitInstruction, (symbol, instruction, kind) => {
@@ -165,9 +165,18 @@ function emitFunction(
         case 'branch-zero': readValue(Number(instruction.args[0]), 'r7'); emit(`bz r7, r0 + ${String(instruction.args[1])}`); break;
         case 'branch-nonzero': readValue(Number(instruction.args[0]), 'r7'); emit(`bnz r7, r0 + ${String(instruction.args[1])}`); break;
         case 'constant':
-          emit(`mov ${valueRegister(instruction.dest ?? 0)}, ${String(instruction.args[0])}`);
+          emitConstant(valueRegister(instruction.dest ?? 0), Number(instruction.args[0]), emit);
           spillValue(instruction.dest ?? 0);
           break;
+        case 'convert-integer': {
+          const destination = valueRegister(instruction.dest ?? 0);
+          readValue(Number(instruction.args[0]), destination);
+          const shift = 32 - Number(instruction.args[1]);
+          emit(`mov ${destination}, ${destination} << ${shift}`);
+          emit(`mov ${destination}, ${destination} ${instruction.args[2] ? '>>>' : '>>'} ${shift}`);
+          spillValue(instruction.dest ?? 0);
+          break;
+        }
         case 'load':
           emitLoad(variableType(String(instruction.args[0])), valueRegister(instruction.dest ?? 0), `[r12 + ${slot(String(instruction.args[0]))}]`, emit);
           spillValue(instruction.dest ?? 0);
@@ -263,6 +272,17 @@ function alignUp(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
 }
 
+function emitConstant(destination: string, value: number, emit: (instruction: string) => void): void {
+  const word = value >>> 0;
+  if (word <= 0xffff) {
+    emit(`mov ${destination}, ${word <= 32767 ? word : `0x${word.toString(16)}`}`);
+  } else {
+    emit(`mov ${destination}, 0x${(word >>> 16).toString(16)}`);
+    emit(`mov ${destination}, ${destination} << 16`);
+    emit(`mov ${destination}, ${destination} | 0x${(word & 0xffff).toString(16)}`);
+  }
+}
+
 function emitLoad(type: CType | undefined, destination: string, address: string, emit: (instruction: string) => void): void {
   if (!type) {
     emit(`lw ${destination}, ${address}`);
@@ -295,27 +315,30 @@ function emitBinary(
   readValue: (value: number, target: string) => void,
   emit: (instruction: string) => void,
 ): void {
-  const [operator, leftValue, rightValue] = instruction.args;
+  const [operator, leftValue, rightValue, unsigned] = instruction.args;
   const destination = valueRegister(instruction.dest ?? 0);
   readValue(Number(leftValue), 'r7');
   readValue(Number(rightValue), 'r8');
   const left = 'r7';
   const right = 'r8';
   switch (operator) {
-    case '+': case '-': case '&': case '|': case '^': case '<<': case '>>':
+    case '+': case '-': case '&': case '|': case '^': case '<<':
       emit(`mov ${destination}, ${left} ${String(operator)} ${right}`);
+      return;
+    case '>>':
+      emit(`mov ${destination}, ${left} ${unsigned ? '>>' : '>>>'} ${right}`);
       return;
     case '*':
       emit(`mul ${destination}, ${left}, ${right}`);
       return;
     case '/':
-      emit(`div ${destination}, ${left}, ${right}`);
+      emit(`${unsigned ? 'divu' : 'div'} ${destination}, ${left}, ${right}`);
       return;
     case '%':
-      emit(`rem ${destination}, ${left}, ${right}`);
+      emit(`${unsigned ? 'remu' : 'rem'} ${destination}, ${left}, ${right}`);
       return;
     case '==': case '!=': case '<': case '<=': case '>': case '>=':
-      emit(`cmp ${destination}, ${left} ${String(operator)} ${right}`);
+      emit(`${unsigned ? 'cmpu' : 'cmp'} ${destination}, ${left} ${String(operator)} ${right}`);
       return;
     default:
       throw new Error(`typed code generation does not support '${String(operator)}'`);

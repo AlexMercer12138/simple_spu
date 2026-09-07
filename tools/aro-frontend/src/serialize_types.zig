@@ -61,8 +61,11 @@ pub const Store = struct {
         if (qt.type(store.tree.comp) == .typedef) {
             const typedef = qt.type(store.tree.comp).typedef;
             if (store.by_typedef.get(typedef.decl_node)) |id| {
-                try store.by_type.put(store.allocator, qt, id);
-                return id;
+                const target = store.entries.items[id - 1].typedef_decl.target;
+                if (qt.@"const" == target.@"const" and qt.@"volatile" == target.@"volatile" and qt.restrict == target.restrict) {
+                    try store.by_type.put(store.allocator, qt, id);
+                    return id;
+                }
             }
         }
         if (store.by_type.get(qt)) |id| return id;
@@ -119,6 +122,7 @@ pub const Store = struct {
             },
             .@"enum" => |enumeration| _ = try store.intern(enumeration.tag orelse aro.QualType.int),
             .typedef => |typedef| {
+                _ = try store.intern(typedef.base);
                 if (!store.by_typedef.contains(typedef.decl_node)) {
                     _ = try store.internTypedef(typedef.decl_node, typedef.name.lookup(store.tree.comp), typedef.base);
                 }
@@ -206,8 +210,6 @@ pub const Store = struct {
             .@"union" => |record| try store.writeRecord(output, id, qt, record, "union"),
             .@"enum" => |enumeration| try store.writeEnum(output, id, qt, enumeration),
             .typedef => |typedef| {
-                const typedef_id = store.by_typedef.get(typedef.decl_node) orelse return error.UnsupportedType;
-                if (typedef_id != id) return error.UnsupportedType;
                 try store.writeBase(output, id, "typedef", null, qt, false);
                 try output.add(",\"name\":");
                 try output.string(typedef.name.lookup(store.tree.comp));
@@ -242,6 +244,14 @@ pub const Store = struct {
         kind: []const u8,
     ) !void {
         try store.writeBase(output, id, kind, null, qt, false);
+        var packed_layout = qt.hasAttribute(store.tree, .@"packed");
+        for (record.fields) |field| {
+            const natural_alignment: u32 = @min(field.qt.alignof(store.tree.comp), 4);
+            if (store.tree.attr_map.hasAttribute(field.field_decl, .@"packed") or
+                (record.layout != null and qt.alignof(store.tree.comp) < natural_alignment) or
+                (field.bit_width == .null and field.layout.offset_bits % (natural_alignment * 8) != 0)) packed_layout = true;
+        }
+        if (packed_layout) try output.add(",\"packed\":true");
         try output.add(",\"nominalId\":");
         try output.integer(nominalRecordId(record, store.tree.comp));
         if (!record.isAnonymous(store.tree.comp)) {
@@ -254,7 +264,7 @@ pub const Store = struct {
         for (record.fields, 0..) |field, field_index| {
             if (field_index != 0) try output.byte(',');
             try output.add("{\"name\":");
-            try output.string(field.name.lookup(store.tree.comp));
+            try output.string(if (field.bit_width != .null and field.name_tok == 0) "" else field.name.lookup(store.tree.comp));
             try output.add(",\"type\":");
             try output.integer(try store.intern(field.qt));
             const bit_width = field.bit_width.unpack();

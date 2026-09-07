@@ -304,7 +304,9 @@ export class AroWasmHost {
         }
         let resolution: SourceResolution;
         try {
-            resolution = this.provider.resolve({ path: candidatePath, includeKind: 'quoted' });
+            resolution = this.provider.resolveExact
+                ? this.provider.resolveExact(candidatePath)
+                : this.provider.resolve({ path: candidatePath, includeKind: 'quoted' });
         } catch (error) {
             if (error instanceof CFrontendInternalError
                 && error.message === 'Aro frontend call is reentrant') throw error;

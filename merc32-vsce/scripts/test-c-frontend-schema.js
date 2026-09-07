@@ -19,6 +19,18 @@ const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
 assert.strictEqual(validate(fixture), true,
     `schema rejects a valid typed unit: ${JSON.stringify(validate.errors)}`);
 
+const { analyzeSource } = require('../out/cFrontend/frontend');
+for (const source of [
+    'int main(void) { for (;;) break; return 0; }',
+    'struct Bits { unsigned int : 0; unsigned int x : 1; };',
+    'struct __attribute__((packed)) Packed { char a; int b; };',
+    'typedef int Number; const Number value = 1;',
+]) {
+    const result = analyzeSource(source);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(validate(result.unit), true, JSON.stringify(validate.errors));
+}
+
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
 }

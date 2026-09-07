@@ -346,7 +346,7 @@
     "test:c:frontend-host": "npm run compile && node scripts/test-c-frontend-host.js",
     "test:c:frontend-backend": "npm run compile && node scripts/test-c-frontend-backend.js",
     "test:c": "npm run compile && node scripts/test-c-compiler.js",
-    "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js",
+    "test:c:rtl": "npm run compile && node scripts/test-c-rtl.js && node scripts/test-c-final-review.js",
     "test:flash-image": "npm run compile && node scripts/test-flash-image.js",
     "test:bootloader": "npm run compile && node scripts/test-nor-flash-bootloader.js",
     "test:hardware": "node scripts/test-hardware-runner.js && node scripts/test-hardware.js",

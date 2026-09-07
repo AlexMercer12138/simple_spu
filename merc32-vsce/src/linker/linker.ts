@@ -4,6 +4,7 @@ import { deserializeObject, validateObject } from './objectJson';
 import { applyRelocations } from './relocations';
 import { LinkedSection } from './relocations';
 import { LayoutOptions, layoutSections, LinkerError, resolveSymbols } from './resolver';
+import { assembleToObject } from './assembleObject';
 
 export interface LinkOptions extends LayoutOptions { readonly entrySymbol?: string; }
 export interface LinkedImage {
@@ -16,6 +17,7 @@ export interface LinkedImage {
 
 export function linkObjects(objects: readonly Merc32Object[], options: LinkOptions = {}): LinkedImage {
   objects.forEach(validateObject);
+  objects = withGlobalInitialization(objects);
   resolveSymbols(objects);
   const layout = layoutSections(objects, options);
   const linked = applyRelocations(layout);
@@ -47,6 +49,28 @@ export function linkObjects(objects: readonly Merc32Object[], options: LinkOptio
     symbols: layout.symbols,
     ...(entryAddress !== undefined ? { entryAddress } : {}),
   };
+}
+
+function withGlobalInitialization(objects: readonly Merc32Object[]): readonly Merc32Object[] {
+  const entry = '__merc32_init_globals';
+  if (!objects.some(object => object.relocations.some(relocation => relocation.symbol === entry)
+      && !object.symbols.some(symbol => symbol.name === entry && symbol.defined && symbol.binding === 'local'))
+      || objects.some(object => object.symbols.some(symbol => symbol.name === entry && symbol.defined && symbol.binding === 'global'))) return objects;
+  const occupied = new Set(objects.flatMap(object => object.symbols.map(symbol => symbol.name)));
+  const calls: string[] = [];
+  const prepared = objects.map((object, index) => {
+    const initializer = object.symbols.find(symbol => symbol.name === entry && symbol.defined && symbol.binding === 'local');
+    if (!initializer) return object;
+    let alias = `__merc32_object_init_${index}`;
+    while (occupied.has(alias)) alias += '_';
+    occupied.add(alias);
+    calls.push(`jmp ${alias}, r14`);
+    return { ...object, symbols: [...object.symbols, { ...initializer, name: alias, binding: 'global' as const }] };
+  });
+  if (calls.length === 0) return objects;
+  const dispatcher = assembleToObject(`${entry}:\nmov r13, r13 - 4\nsw [r13], r14\n${calls.join('\n')}\nlw r14, [r13]\nmov r13, r13 + 4\njmp r14\n`,
+    { abi: objects[0].abi, exports: [entry] });
+  return [...prepared, dispatcher];
 }
 
 export function linkFiles(files: readonly string[], options?: LinkOptions): LinkedImage {

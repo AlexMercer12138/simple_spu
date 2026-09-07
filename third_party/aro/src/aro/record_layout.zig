@@ -375,7 +375,7 @@ const SysVContext = struct {
             self.aligned_bits = @max(self.aligned_bits, inherited_align_bits);
         }
 
-        if (!is_named) return .{};
+        if (!is_named and self.comp.data_model == null) return .{};
         return .{
             .size_bits = bit_width,
             .offset_bits = offset_bits,

@@ -36,6 +36,7 @@ export interface LoweringInitializer {
 
 export interface LoweringGlobal {
     readonly name: string;
+    readonly binding?: 'local' | 'global';
     readonly type: CType;
     readonly initializer?: LoweringInitializer;
     readonly location?: SourceLocation;
@@ -58,6 +59,7 @@ export type LoweringStatement =
 
 export interface LoweringFunction {
     readonly name: string;
+    readonly binding?: 'local' | 'global';
     readonly returnType: CType;
     readonly parameters: readonly CType[];
     readonly parameterNames: readonly string[];

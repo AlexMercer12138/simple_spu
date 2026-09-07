@@ -10,8 +10,8 @@
     {
       "path": "src/aro/Compilation.zig",
       "upstreamSha256": "d4a6c3e4a3ea06c8a8a73ad16f87497cc9bacd79b6da6dbfc69e0fbb1b30ca78",
-      "sha256": "69fa9c6149898c41878bbfdf562a9491143335ba8241c60378fcc28820f9c24b",
-      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias selection, bounded source-provider include boundary with typed failures and include-site propagation, canonical identity propagation for source aliases, and freestanding I/O guards."
+      "sha256": "2f495cc64c6cea18899d41a96b2777357b78b919c873728ecf2ad8a6f2ea322f",
+      "reason": "Add the nullable data-model query boundary, guarded freestanding initialization, MERC32 macro profile, isolated target predicates, target-independent alias and fixed int enum selection, bounded source-provider include boundary with typed failures and include-site propagation, canonical identity propagation for source aliases, and freestanding I/O guards."
     },
     {
       "path": "src/aro/DataModel.zig",
@@ -44,6 +44,12 @@
       "reason": "Preserve original source IDs and byte offsets in expanded diagnostic locations, expose canonical identity across source aliases, and provide a bounded streaming map from translated locations to original source coordinates."
     },
     {
+      "path": "src/aro/Tree.zig",
+      "upstreamSha256": "08b68114dfdd5b54de8da4cb1f302121b49616b489b2fcd77153e98ad50ace72",
+      "sha256": "a90516c3c0e60dd12a5fbb78ddd141667c10883bd3af352257d46088457d5ce4",
+      "reason": "Preserve initializer-only and increment-only for clauses in the compact tree representation."
+    },
+    {
       "path": "src/aro/TypeStore.zig",
       "upstreamSha256": "833dde83ca478b21c2fcf316644658bce55bdd07e1d38c54b6d3ce7bd654e10d",
       "sha256": "c766caab91260c43f57f5f4390e4d57f207e773bbf7ba15cfcdb92c6bef411b5",
@@ -58,8 +64,8 @@
     {
       "path": "src/aro/record_layout.zig",
       "upstreamSha256": "97c47faa7335bd42c7859efbfcaaf4c1578951e1509b213597b86059b22016af",
-      "sha256": "25a9fe3fca2f773179bd4b4bd2fe32d7df38fa1a57271a0cde3b6526d112ff9b",
-      "reason": "Apply the selected model's maximum natural alignment without inheriting host record-layout identity."
+      "sha256": "0cff07b95ef1ef55b257569d61f0e00e76d583dfa8d07d127c167edcb05fd30c",
+      "reason": "Apply the selected model's maximum natural alignment without inheriting host record-layout identity and retain computed unnamed bit-field offsets for MERC32 contract serialization."
     }
   ]
 }
