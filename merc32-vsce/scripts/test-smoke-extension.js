@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 
 const { runIcarusElaboration } = require('./smoke-extension/suite/icarus');
+const { withHostCompilerBlocked } = require('./smoke-extension/suite/process-launch-guard');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-icarus-timeout-unit-'));
 try {
@@ -40,3 +41,51 @@ try {
 }
 
 console.log('Installed smoke Icarus timeout contracts passed.');
+
+async function testHostCompilerGuard() {
+    const childProcess = require('child_process');
+    const names = ['exec', 'execFile', 'execFileSync', 'fork', 'spawn', 'spawnSync'];
+    const originalMethods = Object.fromEntries(names.map((name) => [name, childProcess[name]]));
+    const environmentNames = ['PATH', 'Path', 'PATHEXT', 'CC', 'CXX', 'AR', 'AS', 'LD'];
+    const originalEnvironment = Object.fromEntries(environmentNames.map((name) => [name, process.env[name]]));
+    process.env.CC = 'host-cc';
+    let guardedFailure;
+    try {
+        await withHostCompilerBlocked(async () => {
+            assert.strictEqual(process.env.PATH, '');
+            if (process.platform === 'win32') assert.strictEqual(process.env.Path, '');
+            else assert.strictEqual(process.env.Path, undefined);
+            assert.strictEqual(process.env.PATHEXT, undefined);
+            assert.strictEqual(process.env.CC, undefined);
+            const { spawnSync } = require('child_process');
+            assert.throws(
+                () => spawnSync(process.execPath, ['--version']),
+                (error) => error?.code === 'MERC32_PROCESS_LAUNCH_DENIED'
+                    && error.processApi === 'spawnSync',
+                'a child-process reference acquired after guard installation escaped blocking',
+            );
+            throw new Error('forced guarded-action failure');
+        });
+    } catch (error) {
+        guardedFailure = error;
+    }
+    assert.match(guardedFailure?.message || '', /forced guarded-action failure/u);
+    for (const name of names) {
+        assert.strictEqual(childProcess[name], originalMethods[name],
+            `child_process.${name} was not restored`);
+    }
+    for (const name of environmentNames) {
+        if (name === 'CC') assert.strictEqual(process.env[name], 'host-cc');
+        else if (originalEnvironment[name] === undefined) assert.strictEqual(process.env[name], undefined);
+        else assert.strictEqual(process.env[name], originalEnvironment[name]);
+    }
+    if (originalEnvironment.CC === undefined) delete process.env.CC;
+    else process.env.CC = originalEnvironment.CC;
+}
+
+testHostCompilerGuard().then(() => {
+    console.log('Installed smoke pre-activation process/compiler guard contracts passed.');
+}).catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+});

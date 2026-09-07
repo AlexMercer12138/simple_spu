@@ -15,13 +15,15 @@ const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..');
 const RESOURCE_ROOT = path.join(REPOSITORY_ROOT, 'merc32-vsce', 'resources', 'c-frontend');
 const WASM_LIMIT = 4 * 1024 * 1024;
 const MEMORY_LIMIT_PAGES = (128 * 1024 * 1024) / 65536;
+const GENERATED_FRONTEND_DIRECTORIES = new Set(['.zig-cache', 'zig-out']);
 
 function main() {
     const zig = resolveZig(process.argv.slice(2));
     assertExactZig(zig);
     const vendor = verifyVendoredAro(path.join(REPOSITORY_ROOT, 'third_party', 'aro'));
     assert.strictEqual(vendor.commit, ARO_REVISION);
-    const sourceTreeSha256 = vendor.digest;
+    const sourceTreeSha256 = computeSourceTreeSha256({ vendor, frontendRoot: FRONTEND_ROOT });
+    const bridgeBuildId = `merc32-aro-v1-${sourceTreeSha256}`;
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-aro-rebuild-'));
     try {
         const cache = path.join(temporary, 'cache');
@@ -30,18 +32,16 @@ function main() {
         fs.mkdirSync(cache);
         fs.mkdirSync(globalCache);
         fs.mkdirSync(prefix);
-        runZigBuild(zig, cache, globalCache, prefix);
+        runZigBuild(zig, cache, globalCache, prefix, bridgeBuildId);
         const candidate = findWasm(cache);
         assert.ok(candidate, 'zig build did not produce aro-merc32.wasm');
-        const candidateBytes = fs.readFileSync(candidate);
-        assert.ok(candidateBytes.length <= WASM_LIMIT,
-            `Aro WASM exceeds ${WASM_LIMIT} bytes: ${candidateBytes.length}`);
-        auditWasm(candidateBytes, sourceTreeSha256);
-        const candidatePath = path.join(temporary, 'aro-merc32.wasm');
-        fs.copyFileSync(candidate, candidatePath);
-        runNodeContract(candidatePath);
+        const snapshot = captureCandidateSnapshot(candidate);
+        assert.ok(snapshot.length <= WASM_LIMIT,
+            `Aro WASM exceeds ${WASM_LIMIT} bytes: ${snapshot.length}`);
+        auditWasm(snapshot.bytes(), sourceTreeSha256);
+        runNodeContract(snapshot.bytes(), bridgeBuildId);
 
-        const wasmSha256 = sha256(candidateBytes);
+        const wasmSha256 = snapshot.sha256();
         const manifest = {
             manifestVersion: 1,
             aroRevision: ARO_REVISION,
@@ -51,12 +51,12 @@ function main() {
             target: 'merc32',
             abi: 'merc32-c-v1',
             dataModel: 'merc32-ilp32',
-            bridgeBuildId: `merc32-aro-v1-${sourceTreeSha256}`,
+            bridgeBuildId,
             sourceTreeSha256,
             wasmSha256,
         };
         const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-        replacePair(candidateBytes, manifestBytes);
+        replacePair(snapshot.bytes(), manifestBytes);
         process.stdout.write(`Rebuilt Aro WASM ${wasmSha256} from ${sourceTreeSha256}.\n`);
     } finally {
         fs.rmSync(temporary, { recursive: true, force: true });
@@ -79,6 +79,7 @@ function assertExactZig(zig) {
     const status = fs.lstatSync(zig);
     assert.ok(status.isFile() && !status.isSymbolicLink(),
         `Zig executable is not a regular file: ${zig}`);
+    assert.strictEqual(status.nlink, 1, `Zig executable is hard-linked: ${zig}`);
     assert.strictEqual(path.normalize(fs.realpathSync.native(zig)), path.normalize(zig),
         `Zig executable is redirected: ${zig}`);
     const result = spawnSync(zig, ['version'], { encoding: 'utf8' });
@@ -87,7 +88,7 @@ function assertExactZig(zig) {
         `unsupported Zig version: ${result.stdout.trim()}`);
 }
 
-function runZigBuild(zig, cache, globalCache, prefix) {
+function runZigBuild(zig, cache, globalCache, prefix, bridgeBuildId) {
     const result = spawnSync(zig, [
         'build',
         'test-data-model',
@@ -95,6 +96,7 @@ function runZigBuild(zig, cache, globalCache, prefix) {
         'test-serializer-types',
         'test-serializer-nodes',
         '-Doptimize=small',
+        `-Dbridge-build-id=${bridgeBuildId}`,
         '--cache-dir', cache,
         '--prefix', prefix,
     ], {
@@ -173,66 +175,352 @@ function readUleb(bytes, offset) {
     throw new Error('truncated WASM ULEB');
 }
 
-function runNodeContract(candidate) {
+function runNodeContract(candidateBytes, bridgeBuildId) {
     const result = spawnSync(process.execPath, [
-        path.join(FRONTEND_ROOT, 'tests', 'bridge-host.js'), candidate,
-    ], { cwd: FRONTEND_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+        path.join(FRONTEND_ROOT, 'tests', 'bridge-host.js'), '--stdin', bridgeBuildId,
+    ], {
+        cwd: FRONTEND_ROOT,
+        encoding: 'utf8',
+        input: candidateBytes,
+        maxBuffer: 32 * 1024 * 1024,
+    });
     assertSpawnPassed(result, 'Aro WASM host contract', result.stdout + result.stderr);
 }
 
+function computeSourceTreeSha256({ vendor, frontendRoot }) {
+    assert.ok(vendor && typeof vendor === 'object', 'verified vendor snapshot is required');
+    assert.ok(Array.isArray(vendor.files), 'verified vendor file list is required');
+    const records = [];
+    const seenVendorFiles = new Set();
+    for (const relativePath of vendor.files) {
+        assertSourcePath(relativePath, 'vendored Aro source path');
+        assert.ok(!seenVendorFiles.has(relativePath), `duplicate vendored Aro source path: ${relativePath}`);
+        seenVendorFiles.add(relativePath);
+        records.push(readSourceRecord(
+            vendor.root,
+            relativePath,
+            `third_party/aro/${relativePath}`,
+        ));
+    }
+    for (const relativePath of listFrontendSourceFiles(frontendRoot)) {
+        records.push(readSourceRecord(
+            frontendRoot,
+            relativePath,
+            `tools/aro-frontend/${relativePath}`,
+        ));
+    }
+    records.sort((left, right) => Buffer.compare(
+        Buffer.from(left.path, 'utf8'),
+        Buffer.from(right.path, 'utf8'),
+    ));
+    const normalizedPaths = new Set();
+    for (const record of records) {
+        const normalizedPath = record.path.toLocaleLowerCase('en-US');
+        assert.ok(!normalizedPaths.has(normalizedPath),
+            `case-ambiguous source input path: ${record.path}`);
+        normalizedPaths.add(normalizedPath);
+    }
+    const digest = crypto.createHash('sha256');
+    digest.update('merc32-aro-source-closure-v1\0', 'utf8');
+    for (const record of records) {
+        const pathBytes = Buffer.from(record.path, 'utf8');
+        digest.update(encodeLength(pathBytes.length));
+        digest.update(pathBytes);
+        digest.update(encodeLength(record.bytes.length));
+        digest.update(record.bytes);
+    }
+    return digest.digest('hex');
+}
+
+function listFrontendSourceFiles(frontendRoot) {
+    const files = [];
+    const visit = (directory, relativeDirectory) => {
+        const status = fs.lstatSync(directory);
+        assert.ok(status.isDirectory() && !status.isSymbolicLink(),
+            `source input directory is not an exact directory: ${relativeDirectory || '.'}`);
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })
+            .sort((left, right) => left.name.localeCompare(right.name, 'en-US'))) {
+            if (!relativeDirectory && GENERATED_FRONTEND_DIRECTORIES.has(entry.name)) continue;
+            const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+            assertSourcePath(relativePath, 'frontend source path');
+            const absolutePath = path.join(directory, entry.name);
+            const entryStatus = fs.lstatSync(absolutePath);
+            assert.ok(!entryStatus.isSymbolicLink(), `source input is a symbolic link: ${relativePath}`);
+            if (entryStatus.isDirectory()) {
+                visit(absolutePath, relativePath);
+            } else {
+                assert.ok(entryStatus.isFile(), `source input is not a regular file: ${relativePath}`);
+                files.push(relativePath);
+            }
+        }
+    };
+    visit(path.resolve(frontendRoot), '');
+    return files;
+}
+
+function readSourceRecord(root, relativePath, logicalPath) {
+    const absoluteRoot = path.resolve(root);
+    const absolutePath = path.resolve(absoluteRoot, ...relativePath.split('/'));
+    const relative = path.relative(absoluteRoot, absolutePath);
+    assert.ok(relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..'
+        && !path.isAbsolute(relative), `source input escapes its root: ${relativePath}`);
+    const status = fs.lstatSync(absolutePath);
+    assert.ok(status.isFile() && !status.isSymbolicLink(),
+        `source input is not an exact regular file: ${relativePath}`);
+    assert.strictEqual(status.nlink, 1, `hard-linked source input: ${relativePath}`);
+    assert.strictEqual(path.normalize(fs.realpathSync.native(absolutePath)), path.normalize(absolutePath),
+        `redirected source input: ${relativePath}`);
+    return { path: logicalPath, bytes: fs.readFileSync(absolutePath) };
+}
+
+function assertSourcePath(relativePath, label) {
+    assert.ok(typeof relativePath === 'string' && relativePath.length > 0,
+        `${label} must be non-empty`);
+    assert.strictEqual(relativePath.normalize('NFC'), relativePath, `${label} is not Unicode-normalized`);
+    assert.ok(!relativePath.includes('\\') && !relativePath.startsWith('/')
+        && !/^[A-Za-z]:/u.test(relativePath)
+        && relativePath.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
+    `${label} is not a normalized relative path: ${relativePath}`);
+}
+
+function encodeLength(length) {
+    const encoded = Buffer.alloc(8);
+    encoded.writeBigUInt64LE(BigInt(length));
+    return encoded;
+}
+
+function captureCandidateSnapshot(candidate, options = {}) {
+    const fileSystem = options.fileSystem || fs;
+    const ownedBytes = Buffer.from(fileSystem.readFileSync(candidate));
+    return Object.freeze({
+        length: ownedBytes.length,
+        bytes: () => Buffer.from(ownedBytes),
+        sha256: () => sha256(ownedBytes),
+    });
+}
+
+/*
+ * Pair replacement is recoverable, not physically atomic across two paths.
+ * Each generation owns .new and .old files plus one synced journal. Before the
+ * journal's durable "committed" phase, recovery restores the prior presence and
+ * bytes of each target independently. At or after "committed", both new targets
+ * must exist and recovery only finishes cleanup. Every file and namespace change
+ * is synced where the host filesystem supports directory fsync. A process may
+ * observe an interrupted mixed namespace before the next rebuild performs
+ * recovery; no filesystem primitive can make two independent renames crash-atomic.
+ */
 function replacePair(wasmBytes, manifestBytes, options = {}) {
     const fileSystem = options.fileSystem || fs;
     const resourceRoot = path.resolve(options.resourceRoot || RESOURCE_ROOT);
     fileSystem.mkdirSync(resourceRoot, { recursive: true });
-    const wasmTemp = path.join(resourceRoot, `.aro-merc32.wasm.tmp-${process.pid}`);
-    const manifestTemp = path.join(resourceRoot, `.build-manifest.json.tmp-${process.pid}`);
-    const wasmTarget = path.join(resourceRoot, 'aro-merc32.wasm');
-    const manifestTarget = path.join(resourceRoot, 'build-manifest.json');
-    const wasmBackup = path.join(resourceRoot, `.aro-merc32.wasm.bak-${process.pid}`);
-    const manifestBackup = path.join(resourceRoot, `.build-manifest.json.bak-${process.pid}`);
-    const state = {
-        wasmBackedUp: false,
-        manifestBackedUp: false,
-        wasmInstalled: false,
-        manifestInstalled: false,
+    recoverPair({ resourceRoot, fileSystem });
+    const generation = options.generation || `${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+    const paths = transactionPaths(resourceRoot, generation);
+    const journal = {
+        protocolVersion: 1,
+        generation,
+        phase: 'preparing',
+        originals: {
+            wasm: exactFileExists(paths.wasmTarget, fileSystem),
+            manifest: exactFileExists(paths.manifestTarget, fileSystem),
+        },
     };
+    let journalInstalled = false;
+    let committed = false;
     try {
-        for (const temporary of [wasmTemp, manifestTemp, wasmBackup, manifestBackup]) {
-            fileSystem.rmSync(temporary, { force: true });
+        writeJournal(paths, journal, fileSystem);
+        journalInstalled = true;
+        writeSynced(paths.wasmNew, wasmBytes, fileSystem);
+        writeSynced(paths.manifestNew, manifestBytes, fileSystem);
+        syncDirectory(resourceRoot, fileSystem);
+        journal.phase = 'prepared';
+        writeJournal(paths, journal, fileSystem);
+
+        if (journal.originals.wasm) {
+            fileSystem.renameSync(paths.wasmTarget, paths.wasmOld);
+            syncDirectory(resourceRoot, fileSystem);
         }
-        writeSynced(wasmTemp, wasmBytes, fileSystem);
-        writeSynced(manifestTemp, manifestBytes, fileSystem);
-        if (fileSystem.existsSync(wasmTarget)) {
-            fileSystem.renameSync(wasmTarget, wasmBackup);
-            state.wasmBackedUp = true;
+        if (journal.originals.manifest) {
+            fileSystem.renameSync(paths.manifestTarget, paths.manifestOld);
+            syncDirectory(resourceRoot, fileSystem);
         }
-        if (fileSystem.existsSync(manifestTarget)) {
-            fileSystem.renameSync(manifestTarget, manifestBackup);
-            state.manifestBackedUp = true;
-        }
-        fileSystem.renameSync(wasmTemp, wasmTarget);
-        state.wasmInstalled = true;
-        fileSystem.renameSync(manifestTemp, manifestTarget);
-        state.manifestInstalled = true;
+        journal.phase = 'installing';
+        writeJournal(paths, journal, fileSystem);
+        fileSystem.renameSync(paths.wasmNew, paths.wasmTarget);
+        syncDirectory(resourceRoot, fileSystem);
+        fileSystem.renameSync(paths.manifestNew, paths.manifestTarget);
+        syncDirectory(resourceRoot, fileSystem);
+
+        // This is the durable commit decision. Before it recovery restores the old
+        // generation; after it recovery keeps the new pair and removes debris.
+        journal.phase = 'committed';
+        writeJournal(paths, journal, fileSystem);
+        committed = true;
+        finishCommittedCleanup(paths, fileSystem);
     } catch (error) {
-        const rollbackFailures = [];
-        const rollback = (action) => {
-            try { action(); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
-        };
-        if (state.wasmInstalled) rollback(() => fileSystem.rmSync(wasmTarget, { force: true }));
-        if (state.manifestInstalled) rollback(() => fileSystem.rmSync(manifestTarget, { force: true }));
-        if (state.wasmBackedUp) rollback(() => fileSystem.renameSync(wasmBackup, wasmTarget));
-        if (state.manifestBackedUp) rollback(() => fileSystem.renameSync(manifestBackup, manifestTarget));
-        rollback(() => fileSystem.rmSync(wasmTemp, { force: true }));
-        rollback(() => fileSystem.rmSync(manifestTemp, { force: true }));
-        if (rollbackFailures.length > 0) {
-            throw new AggregateError([error, ...rollbackFailures],
-                'Aro resource replacement and rollback both failed');
+        journalInstalled ||= fileSystem.existsSync(paths.journal);
+        if (!journalInstalled) {
+            removePaths([paths.journalTemp, paths.wasmNew, paths.manifestNew], fileSystem);
+            syncDirectory(resourceRoot, fileSystem);
+            throw error;
+        }
+        if (committed) throw error;
+        try {
+            recoverPair({ resourceRoot, fileSystem });
+        } catch (recoveryError) {
+            throw new AggregateError([error, recoveryError],
+                'Aro resource replacement failed and its journal remains for recovery');
         }
         throw error;
     }
-    fileSystem.rmSync(wasmBackup, { force: true });
-    fileSystem.rmSync(manifestBackup, { force: true });
+}
+
+function recoverPair(options = {}) {
+    const fileSystem = options.fileSystem || fs;
+    const resourceRoot = path.resolve(options.resourceRoot || RESOURCE_ROOT);
+    fileSystem.mkdirSync(resourceRoot, { recursive: true });
+    const journalPath = path.join(resourceRoot, '.c-frontend-install.json');
+    if (!fileSystem.existsSync(journalPath)) return false;
+    const journal = readJournal(journalPath, fileSystem);
+    const paths = transactionPaths(resourceRoot, journal.generation);
+    if (journal.phase === 'committed') {
+        requireExactTransactionFile(paths.wasmTarget, 'committed WASM', fileSystem);
+        requireExactTransactionFile(paths.manifestTarget, 'committed manifest', fileSystem);
+        finishCommittedCleanup(paths, fileSystem);
+        return true;
+    }
+
+    restoreOriginal(paths.wasmTarget, paths.wasmOld, journal.originals.wasm, fileSystem);
+    syncDirectory(resourceRoot, fileSystem);
+    restoreOriginal(paths.manifestTarget, paths.manifestOld, journal.originals.manifest, fileSystem);
+    syncDirectory(resourceRoot, fileSystem);
+    removePaths([
+        paths.wasmNew,
+        paths.manifestNew,
+        paths.wasmOld,
+        paths.manifestOld,
+        paths.journalTemp,
+    ], fileSystem);
+    syncDirectory(resourceRoot, fileSystem);
+    fileSystem.rmSync(paths.journal, { force: true });
+    syncDirectory(resourceRoot, fileSystem);
+    return true;
+}
+
+function transactionPaths(resourceRoot, generation) {
+    assert.ok(typeof generation === 'string' && /^[a-z0-9][a-z0-9-]{0,127}$/u.test(generation),
+        'transaction generation must contain only lowercase letters, digits, and hyphens');
+    return {
+        resourceRoot,
+        wasmTarget: path.join(resourceRoot, 'aro-merc32.wasm'),
+        manifestTarget: path.join(resourceRoot, 'build-manifest.json'),
+        wasmNew: path.join(resourceRoot, `.aro-merc32.wasm.gen-${generation}.new`),
+        manifestNew: path.join(resourceRoot, `.build-manifest.json.gen-${generation}.new`),
+        wasmOld: path.join(resourceRoot, `.aro-merc32.wasm.gen-${generation}.old`),
+        manifestOld: path.join(resourceRoot, `.build-manifest.json.gen-${generation}.old`),
+        journal: path.join(resourceRoot, '.c-frontend-install.json'),
+        journalTemp: path.join(resourceRoot, `.c-frontend-install.json.gen-${generation}.new`),
+    };
+}
+
+function writeJournal(paths, journal, fileSystem) {
+    fileSystem.rmSync(paths.journalTemp, { force: true });
+    writeSynced(paths.journalTemp, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`), fileSystem);
+    fileSystem.renameSync(paths.journalTemp, paths.journal);
+    syncDirectory(paths.resourceRoot, fileSystem);
+}
+
+function readJournal(journalPath, fileSystem) {
+    requireExactTransactionFile(journalPath, 'transaction journal', fileSystem);
+    let journal;
+    try {
+        journal = JSON.parse(fileSystem.readFileSync(journalPath, 'utf8'));
+    } catch (error) {
+        throw new Error(`Aro transaction journal is invalid JSON: ${error.message}`);
+    }
+    assert.ok(journal !== null && !Array.isArray(journal) && typeof journal === 'object',
+        'Aro transaction journal must be an object');
+    assert.deepStrictEqual(Object.keys(journal).sort(),
+        ['generation', 'originals', 'phase', 'protocolVersion'],
+        'Aro transaction journal fields changed');
+    assert.strictEqual(journal.protocolVersion, 1, 'unsupported Aro transaction journal');
+    assert.ok(['preparing', 'prepared', 'installing', 'committed'].includes(journal.phase),
+        'unsupported Aro transaction phase');
+    assert.ok(journal.originals !== null && !Array.isArray(journal.originals)
+        && typeof journal.originals === 'object', 'Aro transaction originals must be an object');
+    assert.deepStrictEqual(Object.keys(journal.originals).sort(), ['manifest', 'wasm'],
+        'Aro transaction original fields changed');
+    assert.strictEqual(typeof journal.originals.wasm, 'boolean');
+    assert.strictEqual(typeof journal.originals.manifest, 'boolean');
+    transactionPaths(path.dirname(journalPath), journal.generation);
+    return journal;
+}
+
+function restoreOriginal(target, backup, existed, fileSystem) {
+    if (!existed) {
+        fileSystem.rmSync(target, { force: true });
+        return;
+    }
+    if (fileSystem.existsSync(backup)) {
+        requireExactTransactionFile(backup, 'transaction backup', fileSystem);
+        fileSystem.rmSync(target, { force: true });
+        fileSystem.renameSync(backup, target);
+        return;
+    }
+    requireExactTransactionFile(target, 'unmoved original', fileSystem);
+}
+
+function finishCommittedCleanup(paths, fileSystem) {
+    const cleanup = () => {
+        removePaths([
+            paths.wasmNew,
+            paths.manifestNew,
+            paths.wasmOld,
+            paths.manifestOld,
+            paths.journalTemp,
+        ], fileSystem);
+        syncDirectory(paths.resourceRoot, fileSystem);
+        fileSystem.rmSync(paths.journal, { force: true });
+        syncDirectory(paths.resourceRoot, fileSystem);
+    };
+    try {
+        cleanup();
+    } catch (firstError) {
+        try {
+            cleanup();
+        } catch (secondError) {
+            throw new AggregateError([firstError, secondError],
+                'committed Aro generation is valid but cleanup must be recovered');
+        }
+    }
+}
+
+function removePaths(paths, fileSystem) {
+    for (const target of paths) fileSystem.rmSync(target, { force: true });
+}
+
+function exactFileExists(target, fileSystem) {
+    if (!fileSystem.existsSync(target)) return false;
+    requireExactTransactionFile(target, 'resource target', fileSystem);
+    return true;
+}
+
+function requireExactTransactionFile(target, label, fileSystem) {
+    const status = fileSystem.lstatSync(target);
+    assert.ok(status.isFile() && !status.isSymbolicLink(), `${label} is not an exact regular file`);
+    assert.strictEqual(status.nlink, 1, `${label} is hard-linked`);
+}
+
+function syncDirectory(directory, fileSystem = fs) {
+    let descriptor;
+    try {
+        descriptor = fileSystem.openSync(directory, 'r');
+        fileSystem.fsyncSync(descriptor);
+    } catch (error) {
+        if (!['EBADF', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EPERM'].includes(error.code)) throw error;
+    } finally {
+        if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+    }
 }
 
 function writeSynced(target, bytes, fileSystem = fs) {
@@ -264,4 +552,13 @@ if (require.main === module) {
     }
 }
 
-module.exports = { auditWasm, main, readMemoryMaximumPages, replacePair };
+module.exports = {
+    assertExactZig,
+    auditWasm,
+    captureCandidateSnapshot,
+    computeSourceTreeSha256,
+    main,
+    readMemoryMaximumPages,
+    recoverPair,
+    replacePair,
+};

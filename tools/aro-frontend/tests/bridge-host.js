@@ -4,9 +4,12 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const wasmPath = process.argv[2];
-assert.ok(wasmPath, 'the WASM artifact path is required');
-const wasmBytes = fs.readFileSync(wasmPath);
+const wasmInput = process.argv[2];
+const expectedBuildId = process.argv[3];
+assert.ok(wasmInput, 'the WASM artifact path or --stdin is required');
+assert.match(expectedBuildId || '', /^merc32-aro-v1-[a-f0-9]{64}$/u,
+    'the expected build ID is required');
+const wasmBytes = wasmInput === '--stdin' ? fs.readFileSync(0) : fs.readFileSync(wasmInput);
 const moduleObject = new WebAssembly.Module(wasmBytes);
 
 assert.deepStrictEqual(WebAssembly.Module.imports(moduleObject), [{
@@ -89,8 +92,8 @@ const buildId = decoder.decode(new Uint8Array(
 ));
 assert.strictEqual(
     buildId,
-    'merc32-aro-v1-58502f21fa9c03d3e484c17e806b72e3fd6cc7bf40320b5b304988615bdfe009',
-    'the exact pinned source digest must flow through the Zig build option',
+    expectedBuildId,
+    'the computed source digest must flow through the Zig build option',
 );
 
 const hardLimits = Object.freeze({

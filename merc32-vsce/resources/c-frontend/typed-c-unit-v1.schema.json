@@ -5,17 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema",
-    "schemaVersion",
-    "target",
-    "abi",
-    "dataModel",
-    "language",
-    "sourceFiles",
-    "types",
-    "symbols",
-    "nodes",
-    "declarations"
+    "schema", "schemaVersion", "target", "abi", "dataModel", "language",
+    "sourceFiles", "types", "symbols", "nodes", "declarations"
   ],
   "properties": {
     "schema": { "const": "merc32.typed-c-unit" },
@@ -25,22 +16,661 @@
     "dataModel": { "const": "merc32-ilp32" },
     "language": { "const": "c17-freestanding" },
     "sourceFiles": { "type": "array", "items": { "$ref": "#/$defs/sourceFile" } },
-    "types": { "type": "array", "items": { "type": "object" } },
-    "symbols": { "type": "array", "items": { "type": "object" } },
-    "nodes": { "type": "array", "items": { "type": "object" } },
-    "declarations": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+    "types": { "type": "array", "items": { "$ref": "#/$defs/typeRecord" } },
+    "symbols": { "type": "array", "items": { "$ref": "#/$defs/symbolRecord" } },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/nodeRecord" } },
+    "declarations": { "type": "array", "items": { "$ref": "#/$defs/id" } }
   },
   "$defs": {
+    "id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "nonNegativeInteger": {
+      "type": "integer", "minimum": 0, "maximum": 9007199254740991
+    },
+    "positiveInteger": {
+      "type": "integer", "minimum": 1, "maximum": 9007199254740991
+    },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "column", "byteOffset"],
+      "properties": {
+        "line": { "$ref": "#/$defs/positiveInteger" },
+        "column": { "$ref": "#/$defs/positiveInteger" },
+        "byteOffset": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "start", "end"],
+      "properties": {
+        "file": { "$ref": "#/$defs/id" },
+        "start": { "$ref": "#/$defs/position" },
+        "end": { "$ref": "#/$defs/position" }
+      }
+    },
     "sourceFile": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "path", "byteLength", "utf8BoundaryBitmap"],
       "properties": {
-        "id": { "type": "integer", "minimum": 1 },
+        "id": { "$ref": "#/$defs/id" },
         "path": { "type": "string", "minLength": 1 },
-        "byteLength": { "type": "integer", "minimum": 0 },
+        "byteLength": { "$ref": "#/$defs/nonNegativeInteger" },
         "utf8BoundaryBitmap": { "type": "string", "pattern": "^[0-9a-f]*$" }
       }
+    },
+    "integerConstant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "bits", "signed", "value"],
+      "properties": {
+        "kind": { "const": "integer" },
+        "bits": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "signed": { "type": "boolean" },
+        "value": { "type": "string", "pattern": "^(0|-[1-9][0-9]*|[1-9][0-9]*)$" }
+      }
+    },
+    "floatingConstant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "type", "ieeeBits"],
+      "properties": {
+        "kind": { "const": "floating" },
+        "type": { "$ref": "#/$defs/id" },
+        "ieeeBits": { "type": "string", "pattern": "^[0-9A-Fa-f]+$" }
+      }
+    },
+    "addressConstant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "symbol", "addend"],
+      "properties": {
+        "kind": { "const": "address" },
+        "symbol": { "$ref": "#/$defs/id" },
+        "addend": { "type": "string", "pattern": "^(0|-[1-9][0-9]*|[1-9][0-9]*)$" }
+      }
+    },
+    "stringConstant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "elementType", "bytes"],
+      "properties": {
+        "kind": { "const": "string" },
+        "elementType": { "$ref": "#/$defs/id" },
+        "bytes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+        }
+      }
+    },
+    "constant": {
+      "oneOf": [
+        { "$ref": "#/$defs/integerConstant" },
+        { "$ref": "#/$defs/floatingConstant" },
+        { "$ref": "#/$defs/addressConstant" },
+        { "$ref": "#/$defs/stringConstant" }
+      ]
+    },
+    "initializerWrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "type", "value"],
+      "properties": {
+        "offset": { "$ref": "#/$defs/nonNegativeInteger" },
+        "type": { "$ref": "#/$defs/id" },
+        "value": { "$ref": "#/$defs/constant" }
+      }
+    },
+    "initializer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size", "zeroFill", "writes"],
+      "properties": {
+        "size": { "$ref": "#/$defs/nonNegativeInteger" },
+        "zeroFill": { "const": true },
+        "writes": { "type": "array", "items": { "$ref": "#/$defs/initializerWrite" } }
+      }
+    },
+    "qualifiers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["const", "volatile", "restrict", "atomic"] }
+    },
+    "aggregateMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "offset", "range"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "$ref": "#/$defs/id" },
+        "offset": { "$ref": "#/$defs/nonNegativeInteger" },
+        "bitOffset": { "$ref": "#/$defs/nonNegativeInteger" },
+        "bitWidth": { "$ref": "#/$defs/positiveInteger" },
+        "range": { "$ref": "#/$defs/range" }
+      }
+    },
+    "enumValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "range"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "pattern": "^(0|-[1-9][0-9]*|[1-9][0-9]*)$" },
+        "range": { "$ref": "#/$defs/range" }
+      }
+    },
+    "typeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "qualifiers", "size", "alignment"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "enum": ["builtin", "pointer", "array", "function", "struct", "union", "enum", "typedef"]
+        },
+        "qualifiers": { "$ref": "#/$defs/qualifiers" },
+        "size": { "$ref": "#/$defs/nonNegativeInteger" },
+        "alignment": { "$ref": "#/$defs/positiveInteger" },
+        "name": { "type": "string" },
+        "pointee": { "$ref": "#/$defs/id" },
+        "element": { "$ref": "#/$defs/id" },
+        "count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "returnType": { "$ref": "#/$defs/id" },
+        "parameters": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "variadic": { "type": "boolean" },
+        "nominalId": { "$ref": "#/$defs/id" },
+        "complete": { "type": "boolean" },
+        "members": { "type": "array", "items": { "$ref": "#/$defs/aggregateMember" } },
+        "underlyingType": { "$ref": "#/$defs/id" },
+        "enumerators": { "type": "array", "items": { "$ref": "#/$defs/enumValue" } },
+        "target": { "$ref": "#/$defs/id" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "builtin" } } },
+          "then": {
+            "required": ["name"],
+            "propertyNames": {
+              "enum": ["id", "kind", "qualifiers", "size", "alignment", "name"]
+            },
+            "properties": {
+              "name": {
+                "enum": [
+                  "void", "_Bool", "char", "signed char", "unsigned char", "short",
+                  "unsigned short", "int", "unsigned int", "long", "unsigned long",
+                  "long long", "unsigned long long", "float", "double", "long double"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "pointer" } } },
+          "then": {
+            "required": ["pointee"],
+            "properties": { "pointee": {} },
+            "propertyNames": {
+              "enum": ["id", "kind", "qualifiers", "size", "alignment", "pointee"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "array" } } },
+          "then": {
+            "required": ["element", "count"],
+            "properties": { "element": {}, "count": {} },
+            "propertyNames": {
+              "enum": ["id", "kind", "qualifiers", "size", "alignment", "element", "count"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "function" } } },
+          "then": {
+            "required": ["returnType", "parameters", "variadic"],
+            "properties": { "returnType": {}, "parameters": {}, "variadic": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "kind", "qualifiers", "size", "alignment",
+                "returnType", "parameters", "variadic"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["struct", "union"] } } },
+          "then": {
+            "required": ["complete", "members"],
+            "properties": { "complete": {}, "members": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "kind", "qualifiers", "size", "alignment", "name",
+                "nominalId", "complete", "members"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "enum" } } },
+          "then": {
+            "required": ["underlyingType", "enumerators"],
+            "properties": { "underlyingType": {}, "enumerators": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "kind", "qualifiers", "size", "alignment", "name",
+                "nominalId", "underlyingType", "enumerators"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "typedef" } } },
+          "then": {
+            "required": ["name", "target"],
+            "propertyNames": {
+              "enum": ["id", "kind", "qualifiers", "size", "alignment", "name", "target"]
+            },
+            "properties": { "name": { "type": "string", "minLength": 1 }, "target": {} }
+          }
+        }
+      ]
+    },
+    "symbolRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name", "range"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "enum": ["variable", "function", "parameter", "typedef", "record", "enum", "enumerator", "label"]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "range": { "$ref": "#/$defs/range" },
+        "type": { "$ref": "#/$defs/id" },
+        "linkage": { "enum": ["none", "internal", "external"] },
+        "storage": { "enum": ["automatic", "static", "extern", "register", "thread"] },
+        "definition": { "type": "boolean" },
+        "initializer": { "$ref": "#/$defs/initializer" },
+        "owner": { "$ref": "#/$defs/id" },
+        "value": { "$ref": "#/$defs/integerConstant" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "variable" } } },
+          "then": {
+            "required": ["type", "linkage", "storage", "definition"],
+            "properties": { "type": {}, "linkage": {}, "storage": {}, "definition": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "kind", "name", "range", "type", "linkage", "storage",
+                "definition", "initializer"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "function" } } },
+          "then": {
+            "required": ["type", "linkage", "definition"],
+            "propertyNames": {
+              "enum": ["id", "kind", "name", "range", "type", "linkage", "definition"]
+            },
+            "properties": {
+              "type": {},
+              "linkage": { "enum": ["internal", "external"] },
+              "definition": {}
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "parameter" } } },
+          "then": {
+            "required": ["type", "owner"],
+            "properties": { "type": {}, "owner": {} },
+            "propertyNames": {
+              "enum": ["id", "kind", "name", "range", "type", "owner"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["typedef", "record", "enum"] } } },
+          "then": {
+            "required": ["type"],
+            "properties": { "type": {} },
+            "propertyNames": { "enum": ["id", "kind", "name", "range", "type"] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "enumerator" } } },
+          "then": {
+            "required": ["type", "owner", "value"],
+            "properties": { "type": {}, "owner": {}, "value": {} },
+            "propertyNames": {
+              "enum": ["id", "kind", "name", "range", "type", "owner", "value"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "label" } } },
+          "then": {
+            "required": ["owner"],
+            "properties": { "owner": {} },
+            "propertyNames": { "enum": ["id", "kind", "name", "range", "owner"] }
+          }
+        }
+      ]
+    },
+    "nodeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "kind", "range", "children"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "category": { "enum": ["expression", "statement", "declaration"] },
+        "kind": {
+          "enum": [
+            "variable-declaration", "function-declaration", "function-definition",
+            "parameter-declaration", "typedef-declaration", "record-declaration",
+            "enum-declaration", "static-assert", "compound", "declaration-statement",
+            "expression-statement", "return", "if", "while", "do-while", "for",
+            "switch", "case", "default", "break", "continue", "goto", "label",
+            "empty", "integer-literal", "floating-literal", "character-literal",
+            "string-literal", "declaration-reference", "unary", "binary", "conditional",
+            "assignment", "call", "subscript", "member", "sizeof", "alignof",
+            "conversion", "compound-literal", "generic-selection"
+          ]
+        },
+        "range": { "$ref": "#/$defs/range" },
+        "spellingRange": { "$ref": "#/$defs/range" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "type": { "$ref": "#/$defs/id" },
+        "symbol": { "$ref": "#/$defs/id" },
+        "valueCategory": { "enum": ["lvalue", "function", "rvalue"] },
+        "constant": { "$ref": "#/$defs/constant" },
+        "caseValue": { "$ref": "#/$defs/integerConstant" },
+        "label": { "type": "string", "minLength": 1 },
+        "operator": { "type": "string", "minLength": 1 },
+        "memberIndex": { "$ref": "#/$defs/nonNegativeInteger" },
+        "targetType": { "$ref": "#/$defs/id" },
+        "conversion": {
+          "enum": [
+            "lvalue-to-rvalue", "array-to-pointer", "function-to-pointer",
+            "integer-promotion", "usual-arithmetic", "assignment", "argument", "return",
+            "no-op", "bitcast", "pointer-to-bool", "pointer-to-int", "bool-to-int",
+            "bool-to-float", "bool-to-pointer", "int-to-bool", "int-to-float",
+            "complex-int-to-complex-float", "int-to-pointer", "float-to-bool",
+            "float-to-int", "complex-float-to-complex-int", "int-cast",
+            "complex-int-cast", "complex-int-to-real", "real-to-complex-int", "float-cast",
+            "complex-float-cast", "complex-float-to-real", "real-to-complex-float",
+            "to-void", "null-to-pointer", "union-cast", "vector-splat",
+            "atomic-to-non-atomic", "non-atomic-to-atomic"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "variable-declaration", "function-declaration", "function-definition",
+                  "parameter-declaration", "typedef-declaration", "record-declaration",
+                  "enum-declaration"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": ["type", "symbol"],
+            "properties": { "category": { "const": "declaration" }, "type": {}, "symbol": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "symbol"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "static-assert" } } },
+          "then": {
+            "properties": { "category": { "const": "declaration" } },
+            "propertyNames": {
+              "enum": ["id", "category", "kind", "range", "spellingRange", "children"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "compound", "declaration-statement", "expression-statement", "return",
+                  "if", "while", "do-while", "for", "switch", "default", "break",
+                  "continue", "empty"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": { "category": { "const": "statement" } },
+            "propertyNames": {
+              "enum": ["id", "category", "kind", "range", "spellingRange", "children"]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "case" } } },
+          "then": {
+            "required": ["caseValue"],
+            "properties": { "category": { "const": "statement" }, "caseValue": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children", "caseValue"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["goto", "label"] } } },
+          "then": {
+            "required": ["label"],
+            "properties": { "category": { "const": "statement" }, "label": {} },
+            "propertyNames": {
+              "enum": ["id", "category", "kind", "range", "spellingRange", "children", "label"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["integer-literal", "character-literal"] }
+            }
+          },
+          "then": {
+            "required": ["type", "valueCategory", "constant"],
+            "properties": {
+              "category": { "const": "expression" },
+              "type": {},
+              "valueCategory": {},
+              "constant": { "$ref": "#/$defs/integerConstant" }
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "floating-literal" } } },
+          "then": {
+            "required": ["type", "valueCategory", "constant"],
+            "properties": {
+              "category": { "const": "expression" },
+              "type": {},
+              "valueCategory": {},
+              "constant": { "$ref": "#/$defs/floatingConstant" }
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "string-literal" } } },
+          "then": {
+            "required": ["type", "valueCategory", "constant"],
+            "properties": {
+              "category": { "const": "expression" },
+              "type": {},
+              "valueCategory": {},
+              "constant": { "$ref": "#/$defs/stringConstant" }
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "declaration-reference" } } },
+          "then": {
+            "required": ["type", "valueCategory", "symbol"],
+            "properties": {
+              "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "symbol": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "symbol"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["unary", "binary", "conditional", "assignment"] }
+            }
+          },
+          "then": {
+            "required": ["type", "valueCategory", "operator"],
+            "properties": {
+              "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "operator": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "operator"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["call", "subscript"] } } },
+          "then": {
+            "required": ["type", "valueCategory"],
+            "properties": { "category": { "const": "expression" }, "type": {}, "valueCategory": {} },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "member" } } },
+          "then": {
+            "required": ["type", "valueCategory", "memberIndex"],
+            "properties": {
+              "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "memberIndex": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "memberIndex"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["sizeof", "alignof"] } } },
+          "then": {
+            "required": ["type", "valueCategory", "targetType", "constant"],
+            "properties": {
+              "category": { "const": "expression" },
+              "type": {},
+              "valueCategory": {},
+              "targetType": {},
+              "constant": { "$ref": "#/$defs/integerConstant" }
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "targetType", "constant"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "conversion" } } },
+          "then": {
+            "required": ["type", "valueCategory", "conversion", "targetType"],
+            "properties": {
+              "category": { "const": "expression" },
+              "type": {},
+              "valueCategory": {},
+              "conversion": {},
+              "targetType": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "conversion", "targetType"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "compound-literal" } } },
+          "then": {
+            "required": ["type", "valueCategory", "targetType"],
+            "properties": {
+              "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "targetType": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "targetType"
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "generic-selection" } } },
+          "then": {
+            "required": ["type", "valueCategory", "memberIndex"],
+            "properties": {
+              "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "memberIndex": {}
+            },
+            "propertyNames": {
+              "enum": [
+                "id", "category", "kind", "range", "spellingRange", "children",
+                "type", "valueCategory", "constant", "memberIndex"
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }

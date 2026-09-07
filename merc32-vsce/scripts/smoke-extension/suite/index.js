@@ -1,10 +1,10 @@
 const assert = require('assert');
-const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const vscode = require('vscode');
 const { runIcarusElaboration } = require('./icarus');
+const { withHostCompilerBlocked } = require('./process-launch-guard');
 
 const EXTENSION_ID = 'Vikai-mercer.merc32-vsce';
 const GUARD_EXTENSION_ID = 'merc32-smoke.merc32-network-guard';
@@ -89,58 +89,67 @@ async function run() {
     ]);
     assert.strictEqual(extension.isActive, false,
         'installed MERC32 extension activated while recording guard readiness');
-    await extension.activate();
-    assert.strictEqual(extension.isActive, true,
-        'explicit installed MERC32 extension activation did not complete');
+    await withHostCompilerBlocked(async () => {
+        const { spawnSync } = require('child_process');
+        assert.throws(
+            () => spawnSync(process.execPath, ['--version']),
+            (error) => error?.code === 'MERC32_PROCESS_LAUNCH_DENIED'
+                && error.processApi === 'spawnSync',
+            'pre-activation process guard did not deny a real launch attempt',
+        );
+        assert.strictEqual(process.env.PATH, '',
+            'host compiler discovery PATH was visible before target activation');
+        await extension.activate();
+        assert.strictEqual(extension.isActive, true,
+            'explicit installed MERC32 extension activation did not complete');
 
-    const commands = await vscode.commands.getCommands(true);
-    assert.ok(commands.includes(GENERATE_COMMAND),
-        `installed extension did not register ${GENERATE_COMMAND}`);
-    const generated = await vscode.commands.executeCommand(
-        GENERATE_COMMAND,
-        vscode.Uri.file(configFile),
-    );
-    assert.strictEqual(generated, true, 'registered installed Generate command failed');
-    assert.strictEqual(extension.isActive, true, 'installed extension did not activate');
+        const commands = await vscode.commands.getCommands(true);
+        assert.ok(commands.includes(GENERATE_COMMAND),
+            `installed extension did not register ${GENERATE_COMMAND}`);
+        const generated = await vscode.commands.executeCommand(
+            GENERATE_COMMAND,
+            vscode.Uri.file(configFile),
+        );
+        assert.strictEqual(generated, true, 'registered installed Generate command failed');
+        assert.strictEqual(extension.isActive, true, 'installed extension did not activate');
 
-    const requiredOutputs = [
-        'README.md',
-        'manifest.json',
-        'hardware/all_peripherals_soc.v',
-        'software/all_peripherals_soc.h',
-        'software/main.c',
-    ];
-    for (const logicalPath of requiredOutputs) {
-        requireExactFile(path.join(outputDir, ...logicalPath.split('/')),
-            `generated ${logicalPath}`);
-    }
+        const requiredOutputs = [
+            'README.md',
+            'manifest.json',
+            'hardware/all_peripherals_soc.v',
+            'software/all_peripherals_soc.h',
+            'software/main.c',
+        ];
+        for (const logicalPath of requiredOutputs) {
+            requireExactFile(path.join(outputDir, ...logicalPath.split('/')),
+                `generated ${logicalPath}`);
+        }
 
-    for (const logicalPath of [
-        'rtl/files.f',
-        'software/src/main.c',
-        'software/include/all_peripherals_soc.h',
-        'config/all_peripherals_soc.resolved.json',
-        'address-map.json',
-        'LICENSE',
-    ]) {
-        assert.strictEqual(fs.existsSync(path.join(outputDir, ...logicalPath.split('/'))), false,
-            `generated output retained legacy path ${logicalPath}`);
-    }
+        for (const logicalPath of [
+            'rtl/files.f',
+            'software/src/main.c',
+            'software/include/all_peripherals_soc.h',
+            'config/all_peripherals_soc.resolved.json',
+            'address-map.json',
+            'LICENSE',
+        ]) {
+            assert.strictEqual(fs.existsSync(path.join(outputDir, ...logicalPath.split('/'))), false,
+                `generated output retained legacy path ${logicalPath}`);
+        }
 
-    const cSmokeRoot = path.join(workspaceRoot, 'c-frontend-smoke');
-    const cMain = path.join(cSmokeRoot, 'main.c');
-    const cSibling = path.join(cSmokeRoot, 'sibling.h');
-    fs.mkdirSync(cSmokeRoot, { recursive: true });
-    fs.writeFileSync(cSibling, '#define MERC32_SMOKE_VALUE 7\n');
-    fs.writeFileSync(cMain,
-        '#include "sibling.h"\n#include <stdint.h>\nint smoke_value = MERC32_SMOKE_VALUE + (int)UINT32_MAX;\n');
-    const cDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(cMain));
-    await vscode.window.showTextDocument(cDocument, { preview: false });
-    await withProcessLaunchBlocked(async () => {
+        const cSmokeRoot = path.join(workspaceRoot, 'c-frontend-smoke');
+        const cMain = path.join(cSmokeRoot, 'main.c');
+        const cSibling = path.join(cSmokeRoot, 'sibling.h');
+        fs.mkdirSync(cSmokeRoot, { recursive: true });
+        fs.writeFileSync(cSibling, '#define MERC32_SMOKE_VALUE 7\n');
+        fs.writeFileSync(cMain,
+            '#include "sibling.h"\n#include <stdint.h>\nint smoke_value = MERC32_SMOKE_VALUE + (int)UINT32_MAX;\n');
+        const cDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(cMain));
+        await vscode.window.showTextDocument(cDocument, { preview: false });
         await vscode.commands.executeCommand('merc32-asm.compileCToAsm');
+        requireExactFile(path.join(cSmokeRoot, 'main.asm'),
+            'offline C frontend smoke assembly');
     });
-    requireExactFile(path.join(cSmokeRoot, 'main.asm'),
-        'offline C frontend smoke assembly');
 
     const hardwareFile = path.join(outputDir, 'hardware', 'all_peripherals_soc.v');
     assert.ok(!pathsOverlap(repositoryRoot, hardwareFile),
@@ -325,17 +334,3 @@ function comparablePath(value) {
 }
 
 module.exports = { activate, run };
-
-async function withProcessLaunchBlocked(action) {
-    const names = ['exec', 'execFile', 'execFileSync', 'fork', 'spawn', 'spawnSync'];
-    const originals = names.map((name) => [name, childProcess[name]]);
-    const blocked = (name) => () => {
-        throw new Error(`host process launch is forbidden during packaged C smoke: ${name}`);
-    };
-    try {
-        for (const [name] of originals) childProcess[name] = blocked(name);
-        return await action();
-    } finally {
-        for (const [name, original] of originals) childProcess[name] = original;
-    }
-}

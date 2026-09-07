@@ -39,11 +39,16 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
+    const bridge_build_id = b.option(
+        []const u8,
+        "bridge-build-id",
+        "Required provenance identifier embedded in the bridge",
+    ) orelse @panic("-Dbridge-build-id is required");
     const bridge_options = b.addOptions();
     bridge_options.addOption(
         []const u8,
         "bridge_build_id",
-        "merc32-aro-v1-58502f21fa9c03d3e484c17e806b72e3fd6cc7bf40320b5b304988615bdfe009",
+        bridge_build_id,
     );
     const bridge = b.addExecutable(.{
         .name = "aro-merc32",
@@ -143,6 +148,7 @@ pub fn build(b: *std.Build) void {
     const run_serializer_nodes_tests = b.addRunArtifact(serializer_nodes_tests);
     const run_bridge_host = b.addSystemCommand(&.{ "node", "tests/bridge-host.js" });
     run_bridge_host.addArtifactArg(bridge);
+    run_bridge_host.addArg(bridge_build_id);
 
     const test_bridge = b.step("test-bridge", "Run the bounded WASM bridge contract tests");
     test_bridge.dependOn(&run_bridge_contract_tests.step);

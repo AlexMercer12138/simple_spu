@@ -7,7 +7,10 @@ const os = require('os');
 const path = require('path');
 const AdmZip = require('adm-zip');
 const Ajv2020 = require('ajv/dist/2020');
-const { replacePair } = require('../../tools/aro-frontend/rebuild');
+const {
+    computeSourceTreeSha256,
+    replacePair,
+} = require('../../tools/aro-frontend/rebuild');
 const { verifyVendoredAro } = require('../../tools/aro-frontend/verify-vendor');
 
 const extensionRoot = path.resolve(__dirname, '..');
@@ -32,6 +35,20 @@ const REQUIRED_FILES = Object.freeze([
     ...REQUIRED_HEADERS, 'licenses/ARO-LICENSE', 'licenses/UNICODE-LICENSE',
 ]);
 const WASM_MEMORY_MAX_PAGES = 2048;
+const EXPECTED_WASM_EXPORTS = Object.freeze([
+    'memory', 'merc32_alloc', 'merc32_analyze', 'merc32_build_id_len',
+    'merc32_build_id_ptr', 'merc32_protocol_version', 'merc32_reset',
+    'merc32_result_len', 'merc32_result_ptr',
+]);
+const HARD_LIMITS = Object.freeze({
+    fileBytes: 4 * 1024 * 1024,
+    totalSourceBytes: 32 * 1024 * 1024,
+    fileCount: 4096,
+    includeDepth: 32,
+    requestBytes: 40 * 1024 * 1024,
+    resultBytes: 64 * 1024 * 1024,
+    memoryBytes: 128 * 1024 * 1024,
+});
 
 function run(vsixPath = process.argv[2]) {
     const manifest = auditResources();
@@ -54,21 +71,25 @@ function auditResources() {
     for (const [key, value] of Object.entries(expectedManifest)) assert.strictEqual(manifest[key], value);
     assert.strictEqual(manifest.bridgeBuildId, `merc32-aro-v1-${manifest.sourceTreeSha256}`);
     const vendor = verifyVendoredAro(path.join(repositoryRoot, 'third_party', 'aro'));
-    assert.strictEqual(manifest.sourceTreeSha256, vendor.digest,
-        'build manifest source digest differs from the verified sorted Aro snapshot');
+    const sourceTreeSha256 = computeSourceTreeSha256({
+        vendor,
+        frontendRoot: path.join(repositoryRoot, 'tools', 'aro-frontend'),
+    });
+    assert.strictEqual(manifest.sourceTreeSha256, sourceTreeSha256,
+        'build manifest source digest differs from the verified build-input closure');
     assert.match(manifest.wasmSha256, /^[a-f0-9]{64}$/u);
     const wasmBytes = fs.readFileSync(path.join(resourceRoot, 'aro-merc32.wasm'));
     assert.ok(wasmBytes.length <= 4 * 1024 * 1024,
         `Aro WASM exceeds the 4 MiB package ceiling: ${wasmBytes.length}`);
     assert.strictEqual(sha256(wasmBytes), manifest.wasmSha256,
         'build manifest WASM digest does not match the committed bytes');
-    auditWasm(wasmBytes);
+    const bridge = instantiateAuditedBridge(wasmBytes, manifest);
     assert.strictEqual(fs.readFileSync(path.join(resourceRoot, 'licenses', 'ARO-LICENSE'))
         .compare(fs.readFileSync(path.join(repositoryRoot, 'third_party', 'aro', 'LICENSE'))), 0);
     assert.strictEqual(fs.readFileSync(path.join(resourceRoot, 'licenses', 'UNICODE-LICENSE'))
         .compare(fs.readFileSync(path.join(repositoryRoot, 'third_party', 'aro', 'LICENSE-UNICODE'))), 0);
     auditHeaders();
-    const typedUnit = auditHeaderCompilation();
+    const typedUnit = auditHeaderCompilation(bridge);
     auditVscodeIgnore();
     const schema = readJson(path.join(resourceRoot, 'typed-c-unit-v1.schema.json'));
     auditSchema(schema, typedUnit);
@@ -102,9 +123,12 @@ function auditAtomicReplacement() {
         fs.writeFileSync(wasmTarget, originalWasm);
         fs.writeFileSync(manifestTarget, originalManifest);
         const operations = Object.create(fs);
+        let injected = false;
         operations.renameSync = (source, target) => {
-            if (path.basename(source).startsWith('.build-manifest.json.tmp-')
+            if (!injected && path.basename(source).startsWith('.build-manifest.json.gen-')
+                && path.basename(source).endsWith('.new')
                 && target === manifestTarget) {
+                injected = true;
                 throw new Error('forced manifest installation failure');
             }
             return fs.renameSync(source, target);
@@ -139,6 +163,10 @@ function auditHeaders() {
     assert.match(headers['include/stdint.h'], /typedef unsigned int uintptr_t/u);
     assert.match(headers['include/stdint.h'], /typedef long long intmax_t/u);
     assert.match(headers['include/stdint.h'], /typedef unsigned long long uintmax_t/u);
+    assert.match(headers['include/stdint.h'], /typedef int16_t int_least16_t/u);
+    assert.match(headers['include/stdint.h'], /typedef int16_t int_fast16_t/u);
+    assert.match(headers['include/stdint.h'], /#define INT64_C\(value\) value##LL/u);
+    assert.match(headers['include/stdint.h'], /#define UINTMAX_C\(value\) value##ULL/u);
     assert.match(headers['include/stdalign.h'], /#define alignas _Alignas/u);
     assert.match(headers['include/stdalign.h'], /#define alignof _Alignof/u);
     assert.match(headers['include/iso646.h'], /#define and &&/u);
@@ -165,17 +193,8 @@ function auditHeaders() {
     }
 }
 
-function auditHeaderCompilation() {
-    const frontendModule = path.join(extensionRoot, 'out', 'cFrontend', 'frontend.js');
-    if (!fs.existsSync(frontendModule)) {
-        return readJson(path.join(
-            __dirname, 'fixtures', 'c-frontend', 'valid-unit-v1.json')).unit;
-    }
-    const { AroFrontendService } = require(frontendModule);
-    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'merc32-header-audit-'));
-    try {
-        const sourceFile = path.join(temporary, 'headers.c');
-        fs.writeFileSync(sourceFile, [
+function auditHeaderCompilation(bridge) {
+    const source = [
             '#include <stddef.h>',
             '#include <stdint.h>',
             '#include <stdbool.h>',
@@ -189,8 +208,22 @@ function auditHeaderCompilation() {
             '_Static_assert(sizeof(wchar_t) == 4, "wchar_t");',
             '_Static_assert(sizeof(intptr_t) == 4 && sizeof(uintptr_t) == 4, "intptr_t");',
             '_Static_assert(sizeof(intmax_t) == 8 && sizeof(uintmax_t) == 8, "intmax_t");',
+            '_Static_assert(sizeof(int_least8_t) == 1 && sizeof(uint_least8_t) == 1, "least8");',
+            '_Static_assert(sizeof(int_least16_t) == 2 && sizeof(uint_least16_t) == 2, "least16");',
+            '_Static_assert(sizeof(int_least32_t) == 4 && sizeof(uint_least32_t) == 4, "least32");',
+            '_Static_assert(sizeof(int_least64_t) == 8 && sizeof(uint_least64_t) == 8, "least64");',
+            '_Static_assert(sizeof(int_fast8_t) == 1 && sizeof(uint_fast8_t) == 1, "fast8");',
+            '_Static_assert(sizeof(int_fast16_t) == 2 && sizeof(uint_fast16_t) == 2, "fast16");',
+            '_Static_assert(sizeof(int_fast32_t) == 4 && sizeof(uint_fast32_t) == 4, "fast32");',
+            '_Static_assert(sizeof(int_fast64_t) == 8 && sizeof(uint_fast64_t) == 8, "fast64");',
             '_Static_assert(alignof(max_align_t) == 4, "max_align_t");',
             '_Static_assert(CHAR_BIT == 8 && UINT32_MAX == 4294967295U, "integer limits");',
+            '_Static_assert(INT_LEAST8_MIN == INT8_MIN && UINT_LEAST64_MAX == UINT64_MAX, "least limits");',
+            '_Static_assert(INT_FAST16_MIN == INT16_MIN && UINT_FAST32_MAX == UINT32_MAX, "fast limits");',
+            '_Static_assert(WCHAR_MIN == INT32_MIN && WINT_MAX == UINT32_MAX, "wide limits");',
+            '_Static_assert(INT8_C(127) == INT8_MAX && UINT16_C(65535) == UINT16_MAX, "small constants");',
+            '_Static_assert(INT64_C(9223372036854775807) == INT64_MAX, "int64 constant");',
+            '_Static_assert(UINTMAX_C(18446744073709551615) == UINTMAX_MAX, "uintmax constant");',
             '_Static_assert(FLT_RADIX == 2 && LDBL_MANT_DIG == 53, "floating limits");',
             '_Static_assert(FLT_EVAL_METHOD == __FLT_EVAL_METHOD__, "floating evaluation");',
             '_Static_assert(FLT_MIN_10_EXP == __FLT_MIN_10_EXP__, "float minimum decimal exponent");',
@@ -207,14 +240,26 @@ function auditHeaderCompilation() {
             'alignas(4) int aligned_value;',
             'noreturn void stop(void);',
             '',
-        ].join('\n'));
-        const result = new AroFrontendService().analyzeFile(sourceFile);
-        assert.strictEqual(result.status, 'ok',
-            `packaged header conformance source failed: ${JSON.stringify(result.diagnostics)}`);
-        return result.unit;
-    } finally {
-        fs.rmSync(temporary, { recursive: true, force: true });
-    }
+        ].join('\n');
+    const virtualFiles = REQUIRED_HEADERS.map((logicalPath) => ({
+        path: logicalPath,
+        source: fs.readFileSync(path.join(resourceRoot, ...logicalPath.split('/')), 'utf8'),
+    }));
+    const result = bridge.analyze({
+        protocolVersion: 1,
+        mainPath: 'headers.c',
+        source,
+        standard: 'c17',
+        defines: {},
+        includePaths: ['include'],
+        virtualFiles,
+        limits: { ...HARD_LIMITS },
+    });
+    assert.strictEqual(result.status, 'ok',
+        `packaged header conformance source failed: ${JSON.stringify(result.diagnostics)}`);
+    assert.ok(result.unit && result.unit.nodes.length > 0,
+        'real packaged WASM returned no typed syntax for header conformance source');
+    return result.unit;
 }
 
 function auditVscodeIgnore() {
@@ -228,13 +273,77 @@ function auditVscodeIgnore() {
     }
 }
 
-function auditWasm(bytes) {
+function instantiateAuditedBridge(bytes, manifest) {
     const moduleObject = new WebAssembly.Module(bytes);
-    assert.deepStrictEqual(WebAssembly.Module.imports(moduleObject), [{
+    const imports = WebAssembly.Module.imports(moduleObject);
+    const exports = WebAssembly.Module.exports(moduleObject).map((entry) => entry.name).sort();
+    let instance;
+    instance = new WebAssembly.Instance(moduleObject, {
+        merc32_source: {
+            resolve() { return -1; },
+        },
+    });
+    const abi = instance.exports;
+    const bridgeBuildId = readUtf8(abi.memory, abi.merc32_build_id_ptr(), abi.merc32_build_id_len(),
+        'embedded bridge build ID');
+    assertBridgeContract({
+        imports,
+        exports,
+        memoryMaximumPages: readMemoryMaximumPages(bytes),
+        bridgeBuildId,
+        protocolVersion: abi.merc32_protocol_version(),
+    }, manifest);
+    return Object.freeze({
+        analyze(request) {
+            const requestBytes = Buffer.from(JSON.stringify(request), 'utf8');
+            abi.merc32_reset();
+            const requestPointer = abi.merc32_alloc(requestBytes.length);
+            assert.ok(Number.isSafeInteger(requestPointer) && requestPointer > 0,
+                'packaged WASM rejected the conformance request allocation');
+            memorySlice(abi.memory, requestPointer, requestBytes.length, 'request').set(requestBytes);
+            abi.merc32_analyze(requestPointer, requestBytes.length);
+            const resultPointer = abi.merc32_result_ptr();
+            const resultLength = abi.merc32_result_len();
+            assert.ok(Number.isSafeInteger(resultLength) && resultLength >= 0
+                && resultLength <= HARD_LIMITS.resultBytes,
+            'packaged WASM returned an invalid result length');
+            const resultText = readUtf8(abi.memory, resultPointer, resultLength, 'analysis result');
+            const result = JSON.parse(resultText);
+            assert.strictEqual(result.protocolVersion, manifest.bridgeProtocolVersion,
+                'real WASM output protocol differs from the build manifest');
+            assert.strictEqual(result.bridgeBuildId, manifest.bridgeBuildId,
+                'real WASM output build ID differs from the build manifest');
+            return result;
+        },
+    });
+}
+
+function assertBridgeContract(facts, manifest) {
+    assert.deepStrictEqual(facts.imports, [{
         module: 'merc32_source', name: 'resolve', kind: 'function',
     }], 'WASM imports must be exactly merc32_source.resolve');
-    assert.strictEqual(readMemoryMaximumPages(bytes), WASM_MEMORY_MAX_PAGES,
+    assert.deepStrictEqual([...facts.exports].sort(), [...EXPECTED_WASM_EXPORTS].sort(),
+        'WASM exports do not match the closed bridge ABI');
+    assert.strictEqual(facts.memoryMaximumPages, WASM_MEMORY_MAX_PAGES,
         'WASM memory maximum must be 128 MiB');
+    assert.strictEqual(facts.bridgeBuildId, manifest.bridgeBuildId,
+        'WASM embedded build ID does not match the build manifest');
+    assert.strictEqual(facts.protocolVersion, manifest.bridgeProtocolVersion,
+        'WASM protocol version does not match the build manifest');
+}
+
+function memorySlice(memory, pointer, length, label) {
+    assert.ok(memory && memory.buffer instanceof ArrayBuffer,
+        'packaged WASM memory export is invalid');
+    assert.ok(Number.isSafeInteger(pointer) && pointer >= 0
+        && Number.isSafeInteger(length) && length >= 0
+        && pointer + length <= memory.buffer.byteLength,
+    `packaged WASM ${label} lies outside linear memory`);
+    return new Uint8Array(memory.buffer, pointer, length);
+}
+
+function readUtf8(memory, pointer, length, label) {
+    return new TextDecoder('utf-8', { fatal: true }).decode(memorySlice(memory, pointer, length, label));
 }
 
 function auditVsix(vsixFile, manifest) {
@@ -242,9 +351,11 @@ function auditVsix(vsixFile, manifest) {
     const zip = new AdmZip(vsixFile);
     const entries = new Map();
     const foldedEntries = new Map();
+    const pathTrie = { children: new Map() };
     for (const entry of zip.getEntries()) {
         const logicalPath = normalizeArchivePath(entry.entryName, entry.isDirectory);
         assert.ok(!entries.has(logicalPath), `VSIX contains duplicate entry ${logicalPath}`);
+        registerArchivePath(pathTrie, logicalPath, entry.isDirectory);
         const folded = logicalPath.toLocaleLowerCase('en-US');
         assert.ok(!foldedEntries.has(folded),
             `VSIX contains a case-insensitive resource alias: ${foldedEntries.get(folded)} and ${logicalPath}`);
@@ -294,22 +405,77 @@ function auditVsix(vsixFile, manifest) {
         .getData().toString('utf8'));
     assert.deepStrictEqual(archivedManifest, manifest,
         'VSIX c-frontend manifest differs from the resource tree');
-    auditWasm(entries.get('extension/resources/c-frontend/aro-merc32.wasm').getData());
+    instantiateAuditedBridge(
+        entries.get('extension/resources/c-frontend/aro-merc32.wasm').getData(),
+        archivedManifest,
+    );
 }
 
 function normalizeArchivePath(entryName, isDirectory) {
     assert.strictEqual(typeof entryName, 'string', 'VSIX entry name must be a string');
+    assert.strictEqual(typeof isDirectory, 'boolean', 'VSIX entry type must be a boolean');
+    assert.ok(entryName.length > 0, 'VSIX contains an empty entry name');
     assert.ok(!entryName.includes('\\'), `VSIX entry uses a backslash: ${entryName}`);
-    assert.ok(!entryName.startsWith('/'), `VSIX entry is absolute: ${entryName}`);
+    assert.ok(!entryName.startsWith('/') && !/^[A-Za-z]:/u.test(entryName),
+        `VSIX entry is absolute: ${entryName}`);
     assert.strictEqual(entryName.normalize('NFC'), entryName,
         `VSIX entry is not Unicode-normalized: ${entryName}`);
-    const expectedTrailingSlash = isDirectory ? '/' : '';
-    const body = isDirectory && entryName.endsWith('/') ? entryName.slice(0, -1) : entryName;
-    assert.ok(body.length > 0, 'VSIX contains an empty entry name');
-    const components = body.split('/');
+    const components = entryName.split('/');
+    const hasTrailingSlash = components[components.length - 1] === '';
+    assert.strictEqual(hasTrailingSlash, isDirectory,
+        `VSIX entry type and trailing separator disagree: ${entryName}`);
+    if (hasTrailingSlash) components.pop();
     assert.ok(components.every((component) => component !== '' && component !== '.' && component !== '..'),
         `VSIX entry is not canonical: ${entryName}`);
-    return `${components.join('/')}${expectedTrailingSlash}`;
+    return `${components.join('/')}${isDirectory ? '/' : ''}`;
+}
+
+function registerArchivePath(root, name, isDirectory) {
+    const segments = (isDirectory ? name.slice(0, -1) : name).split('/');
+    let node = root;
+    for (const [index, segment] of segments.entries()) {
+        const foldedSegment = segment.toLocaleLowerCase('en-US');
+        const logicalPath = segments.slice(0, index + 1).join('/');
+        let child = node.children.get(foldedSegment);
+        if (child === undefined) {
+            child = {
+                children: new Map(),
+                explicitType: undefined,
+                logicalPath,
+                requiredDirectory: false,
+                spelling: segment,
+            };
+            node.children.set(foldedSegment, child);
+        } else {
+            assert.strictEqual(child.spelling, segment,
+                archivePathConflict(child, name, 'segment spelling differs'));
+        }
+        const isLeaf = index === segments.length - 1;
+        if (!isLeaf) {
+            assert.notStrictEqual(child.explicitType, 'file',
+                archivePathConflict(child, name, 'descendant is below a file'));
+            child.requiredDirectory = true;
+        }
+        node = child;
+    }
+    if (isDirectory) {
+        assert.notStrictEqual(node.explicitType, 'file',
+            archivePathConflict(node, name, 'directory conflicts with a file'));
+        assert.notStrictEqual(node.explicitType, 'directory',
+            archivePathConflict(node, name, 'duplicate explicit directory'));
+        node.explicitType = 'directory';
+        return;
+    }
+    assert.strictEqual(node.explicitType, undefined,
+        archivePathConflict(node, name, 'file conflicts with an explicit entry'));
+    assert.ok(!node.requiredDirectory && node.children.size === 0,
+        archivePathConflict(node, name, 'file conflicts with existing descendants'));
+    node.explicitType = 'file';
+}
+
+function archivePathConflict(node, incomingName, reason) {
+    const existingName = `${node.logicalPath}${node.explicitType === 'file' ? '' : '/'}`;
+    return `case-insensitive VSIX entry alias ${existingName} and ${incomingName} (${reason})`;
 }
 
 function listRegularFiles(root) {
@@ -394,4 +560,13 @@ if (require.main === module) {
     }
 }
 
-module.exports = { auditResources, auditVsix, readMemoryMaximumPages, run };
+module.exports = {
+    assertBridgeContract,
+    auditResources,
+    auditVsix,
+    instantiateAuditedBridge,
+    normalizeArchivePath,
+    readMemoryMaximumPages,
+    registerArchivePath,
+    run,
+};
