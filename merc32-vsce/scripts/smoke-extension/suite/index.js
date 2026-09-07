@@ -143,7 +143,7 @@ async function run() {
         fs.mkdirSync(cSmokeRoot, { recursive: true });
         fs.writeFileSync(cSibling, '#define MERC32_SMOKE_VALUE 7\n');
         fs.writeFileSync(cMain,
-            '#include "sibling.h"\n#include <stdint.h>\nint smoke_value = MERC32_SMOKE_VALUE + (int)UINT32_MAX;\n');
+            '#include "sibling.h"\n#include <stdint.h>\nint smoke_value = MERC32_SMOKE_VALUE + (int)UINT32_MAX;\nint main(void) { return smoke_value; }\n');
         const cDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(cMain));
         await vscode.window.showTextDocument(cDocument, { preview: false });
         await vscode.commands.executeCommand('merc32-asm.compileCToAsm');
