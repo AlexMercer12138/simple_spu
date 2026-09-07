@@ -53,7 +53,7 @@ assertDeeplyFrozen(accepted);
 
 const pointerRecursive = clone(validFixture);
 pointerRecursive.unit.types.push(
-    { id: 2, kind: 'struct', name: 'Node', complete: true, members: [
+    { id: 2, kind: 'struct', name: 'Node', complete: true, packed: false, members: [
         { name: 'next', type: 3, offset: 0, range: { file: 1, start: { line: 1, column: 1, byteOffset: 0 }, end: { line: 1, column: 2, byteOffset: 1 } } },
     ], qualifiers: [], size: 4, alignment: 4 },
     { id: 3, kind: 'pointer', pointee: 2, qualifiers: [], size: 4, alignment: 4 },
@@ -280,7 +280,7 @@ assert.doesNotThrow(() => validateEnvelope(preservedLvalue, 'test-build'),
 
 const rvalueMember = clone(validFixture);
 rvalueMember.unit.types.push({
-    id: 2, kind: 'struct', name: 'Pair', complete: true,
+    id: 2, kind: 'struct', name: 'Pair', complete: true, packed: false,
     members: [{ name: 'first', type: 1, offset: 0, range: nodeRange }],
     qualifiers: [], size: 4, alignment: 4,
 });
@@ -431,12 +431,12 @@ assert.doesNotThrow(() => validateEnvelope(pointerConversions, 'test-build'),
 
 const qualifiedAggregateConversions = clone(validFixture);
 qualifiedAggregateConversions.unit.types.push({
-    id: 2, kind: 'struct', name: 'QualifiedPair', complete: true,
+    id: 2, kind: 'struct', name: 'QualifiedPair', complete: true, packed: false,
     nominalId: 10,
     members: [{ name: 'value', type: 1, offset: 0, range: nodeRange }],
     qualifiers: [], size: 4, alignment: 4,
 }, {
-    id: 3, kind: 'struct', name: 'QualifiedPair', complete: true,
+    id: 3, kind: 'struct', name: 'QualifiedPair', complete: true, packed: false,
     nominalId: 10,
     members: [{ name: 'value', type: 1, offset: 0, range: nodeRange }],
     qualifiers: ['const'], size: 4, alignment: 4,
@@ -486,13 +486,13 @@ expectContractFailure(unrelatedQualifiedAggregate, 'NODE_CONVERSION',
 
 const recursiveQualifiedAggregate = clone(validFixture);
 recursiveQualifiedAggregate.unit.types.push({
-    id: 2, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true,
+    id: 2, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true, packed: false,
     members: [{ name: 'next', type: 3, offset: 0, range: nodeRange }],
     qualifiers: [], size: 4, alignment: 4,
 }, {
     id: 3, kind: 'pointer', pointee: 2, qualifiers: [], size: 4, alignment: 4,
 }, {
-    id: 4, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true,
+    id: 4, kind: 'struct', name: 'Recursive', nominalId: 20, complete: true, packed: false,
     members: [{ name: 'next', type: 5, offset: 0, range: nodeRange }],
     qualifiers: ['const'], size: 4, alignment: 4,
 }, {
@@ -555,6 +555,7 @@ const subobjectRelocation = clone(validFixture);
 subobjectRelocation.unit.types.push({
     id: 2,
     kind: 'struct',
+    packed: false,
     name: 'Pair',
     complete: true,
     members: [{
@@ -648,7 +649,7 @@ typedefRepresentations.unit.types = [
     { id: 7, kind: 'typedef', name: 'Char', target: 6, qualifiers: [], size: 1, alignment: 1 },
     { id: 8, kind: 'array', element: 7, count: 2, qualifiers: [], size: 2, alignment: 1 },
     {
-        id: 9, kind: 'struct', name: 'Bits', complete: true,
+        id: 9, kind: 'struct', name: 'Bits', complete: true, packed: false,
         members: [{
             name: 'flag', type: 1, offset: 0, bitOffset: 0, bitWidth: 1,
             range: {

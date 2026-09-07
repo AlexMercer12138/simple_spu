@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const Ajv2020 = require('ajv/dist/2020');
 const { compileC, compileCFile, compileCToObject, compileCToObjectDetailed } = require('../out/cCompiler');
 const { analyzeSource, analyzeFile } = require('../out/cFrontend/frontend');
 const { adaptTypedUnit } = require('../out/cCompiler/backendAdapter');
@@ -205,6 +206,50 @@ test('M2-deep-lowering-immutability', () => {
 test('M3-execSync-guard', async () => {
     await withHostCompilerBlocked(() => assert.throws(() => require('node:child_process').execSync('echo guard-probe'),
         (error) => error.code === 'MERC32_PROCESS_LAUNCH_DENIED'));
+});
+
+for (const boundary of ['runtime', 'packaged-schema']) {
+    const validateBoundary = (envelope) => {
+        if (boundary === 'runtime') return validateEnvelope(envelope, envelope.bridgeBuildId);
+        const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../resources/c-frontend/typed-c-unit-v1.schema.json'), 'utf8'));
+        const validate = new Ajv2020({ strict: true }).compile(schema);
+        if (!validate(envelope.unit)) throw new Error('typed unit schema rejected the record');
+    };
+    test(`F1-missing-for-mask-${boundary}`, () => {
+        for (const header of ['; n < 2;', '; n < 2; n = n + 1']) {
+            const envelope = JSON.parse(JSON.stringify(analyzeSource(`int main(void) { int n = 0; for (${header}) { n = n + 1; } return n; }`)));
+            assert.doesNotThrow(() => validateBoundary(envelope));
+            delete envelope.unit.nodes.find((node) => node.kind === 'for').forClauseMask;
+            assert.throws(() => validateBoundary(envelope), `missing forClauseMask must be rejected by ${boundary}`);
+        }
+    });
+    test(`F1-missing-packed-${boundary}`, () => {
+        for (const kind of ['struct', 'union']) {
+            const envelope = JSON.parse(JSON.stringify(analyzeSource(`${kind} Record { char a; int b; };`)));
+            envelope.unit.types.find((type) => type.kind === kind).packed = false;
+            assert.doesNotThrow(() => validateBoundary(envelope));
+            delete envelope.unit.types.find((type) => type.kind === kind).packed;
+            assert.throws(() => validateBoundary(envelope), `missing packed must be rejected by ${boundary}`);
+        }
+    });
+}
+
+test('F1-complete-for-records', () => {
+    const headers = [';;', 'n = 0;;', ';n < 2;', 'n = 0;n < 2;', ';;n = n + 1', 'n = 0;;n = n + 1', ';n < 2;n = n + 1', 'n = 0;n < 2;n = n + 1'];
+    for (const [mask, header] of headers.entries()) {
+        const unit = analyze(`int main(void) { int n = 0; for (${header}) break; return n; }`);
+        assert.equal(unit.nodes.find((node) => node.kind === 'for').forClauseMask, mask);
+        assert.doesNotThrow(() => adaptTypedUnit(unit));
+    }
+});
+
+test('F1-explicit-packed-producer', () => {
+    const unit = analyze('struct Forward; union ForwardUnion; struct Plain { int x; }; union PlainUnion { int x; }; struct __attribute__((packed)) Packed { char a; int b; }; union __attribute__((packed)) PackedUnion { char a; int b; };');
+    const records = unit.types.filter((type) => type.kind === 'struct' || type.kind === 'union');
+    for (const [name, packed] of [['Forward', false], ['ForwardUnion', false], ['Plain', false], ['PlainUnion', false], ['Packed', true], ['PackedUnion', true]]) {
+        assert.equal(records.find((type) => type.name === name).packed, packed, `${name} requires an explicit packed boolean`);
+    }
+    assert.doesNotThrow(() => adaptTypedUnit(analyze('struct Plain { int x; }; struct Plain value; int main(void) { return value.x; }')));
 });
 
 (async () => {

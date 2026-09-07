@@ -168,14 +168,14 @@ const typeRecordSchema: JsonSchema = {
             nominalId: idSchema,
             complete: { type: 'boolean' },
             members: { type: 'array', items: aggregateMemberSchema },
-        }, ['complete', 'members']),
+        }, ['complete', 'members', 'packed']),
         typeSchema('union', {
             packed: { type: 'boolean' },
             name: { type: 'string' },
             nominalId: idSchema,
             complete: { type: 'boolean' },
             members: { type: 'array', items: aggregateMemberSchema },
-        }, ['complete', 'members']),
+        }, ['complete', 'members', 'packed']),
         typeSchema('enum', {
             name: { type: 'string' },
             nominalId: idSchema,
@@ -282,7 +282,7 @@ const nodeRecordSchema: JsonSchema = {
             kind, 'declaration', { type: idSchema, symbol: idSchema }, ['type', 'symbol'])),
         nodeSchema('static-assert', 'declaration'),
         ...plainStatementKinds.map((kind) => nodeSchema(kind, 'statement')),
-        nodeSchema('for', 'statement', { forClauseMask: { type: 'integer', minimum: 0, maximum: 7 } }),
+        nodeSchema('for', 'statement', { forClauseMask: { type: 'integer', minimum: 0, maximum: 7 } }, ['forClauseMask']),
         nodeSchema('case', 'statement', { caseValue: integerConstantSchema }, ['caseValue']),
         nodeSchema('goto', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
         nodeSchema('label', 'statement', { label: { type: 'string', minLength: 1 } }, ['label']),
@@ -395,7 +395,7 @@ const structurallyValid = ajv.compile<TypedCEnvelopeV1>(envelopeSchema);
 const NODE_KINDS = new Set<TypedNodeKind>([
     ...declarationKinds,
     'static-assert',
-    ...plainStatementKinds, 'case',
+    ...plainStatementKinds, 'for', 'case',
     'goto', 'label',
     'integer-literal', 'floating-literal', 'character-literal', 'string-literal',
     'declaration-reference', 'unary', 'binary', 'conditional', 'assignment',
@@ -1192,25 +1192,15 @@ function validateNodeChildren(
         case 'for': {
             count(1, 4);
             category(children.length - 1, 'statement');
-            if (node.forClauseMask !== undefined) {
-                let index = 0;
-                for (const mask of [1, 2, 4]) {
-                    if (!(node.forClauseMask & mask)) continue;
-                    assertInvariant(index < children.length - 1, 'NODE_CHILDREN', 'for clause mask exceeds its children');
-                    if (mask === 1) assertInvariant(children[index].category === 'expression' || children[index].category === 'statement', 'NODE_CHILDREN', 'for initializer is not an expression or statement');
-                    else category(index, 'expression');
-                    index++;
-                }
-                assertInvariant(index === children.length - 1, 'NODE_CHILDREN', 'for clause mask does not describe its children');
-                break;
+            let index = 0;
+            for (const mask of [1, 2, 4]) {
+                if (!(node.forClauseMask & mask)) continue;
+                assertInvariant(index < children.length - 1, 'NODE_CHILDREN', 'for clause mask exceeds its children');
+                if (mask === 1) assertInvariant(children[index].category === 'expression' || children[index].category === 'statement', 'NODE_CHILDREN', 'for initializer is not an expression or statement');
+                else category(index, 'expression');
+                index++;
             }
-            const clauses = children.slice(0, -1);
-            const statementClauses = clauses.filter((child) => child.category === 'statement');
-            assertInvariant(statementClauses.length <= 1
-                && (statementClauses.length === 0 || clauses[0].category === 'statement')
-                && clauses.every((child, index) => child.category === 'expression'
-                    || (index === 0 && child.category === 'statement')),
-            'NODE_CHILDREN', `for node ${node.id} has invalid initializer/condition/increment ordering`);
+            assertInvariant(index === children.length - 1, 'NODE_CHILDREN', 'for clause mask does not describe its children');
             break;
         }
         case 'case':

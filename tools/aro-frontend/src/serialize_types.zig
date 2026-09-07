@@ -251,7 +251,8 @@ pub const Store = struct {
                 (record.layout != null and qt.alignof(store.tree.comp) < natural_alignment) or
                 (field.bit_width == .null and field.layout.offset_bits % (natural_alignment * 8) != 0)) packed_layout = true;
         }
-        if (packed_layout) try output.add(",\"packed\":true");
+        try output.add(",\"packed\":");
+        try output.add(if (packed_layout) "true" else "false");
         try output.add(",\"nominalId\":");
         try output.integer(nominalRecordId(record, store.tree.comp));
         if (!record.isAnonymous(store.tree.comp)) {

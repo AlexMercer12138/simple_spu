@@ -387,7 +387,7 @@
         "path": ["unit", "types"],
         "value": [
           { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
-          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
+          { "id": 2, "kind": "struct", "packed": false, "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 1, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
         ]
       }]
     },
@@ -399,7 +399,7 @@
         "path": ["unit", "types"],
         "value": [
           { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
-          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "a", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }, { "name": "b", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 4, "alignment": 4 }
+          { "id": 2, "kind": "struct", "packed": false, "name": "Bad", "complete": true, "members": [{ "name": "a", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }, { "name": "b", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 4, "alignment": 4 }
         ]
       }]
     },
@@ -411,7 +411,7 @@
         "path": ["unit", "types"],
         "value": [
           { "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 },
-          { "id": 2, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
+          { "id": 2, "kind": "struct", "packed": false, "name": "Bad", "complete": true, "members": [{ "name": "member", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 8, "alignment": 4 }
         ]
       }]
     },
@@ -552,13 +552,13 @@
       "name": "struct contains noncanonical internal padding",
       "invariant": "AGGREGATE_LAYOUT",
       "messageIncludes": "expected byte offset 4",
-      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }, { "id": 2, "kind": "struct", "name": "Padded", "complete": true, "members": [{ "name": "a", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }, { "name": "b", "type": 1, "offset": 8, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 12, "alignment": 4 }] }]
+      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "int", "qualifiers": [], "size": 4, "alignment": 4 }, { "id": 2, "kind": "struct", "packed": false, "name": "Padded", "complete": true, "members": [{ "name": "a", "type": 1, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }, { "name": "b", "type": 1, "offset": 8, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 12, "alignment": 4 }] }]
     },
     {
       "name": "incomplete record has arbitrary alignment",
       "invariant": "AGGREGATE_LAYOUT",
       "messageIncludes": "size 0, alignment 1",
-      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "struct", "name": "Incomplete", "complete": false, "members": [], "qualifiers": [], "size": 0, "alignment": 4 }] }]
+      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "struct", "packed": false, "name": "Incomplete", "complete": false, "members": [], "qualifiers": [], "size": 0, "alignment": 4 }] }]
     },
     {
       "name": "array element hides function behind typedef",
@@ -582,7 +582,7 @@
       "name": "aggregate member hides void behind typedef",
       "invariant": "CROSS_KIND_REFERENCE",
       "messageIncludes": "object type",
-      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "void", "qualifiers": [], "size": 0, "alignment": 1 }, { "id": 2, "kind": "typedef", "name": "V", "target": 1, "qualifiers": [], "size": 0, "alignment": 1 }, { "id": 3, "kind": "struct", "name": "Bad", "complete": true, "members": [{ "name": "v", "type": 2, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 0, "alignment": 1 }] }]
+      "operations": [{ "op": "set", "path": ["unit", "types"], "value": [{ "id": 1, "kind": "builtin", "name": "void", "qualifiers": [], "size": 0, "alignment": 1 }, { "id": 2, "kind": "typedef", "name": "V", "target": 1, "qualifiers": [], "size": 0, "alignment": 1 }, { "id": 3, "kind": "struct", "packed": false, "name": "Bad", "complete": true, "members": [{ "name": "v", "type": 2, "offset": 0, "range": { "file": 1, "start": { "line": 1, "column": 1, "byteOffset": 0 }, "end": { "line": 1, "column": 2, "byteOffset": 1 } } }], "qualifiers": [], "size": 0, "alignment": 1 }] }]
     },
     {
       "name": "variable type hides function behind typedef",

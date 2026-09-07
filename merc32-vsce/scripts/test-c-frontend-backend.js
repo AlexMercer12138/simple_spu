@@ -17,7 +17,7 @@ const unit = {
   types: [int(1), int(2, 'unsigned int'), {
     id: 3, kind: 'pointer', pointee: 1, qualifiers: [], size: 4, alignment: 4,
   }, {
-    id: 4, kind: 'struct', name: 'Pair', complete: true, qualifiers: [], size: 8, alignment: 4,
+    id: 4, kind: 'struct', name: 'Pair', complete: true, packed: false, qualifiers: [], size: 8, alignment: 4,
     members: [
       { name: 'first', type: 1, offset: 0, range: range() },
       { name: 'second', type: 1, offset: 4, range: range() },

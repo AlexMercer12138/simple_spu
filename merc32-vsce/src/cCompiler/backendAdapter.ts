@@ -276,7 +276,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             case 'while': statement = { kind: 'while', test: expr(0), body: child(1), location }; break;
             case 'do-while': statement = { kind: 'do-while', body: child(0), test: expr(1), location }; break;
             case 'for': {
-                const mask = node.forClauseMask ?? (node.children.length === 1 ? 0 : 7);
+                const mask = node.forClauseMask;
                 let index = 0;
                 const init = mask & 1 ? nodeRecords.get(Number(node.children[index]))?.category === 'expression' ? expr(index++) : child(index++) : undefined;
                 const test = mask & 2 ? expr(index++) : undefined;

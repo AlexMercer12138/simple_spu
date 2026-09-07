@@ -242,8 +242,8 @@
         {
           "if": { "properties": { "kind": { "enum": ["struct", "union"] } } },
           "then": {
-            "required": ["complete", "members"],
-            "properties": { "complete": {}, "members": {} },
+            "required": ["complete", "members", "packed"],
+            "properties": { "complete": {}, "members": {}, "packed": {} },
             "propertyNames": {
               "enum": [
                 "id", "kind", "qualifiers", "size", "alignment", "name",
@@ -465,6 +465,7 @@
         {
           "if": { "properties": { "kind": { "const": "for" } } },
           "then": {
+            "required": ["forClauseMask"],
             "properties": { "category": { "const": "statement" }, "forClauseMask": {} },
             "propertyNames": {
               "enum": ["id", "category", "kind", "range", "spellingRange", "children", "forClauseMask"]

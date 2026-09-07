@@ -120,7 +120,7 @@ export interface AggregateMemberRecord {
 }
 
 export interface StructTypeRecord extends TypedTypeBase<'struct'> {
-    readonly packed?: boolean;
+    readonly packed: boolean;
     readonly name?: string;
     readonly nominalId?: TypeId;
     readonly complete: boolean;
@@ -128,7 +128,7 @@ export interface StructTypeRecord extends TypedTypeBase<'struct'> {
 }
 
 export interface UnionTypeRecord extends TypedTypeBase<'union'> {
-    readonly packed?: boolean;
+    readonly packed: boolean;
     readonly name?: string;
     readonly nominalId?: TypeId;
     readonly complete: boolean;
@@ -275,7 +275,7 @@ export type TypedNodeRecord =
         | 'if' | 'while' | 'do-while' | 'switch' | 'default'
         | 'break' | 'continue' | 'empty'>
     // Set bits 1/2/4 identify present init/test/step children; the body is last.
-    | (PlainStatement<'for'> & Readonly<{ forClauseMask?: number }>)
+    | (PlainStatement<'for'> & Readonly<{ forClauseMask: number }>)
     | (PlainStatement<'case'> & Readonly<{ caseValue: IntegerConstant }>)
     | (PlainStatement<'goto' | 'label'> & Readonly<{ label: string }>)
     | (ExpressionBase<'integer-literal' | 'character-literal'> & Readonly<{ constant: IntegerConstant }>)
