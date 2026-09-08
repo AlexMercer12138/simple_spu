@@ -25,6 +25,10 @@ tmp/
 *.vvp
 *.vcd
 
+# Zig compiler caches
+.zig-cache/
+zig-cache/
+
 # Vivado project folder
 xpr/
 
@@ -43,6 +47,7 @@ merc32-vsce/.vscode-test/
 merc32-vsce/.test-results/
 merc32-vsce/*.vsix
 merc32-vsce/resources/rtl/
+merc32-vsce/resources/runtime/
 merc32-vsce/resources/licenses/
 merc32-vsce/resources/resource-manifest.json
 

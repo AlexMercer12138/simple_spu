@@ -30,7 +30,26 @@ export function validateObject(object: Merc32Object): void {
     symbols.add(symbol.name);
   }
   const kinds = new Set<RelocationKind>(['ABS32', 'IMM16', 'CALL16', 'BRANCH16', 'HI16', 'LO16']);
+  if (object.functions !== undefined) {
+    const text = sections.get('text');
+    if (!Array.isArray(object.functions) || !text) throw new Error('invalid function table');
+    let end = 0;
+    for (const func of object.functions) {
+      if (!func || typeof func.name !== 'string' || func.offset !== end ||
+          !Number.isSafeInteger(func.size) || func.size <= 0 || func.size % 4 !== 0 ||
+          !object.symbols.some(symbol => symbol.name === func.name && symbol.defined &&
+            symbol.section === 'text' && symbol.offset === func.offset)) throw new Error('invalid function range');
+      end += func.size;
+    }
+    if (end !== text.size) throw new Error('function ranges must partition the text section');
+  }
   for (const relocation of object.relocations) {
+    if (relocation.relaxationRegister !== undefined &&
+        (relocation.section !== 'text' || !['CALL16', 'BRANCH16'].includes(relocation.kind)
+        || !Number.isInteger(relocation.relaxationRegister)
+        || relocation.relaxationRegister < 4 || relocation.relaxationRegister > 11)) {
+      throw new Error('invalid control-flow relaxation register');
+    }
     if (!names.has(relocation.section) || !sections.has(relocation.section) || !symbols.has(relocation.symbol) || !kinds.has(relocation.kind) || !Number.isSafeInteger(relocation.offset) || relocation.offset < 0 || !Number.isSafeInteger(relocation.addend)) throw new Error('invalid relocation');
     if (relocation.section === 'bss') throw new Error("relocation patch section 'bss' is not supported");
     const width = relocation.kind === 'ABS32' || relocation.section === 'text' ? 4 : 2;

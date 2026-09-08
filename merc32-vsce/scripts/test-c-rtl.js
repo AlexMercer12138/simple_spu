@@ -280,6 +280,7 @@ function writeMemoryImage(file, machineCodes) {
 function runFirmwareTest(test) {
     const source = test.source();
     const compile = compileCToObjectDetailed(source, {
+        optimization: process.argv.includes('--basic') ? 'basic' : 'none',
         moduleName: test.name,
         sourceName: `${test.name}.c`,
     });
@@ -332,5 +333,7 @@ function runFirmwareTest(test) {
     }
 }
 
-for (const test of firmwareTests) runFirmwareTest(test);
-console.log(`MERC32 Tiny C RTL suite passed (${firmwareTests.length} tests)`);
+const selectedTests = process.argv.includes('--irq-only') ? firmwareTests.filter(test => test.name === 'tinyc_irq_test') : firmwareTests;
+assert(selectedTests.length > 0);
+for (const test of selectedTests) runFirmwareTest(test);
+console.log(`MERC32 Tiny C RTL suite passed (${selectedTests.length} tests)`);

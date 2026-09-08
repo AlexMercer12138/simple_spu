@@ -395,6 +395,8 @@
         "operator": { "type": "string", "minLength": 1 },
         "memberIndex": { "$ref": "#/$defs/nonNegativeInteger" },
         "targetType": { "$ref": "#/$defs/id" },
+        "computationType": { "$ref": "#/$defs/id" },
+        "initializerIndices": { "type": "array", "items": { "$ref": "#/$defs/nonNegativeInteger" } },
         "conversion": {
           "enum": [
             "lvalue-to-rvalue", "array-to-pointer", "function-to-pointer",
@@ -570,7 +572,7 @@
         {
           "if": {
             "properties": {
-              "kind": { "enum": ["unary", "binary", "conditional", "assignment"] }
+              "kind": { "enum": ["unary", "binary", "conditional"] }
             }
           },
           "then": {
@@ -584,6 +586,14 @@
                 "type", "valueCategory", "constant", "operator"
               ]
             }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "assignment" } } },
+          "then": {
+            "required": ["type", "valueCategory", "operator"],
+            "properties": { "category": { "const": "expression" }, "type": {}, "valueCategory": {}, "operator": {}, "computationType": {} },
+            "propertyNames": { "enum": ["id", "category", "kind", "range", "spellingRange", "children", "type", "valueCategory", "constant", "operator", "computationType"] }
           }
         },
         {
@@ -662,7 +672,7 @@
             "propertyNames": {
               "enum": [
                 "id", "category", "kind", "range", "spellingRange", "children",
-                "type", "valueCategory", "constant", "targetType"
+                "type", "valueCategory", "constant", "targetType", "initializerIndices"
               ]
             }
           }

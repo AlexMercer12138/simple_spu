@@ -69,6 +69,8 @@ function writeGenerationConfig(directory, fileName, projectName, outputDir, tran
 }
 
 function prepareGenerationAssets(root, resourceRevision = 'test-resource-revision') {
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'drivers'),
+        path.join(root, 'drivers'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
         path.join(root, 'catalog'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'templates'),
@@ -320,6 +322,7 @@ function assertGenerationOrchestration() {
             'hardware/demo_soc.v',
             'software/demo_soc.h',
             'software/main.c',
+            'software/drivers/merc32_drivers.h',
         ];
         assert.strictEqual(first.outputDir, outputDir);
         assert.strictEqual(first.manifestFile, path.join(outputDir, 'manifest.json'));
@@ -1754,6 +1757,10 @@ try {
     const expectedFiles = [
         'README.md', 'manifest.json', 'hardware/demo_soc.v',
         'firmware/ilb_firmware.mem', 'software/demo_soc.h', 'software/main.c',
+        'software/drivers/merc32_drivers.h',
+        'software/drivers/gpio.c', 'software/drivers/gpio.h',
+        'software/drivers/intc.c', 'software/drivers/intc.h',
+        'software/drivers/uart.c', 'software/drivers/uart.h',
     ];
     assert.deepStrictEqual(soc.expectedGeneratedFiles(controllerPlan), expectedFiles);
     for (const heading of [
@@ -1793,6 +1800,7 @@ try {
 
     assert.strictEqual(starterMain, [
         '#include "demo_soc.h"',
+        '#include "drivers/merc32_drivers.h"',
         '',
         'int main(void) {',
         '    while (1) {',
@@ -1809,6 +1817,9 @@ try {
         fs.mkdirSync(path.dirname(mainFile), { recursive: true });
         fs.writeFileSync(headerFile, header);
         fs.writeFileSync(mainFile, starterMain);
+        fs.cpSync(path.join(__dirname, '../resources/drivers'), path.join(softwareRoot, 'drivers'), { recursive: true });
+        fs.writeFileSync(path.join(softwareRoot, 'drivers/merc32_drivers.h'),
+            '#include "gpio.c"\n#include "intc.c"\n#include "uart.c"\n');
         const result = compileCFile(mainFile, { moduleName: 'generated_main' });
         assert.ok(new SimpleCPUAssembler().assemble(result.assembly, {
             sourceFileName: 'generated_main.asm',
@@ -2006,6 +2017,7 @@ try {
     assert.deepStrictEqual(soc.expectedGeneratedFiles(minimalPlan), [
         'README.md', 'manifest.json', 'hardware/minimal_soc.v',
         'software/minimal_soc.h', 'software/main.c',
+        'software/drivers/merc32_drivers.h',
     ]);
     const memoryInitInventory = clone(minimal);
     memoryInitInventory.memory.ilb = {

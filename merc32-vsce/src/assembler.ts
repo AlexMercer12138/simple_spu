@@ -832,7 +832,7 @@ export class SimpleCPUAssembler {
                 newOperands.push(op);
             } else if (this.symbols.has(op)) {
                 const addr = this.symbols.get(op)!;
-                newOperands.push(`${addr}`);
+                newOperands.push(mnemonic === 'jmp' && addr >= 0x8000 ? `0x${addr.toString(16)}` : `${addr}`);
             } else {
                 newOperands.push(this.replaceSymbolsInOperand(op));
             }

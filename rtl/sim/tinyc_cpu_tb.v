@@ -194,6 +194,8 @@ module tinyc_cpu_tb();
 
             if ((halt_pc >= 0) && (merc32_core_inst.prog_addr == halt_pc)) begin
                 done <= 1'b1;
+                if ($test$plusargs("REPORT_METRICS"))
+                    $display("METRICS cycles=%0d", cycle_count);
                 if ((dlb_ram[STATUS_ADDR] === PASS_CODE) &&
                     (merc32_core_inst.read_register(4'd13) === stack_top) &&
                     (merc32_core_inst.read_register(4'd4) === return_value) &&

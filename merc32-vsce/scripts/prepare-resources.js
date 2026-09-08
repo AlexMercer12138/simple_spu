@@ -13,17 +13,27 @@ const BASE_RTL_FILES = [
     'rtl/misc/spram.v',
     'rtl/bridge/lb2apb.v',
 ];
+const RUNTIME_FILES = Object.freeze([
+    'runtime/merc32/PROVENANCE.md',
+    'runtime/merc32/float32.asm',
+    'runtime/merc32/float64.asm',
+    'runtime/merc32/mem.asm',
+    'runtime/merc32/runtime.manifest.json',
+    'runtime/merc32/startup.asm',
+]);
 const C_FRONTEND_FILES = Object.freeze([
     'aro-merc32.wasm',
     'build-manifest.json',
     'include/float.h',
     'include/iso646.h',
     'include/limits.h',
+    'include/merc32_irq.h',
     'include/stdalign.h',
     'include/stdbool.h',
     'include/stddef.h',
     'include/stdint.h',
     'include/stdnoreturn.h',
+    'include/string.h',
     'licenses/ARO-LICENSE',
     'licenses/UNICODE-LICENSE',
     'typed-c-unit-v1.schema.json',
@@ -63,6 +73,7 @@ function prepareResourcesAtRoots(options) {
         rtlFiles: sortedRtlFiles,
         staticFiles,
         cFrontendFiles,
+        runtimeFiles,
     } = inputs;
     validateConcreteResourceTopology({ extensionRoot, repositoryRoot }, inputs);
     validateGeneratedRootsForDeletion({ extensionRoot, repositoryRoot }, inputs);
@@ -82,10 +93,15 @@ function prepareResourcesAtRoots(options) {
 
     const generatedRtlRoot = path.join(resourcesRoot, 'rtl');
     const generatedLicenseRoot = path.join(resourcesRoot, 'licenses');
+    const generatedRuntimeRoot = path.join(resourcesRoot, 'runtime');
     const manifestFile = path.join(resourcesRoot, 'resource-manifest.json');
     fs.rmSync(generatedRtlRoot, { recursive: true, force: true });
     fs.rmSync(generatedLicenseRoot, { recursive: true, force: true });
+    fs.rmSync(generatedRuntimeRoot, { recursive: true, force: true });
     for (const logicalPath of sortedRtlFiles) {
+        copyLogicalFile(repositoryRoot, resourcesRoot, logicalPath);
+    }
+    for (const logicalPath of runtimeFiles) {
         copyLogicalFile(repositoryRoot, resourcesRoot, logicalPath);
     }
     fs.mkdirSync(generatedLicenseRoot, { recursive: true });
@@ -99,6 +115,7 @@ function prepareResourcesAtRoots(options) {
         ...sortedRtlFiles,
         ...staticFiles,
         ...cFrontendFiles,
+        ...runtimeFiles,
         'licenses/LICENSE',
         'schema/merc32.schema.json',
     ].sort();
@@ -150,6 +167,9 @@ function discoverResourceInputs(options) {
     }
     const staticFiles = [
         ...catalogFiles,
+        ...['can', 'gpio', 'i2c', 'intc', 'qspi', 'sdio', 'timer', 'uart']
+            .flatMap(name => [`drivers/${name}.c`, `drivers/${name}.h`]),
+        'drivers/provenance.json',
         'catalog/protocols.json',
         'templates/README.md.tpl',
         'templates/main.c.tpl',
@@ -162,6 +182,10 @@ function discoverResourceInputs(options) {
     }
     requireSourceFile(repositoryRoot, 'LICENSE');
     const cFrontendFiles = discoverCFrontendFiles(resourcesRoot);
+    for (const logicalPath of RUNTIME_FILES) {
+        const target = requireSourceFile(repositoryRoot, logicalPath);
+        assertPathHasNoLinks(target, `repository runtime input ${logicalPath}`);
+    }
 
     return Object.freeze({
         catalogRoot,
@@ -169,6 +193,7 @@ function discoverResourceInputs(options) {
         rtlFiles: Object.freeze(sortedRtlFiles),
         staticFiles: Object.freeze(staticFiles),
         cFrontendFiles: Object.freeze(cFrontendFiles),
+        runtimeFiles: RUNTIME_FILES,
     });
 }
 
@@ -261,6 +286,7 @@ function validateResourceRootTopology(roots) {
     const resourcesRoot = path.join(roots.extensionRoot, 'resources');
     const inputs = [
         { label: 'repository RTL input', target: path.join(roots.repositoryRoot, 'rtl') },
+        { label: 'repository runtime input', target: path.join(roots.repositoryRoot, 'runtime') },
         { label: 'repository license input', target: path.join(roots.repositoryRoot, 'LICENSE') },
         { label: 'extension catalog input', target: path.join(resourcesRoot, 'catalog') },
         { label: 'extension templates input', target: path.join(resourcesRoot, 'templates') },
@@ -269,6 +295,7 @@ function validateResourceRootTopology(roots) {
     ];
     const outputs = [
         { label: 'generated RTL output', target: path.join(resourcesRoot, 'rtl') },
+        { label: 'generated runtime output', target: path.join(resourcesRoot, 'runtime') },
         { label: 'generated licenses output', target: path.join(resourcesRoot, 'licenses') },
         { label: 'generated manifest output', target: path.join(resourcesRoot,
             'resource-manifest.json') },
@@ -322,6 +349,10 @@ function validateConcreteResourceTopology(roots, inputs) {
             label: `generated RTL output ${logicalPath}`,
             target: path.join(resourcesRoot, ...logicalPath.split('/')),
         })),
+        ...inputs.runtimeFiles.map((logicalPath) => ({
+            label: `generated runtime output ${logicalPath}`,
+            target: path.join(resourcesRoot, ...logicalPath.split('/')),
+        })),
         {
             label: 'generated license output licenses/LICENSE',
             target: path.join(resourcesRoot, 'licenses', 'LICENSE'),
@@ -364,6 +395,10 @@ function collectAuthoritativeInputs(roots, inputs) {
             label: `repository RTL input ${logicalPath}`,
             target: path.join(roots.repositoryRoot, ...logicalPath.split('/')),
         })),
+        ...inputs.runtimeFiles.map((logicalPath) => ({
+            label: `repository runtime input ${logicalPath}`,
+            target: path.join(roots.repositoryRoot, ...logicalPath.split('/')),
+        })),
         {
             label: 'repository license input LICENSE',
             target: path.join(roots.repositoryRoot, 'LICENSE'),
@@ -387,6 +422,7 @@ function validateGeneratedRootsForDeletion(roots, inputs) {
     const resourcesRoot = path.join(roots.extensionRoot, 'resources');
     for (const [logicalPath, label] of [
         ['rtl', 'generated RTL root'],
+        ['runtime', 'generated runtime root'],
         ['licenses', 'generated license root'],
     ]) {
         const target = path.join(resourcesRoot, logicalPath);

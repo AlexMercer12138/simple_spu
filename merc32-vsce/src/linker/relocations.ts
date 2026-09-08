@@ -41,7 +41,7 @@ function patchControlFlow(
   relocation: Relocation,
   objectIndex: number,
   value: number,
-  source?: string,
+  sourceMnemonics?: ReadonlyMap<number, string>,
   hasCanonicalWord = true,
 ): void {
   if (relocation.section !== 'text') {
@@ -56,8 +56,8 @@ function patchControlFlow(
       throw relocationError(`${relocation.kind} relocation '${relocation.symbol}' must patch a ${expected} instruction`, relocation, objectIndex);
     }
   }
-  if (source !== undefined) {
-    const mnemonic = sourceMnemonicAtOffset(source, relocation.offset);
+  if (sourceMnemonics !== undefined) {
+    const mnemonic = sourceMnemonics.get(relocation.offset);
     const validMnemonic = relocation.kind === 'CALL16' ? mnemonic === 'jmp' : mnemonic === 'bz' || mnemonic === 'bnz';
     if (!validMnemonic) {
       const expected = relocation.kind === 'CALL16' ? 'jmp' : 'bz or bnz';
@@ -76,15 +76,16 @@ function patchControlFlow(
   write16(content, relocation.section, relocation.offset, value);
 }
 
-function sourceMnemonicAtOffset(source: string, relocationOffset: number): string | undefined {
+function sourceMnemonics(source: string): ReadonlyMap<number, string> {
+  const result = new Map<number, string>();
   let instructionOffset = 0;
   for (const line of maskAssemblyComments(source)) {
     const code = line.trim().replace(/^[A-Za-z_][A-Za-z0-9_]*\s*[:\uff1a]\s*/, '').trim();
     if (!code || code.startsWith('.')) continue;
-    if (instructionOffset === relocationOffset) return code.match(/^[A-Za-z][A-Za-z0-9_.]*/)?.[0].toLowerCase();
+    result.set(instructionOffset, code.match(/^[A-Za-z][A-Za-z0-9_.]*/)?.[0].toLowerCase() ?? '');
     instructionOffset += 4;
   }
-  return undefined;
+  return result;
 }
 
 function replaceIdentifier(text: string, name: string, replacement: string): string {
@@ -119,7 +120,8 @@ function patchSource(
     for (const replacement of replacements.get(instructionOffset) ?? []) {
       patched = replaceIdentifier(patched, replacement.symbol, formatImmediate(replacement.value));
     }
-    for (const [name, namespaced] of localLabels) patched = replaceIdentifier(patched, name, namespaced);
+    patched = patched.replace(/("(?:\\.|[^"\\])*")|\b[A-Za-z_][A-Za-z0-9_]*\b/g,
+      (token, quoted) => quoted || localLabels.get(token) || token);
     instructionOffset += 4;
     return `${patchedLabel}${mnemonic}${patched}${comment}`;
   }).join('\n');
@@ -146,6 +148,9 @@ export function applyRelocations(layout: LayoutResult): LinkedSections {
   const sourceReplacements = new Map<number, Map<number, SourceReplacement[]>>();
   for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
     const object = objects[objectIndex];
+    const textSection = object.sections.find(section => section.name === 'text');
+    const textSource = textSection?.source ?? (typeof textSection?.content === 'string' ? textSection.content : undefined);
+    const mnemonics = textSource === undefined ? undefined : sourceMnemonics(textSource);
     for (const relocation of object.relocations) {
       const linked = sections.find(section => section.objectIndex === objectIndex && section.name === relocation.section)!;
       const local = object.symbols.find(symbol => symbol.name === relocation.symbol && symbol.binding === 'local' && symbol.defined);
@@ -171,8 +176,7 @@ export function applyRelocations(layout: LayoutResult): LinkedSections {
         write16(linked.content, relocation.section, relocation.offset, value);
       } else {
         const patchSection = object.sections.find(section => section.name === relocation.section)!;
-        const source = patchSection.source ?? (typeof patchSection.content === 'string' ? patchSection.content : undefined);
-        patchControlFlow(linked.content, relocation, objectIndex, value, source, Array.isArray(patchSection.content));
+        patchControlFlow(linked.content, relocation, objectIndex, value, mnemonics, Array.isArray(patchSection.content));
       }
       if (relocation.section === 'text') {
         const objectReplacements = sourceReplacements.get(objectIndex) ?? new Map<number, SourceReplacement[]>();

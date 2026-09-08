@@ -2,9 +2,12 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const { runIsolatedResourcePreparation } = require('./extension-resource-stage');
+const { prepareResourcesAtRoots } = require('./prepare-resources');
 const root = path.resolve(__dirname, '../../runtime/merc32');
 const { assembleToObject, linkObjects } = require('../out/linker');
-const { loadRuntimeObjects } = require('../out/runtime/runtimeCatalog');
+const { loadRuntimeObjects, loadMemoryRuntimeObject } = require('../out/runtime/runtimeCatalog');
 
 for (const file of ['startup.asm','mem.asm','float32.asm','float64.asm','runtime.manifest.json','PROVENANCE.md']) assert(fs.existsSync(path.join(root, file)), file);
 
@@ -110,6 +113,56 @@ withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.asm', exports: ['s
 });
 withRuntimeManifest({ ...manifest, objects: [{ file: 'startup.asm' }], symbols: [] }, tempRoot => {
   assert.throws(() => loadRuntimeObjects({ root: tempRoot }), /invalid runtime object exports for 'startup.asm'/);
+});
+
+assert.strictEqual(typeof loadMemoryRuntimeObject, 'function', 'memory-only runtime loader must be available');
+withRuntimeManifest(manifest, tempRoot => {
+  for (const file of ['startup.asm', 'float32.asm', 'float64.asm']) fs.unlinkSync(path.join(tempRoot, file));
+  const memory = loadMemoryRuntimeObject({ root: tempRoot });
+  assert.deepStrictEqual(memory.symbols.filter(symbol => symbol.binding === 'global' && symbol.defined)
+    .map(symbol => symbol.name).sort(), ['memcmp', 'memcpy', 'memmove', 'memset', 'strcmp', 'strlen']);
+  assert.strictEqual(memory.abi, 'merc32-c-v1');
+});
+withRuntimeManifest({ ...manifest, objects: manifest.objects.filter(entry => entry.file !== 'mem.asm'),
+  symbols: manifest.symbols.filter(name => !manifest.objects.find(entry => entry.file === 'mem.asm').exports.includes(name)) }, tempRoot => {
+  assert.throws(() => loadMemoryRuntimeObject({ root: tempRoot }), /memory runtime object/);
+});
+
+const extensionRoot = path.resolve(__dirname, '..');
+runIsolatedResourcePreparation({
+  extensionRoot,
+  repositoryRoot: path.resolve(extensionRoot, '..'),
+  prepareResourcesFn(options, stage) {
+    const prepared = prepareResourcesAtRoots(options);
+    fs.cpSync(path.join(extensionRoot, 'out'), path.join(stage.extensionRoot, 'out'), { recursive: true });
+    const lock = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package-lock.json'), 'utf8'));
+    for (const [logicalPath, metadata] of Object.entries(lock.packages)) {
+      if (logicalPath.startsWith('node_modules/') && !metadata.dev) {
+        fs.cpSync(path.join(extensionRoot, logicalPath), path.join(stage.extensionRoot, logicalPath), { recursive: true });
+      }
+    }
+    fs.writeFileSync(path.join(stage.extensionRoot, 'main.c'),
+      '#include <string.h>\nchar bytes[8];\nint main(void) { memset(bytes, 65, 3); bytes[3] = 0; return strlen(bytes); }\n');
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { loadMemoryRuntimeObject } = require('./out/runtime/runtimeCatalog');
+      const { compileCFile } = require('./out/cCompiler');
+      const { SimpleCPUAssembler } = require('./out/assembler');
+      const memory = loadMemoryRuntimeObject();
+      assert.ok(memory.symbols.some(symbol => symbol.name === 'memset' && symbol.defined));
+      const result = compileCFile(path.resolve('main.c'));
+      const binary = new SimpleCPUAssembler().assemble(result.assembly);
+      assert.ok(binary.machineCodes.length > 0);
+      fs.renameSync('resources/runtime/merc32', 'resources/runtime/removed');
+      assert.throws(() => loadMemoryRuntimeObject(), /ENOENT/);
+      fs.renameSync('resources/runtime/removed', 'resources/runtime/merc32');
+    `], { cwd: stage.extensionRoot, encoding: 'utf8', timeout: 60000,
+      env: { ...process.env, NODE_PATH: '' } });
+    assert.strictEqual(child.status, 0, `isolated installed compiler failed:\n${child.stderr || child.stdout}`);
+    return prepared;
+  },
 });
 
 console.log('runtime packaging tests passed');

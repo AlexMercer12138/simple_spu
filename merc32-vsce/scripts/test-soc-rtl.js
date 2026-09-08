@@ -471,11 +471,13 @@ const expectedPreparedResources = [
     'c-frontend/include/float.h',
     'c-frontend/include/iso646.h',
     'c-frontend/include/limits.h',
+    'c-frontend/include/merc32_irq.h',
     'c-frontend/include/stdalign.h',
     'c-frontend/include/stdbool.h',
     'c-frontend/include/stddef.h',
     'c-frontend/include/stdint.h',
     'c-frontend/include/stdnoreturn.h',
+    'c-frontend/include/string.h',
     'c-frontend/licenses/ARO-LICENSE',
     'c-frontend/licenses/UNICODE-LICENSE',
     'c-frontend/typed-c-unit-v1.schema.json',
@@ -488,7 +490,16 @@ const expectedPreparedResources = [
     'catalog/modules/apb_timer.json',
     'catalog/modules/apb_uart.json',
     'catalog/protocols.json',
+    ...['can', 'gpio', 'i2c', 'intc', 'qspi', 'sdio', 'timer', 'uart']
+        .flatMap(name => [`drivers/${name}.c`, `drivers/${name}.h`]),
+    'drivers/provenance.json',
     'licenses/LICENSE',
+    'runtime/merc32/PROVENANCE.md',
+    'runtime/merc32/float32.asm',
+    'runtime/merc32/float64.asm',
+    'runtime/merc32/mem.asm',
+    'runtime/merc32/runtime.manifest.json',
+    'runtime/merc32/startup.asm',
     'schema/merc32.schema.json',
     'templates/README.md.tpl',
     'templates/main.c.tpl',
@@ -510,9 +521,14 @@ function makePreparationFixture(name) {
     for (const logicalPath of expectedPreparedRtl) {
         copyLogicalFile(repositoryRoot, sourceRepository, logicalPath);
     }
+    for (const logicalPath of expectedPreparedResources.filter(file => file.startsWith('runtime/'))) {
+        copyLogicalFile(repositoryRoot, sourceRepository, logicalPath);
+    }
     fs.copyFileSync(path.join(repositoryRoot, 'LICENSE'), path.join(sourceRepository, 'LICENSE'));
     fs.cpSync(path.join(__dirname, '..', 'resources', 'catalog'),
         path.join(extensionRoot, 'resources', 'catalog'), { recursive: true });
+    fs.cpSync(path.join(__dirname, '..', 'resources', 'drivers'),
+        path.join(extensionRoot, 'resources', 'drivers'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'templates'),
         path.join(extensionRoot, 'resources', 'templates'), { recursive: true });
     fs.cpSync(path.join(__dirname, '..', 'resources', 'webview'),

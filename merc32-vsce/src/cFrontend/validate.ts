@@ -291,7 +291,7 @@ const nodeRecordSchema: JsonSchema = {
         expressionSchema('floating-literal', { constant: floatingConstantSchema }, ['constant']),
         expressionSchema('string-literal', { constant: stringConstantSchema }, ['constant']),
         expressionSchema('declaration-reference', { symbol: idSchema }, ['symbol']),
-        ...(['unary', 'binary', 'conditional', 'assignment'] as const).map((kind) =>
+        ...(['unary', 'binary', 'conditional'] as const).map((kind) =>
             expressionSchema(kind, { operator: { type: 'string', minLength: 1 } }, ['operator'])),
         expressionSchema('call'),
         expressionSchema('subscript'),
@@ -317,7 +317,9 @@ const nodeRecordSchema: JsonSchema = {
             ] },
             targetType: idSchema,
         }, ['conversion', 'targetType']),
-        expressionSchema('compound-literal', { targetType: idSchema }, ['targetType']),
+        expressionSchema('assignment', { operator: { type: 'string' }, computationType: idSchema }, ['operator']),
+        expressionSchema('compound-literal', { targetType: idSchema,
+            initializerIndices: { type: 'array', items: nonNegativeIntegerSchema } }, ['targetType']),
         expressionSchema('generic-selection', { memberIndex: nonNegativeIntegerSchema }, ['memberIndex']),
     ],
 };
@@ -1066,6 +1068,19 @@ function validateNodes(
         if ('targetType' in node) {
             requireType(types, node.targetType, `node ${node.id} targetType`);
         }
+        if (node.kind === 'assignment' && node.computationType !== undefined) {
+            requireType(types, node.computationType, `node ${node.id} computationType`);
+            assertInvariant(node.operator !== '=', 'NODE_CONVERSION', 'simple assignment has no computation type');
+        }
+        if (node.kind === 'compound-literal' && node.initializerIndices !== undefined) {
+            const type = unaliasType(requireType(types, node.type, 'compound literal'), types);
+            const limit = type.kind === 'array' ? type.count ?? 0
+                : type.kind === 'struct' || type.kind === 'union' ? type.members.length : 1;
+            assertInvariant(node.initializerIndices.length === node.children.length
+                && new Set(node.initializerIndices).size === node.initializerIndices.length
+                && node.initializerIndices.every(index => index < limit),
+                'NODE_CHILDREN', `compound literal ${node.id} has invalid initializer indices`);
+        }
         if (node.category === 'declaration' && node.kind !== 'static-assert') {
             const type = requireType(types, node.type, `declaration node ${node.id} type`);
             const allowed = declarationSymbolKinds(node.kind);
@@ -1242,7 +1257,8 @@ function validateNodeChildren(
         case 'assignment':
             count(2);
             category(0, 'expression');
-            conversion(1, 'assignment');
+            if (node.kind === 'assignment' && node.computationType !== undefined) category(1, 'expression');
+            else conversion(1, 'assignment');
             break;
         case 'conditional':
             count(3);
@@ -1398,7 +1414,12 @@ function validateConversion(
         case 'assignment':
         case 'argument':
         case 'return':
-            assertInvariant(isImplicitConversionPair(source, target, types), 'NODE_CONVERSION',
+            assertInvariant(isImplicitConversionPair(source, target, types)
+                || node.conversion === 'assignment' && child.kind === 'string-literal'
+                && source.kind === 'array' && target.kind === 'array'
+                && target.size >= child.constant.bytes.length - 1
+                && sameUnqualifiedType(requireType(types, source.element, 'string element'),
+                    requireType(types, target.element, 'array element'), types), 'NODE_CONVERSION',
                 `${node.conversion} conversion ${node.id} has incompatible source and target types`);
             break;
     }

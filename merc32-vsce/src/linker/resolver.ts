@@ -90,7 +90,7 @@ function localDefinition(object: Merc32Object, name: string): ObjectSymbol | und
   return object.symbols.find(symbol => symbol.name === name && symbol.binding === 'local' && symbol.defined);
 }
 
-function resolveValidatedSymbols(objects: readonly Merc32Object[]): ResolvedSymbolTable {
+function resolveValidatedDefinitions(objects: readonly Merc32Object[]): ResolvedSymbolTable {
   const table = new Map<string, ResolvedSymbol>();
   for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
     for (const symbol of objects[objectIndex].symbols) {
@@ -99,6 +99,16 @@ function resolveValidatedSymbols(objects: readonly Merc32Object[]): ResolvedSymb
       table.set(symbol.name, { symbol, objectIndex });
     }
   }
+  return table;
+}
+
+export function resolveDefinitions(objects: readonly Merc32Object[]): ResolvedSymbolTable {
+  validateObjects(objects);
+  return resolveValidatedDefinitions(objects);
+}
+
+function resolveValidatedSymbols(objects: readonly Merc32Object[]): ResolvedSymbolTable {
+  const table = resolveValidatedDefinitions(objects);
   for (let objectIndex = 0; objectIndex < objects.length; objectIndex++) {
     const object = objects[objectIndex];
     for (const relocation of object.relocations) {

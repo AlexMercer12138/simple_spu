@@ -1,4 +1,5 @@
 import { formatHex32 } from './address';
+import { driverResourceFiles } from './drivers';
 import {
     PlannedExternalInterface,
     PlannedInterruptSource,
@@ -15,7 +16,7 @@ const TRIGGER_MACROS = {
     falling: 'MERC32_IRQ_TRIGGER_FALLING',
 } as const;
 
-/** Renders the Tiny C-compatible generated SoC configuration header. */
+/** Renders the generated SoC configuration header. */
 export function renderSocHeader(plan: SocPlan): string {
     const project = macroIdentifier(plan.projectName);
     assertUniqueHeaderMacros(plan, project);
@@ -142,6 +143,8 @@ export function expectedGeneratedFiles(plan: SocPlan): readonly string[] {
     files.push(
         `software/${headerFileName(plan)}`,
         'software/main.c',
+        'software/drivers/merc32_drivers.h',
+        ...driverResourceFiles(plan).map(file => `software/${file}`),
     );
     return files;
 }

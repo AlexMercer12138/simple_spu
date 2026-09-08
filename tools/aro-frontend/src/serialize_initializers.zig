@@ -33,7 +33,27 @@ fn State(comptime Output: type) type {
         fn walk(self: *Self, node_index: aro.Tree.Node.Index, destination_qt: aro.QualType, offset: u64) !void {
             const tree = self.types.tree;
             const comp = tree.comp;
+            if (destination_qt.is(comp, .pointer)) if (self.symbols.idForNode(@backingInt(node_index))) |symbol| {
+                if (self.needs_comma) try self.output.byte(',');
+                self.needs_comma = true;
+                try self.output.add("{\"offset\":");
+                try self.output.integer(offset);
+                try self.output.add(",\"type\":");
+                try self.output.integer(try self.types.intern(destination_qt));
+                try self.output.add(",\"value\":{\"kind\":\"address\",\"symbol\":");
+                try self.output.integer(symbol);
+                try self.output.add(",\"addend\":\"0\"}}");
+                return;
+            };
             switch (node_index.get(tree)) {
+                .compound_literal_expr => |literal| try self.walk(literal.initializer, destination_qt, offset),
+                .paren_expr => |paren| {
+                    if (tree.value_map.get(node_index)) |value| {
+                        if (!isZeroFillValue(value, destination_qt, tree, node_index)) try self.emit(node_index, offset, destination_qt, value);
+                    } else {
+                        try self.walk(paren.operand, destination_qt, offset);
+                    }
+                },
                 .default_init_expr, .array_filler_expr => {},
                 .array_init_expr => |initializer| {
                     const array = destination_qt.get(comp, .array) orelse return error.UnsupportedInitializer;
@@ -77,8 +97,11 @@ fn State(comptime Output: type) type {
                     if (tree.value_map.get(node_index)) |value| {
                         if (!isZeroFillValue(value, destination_qt, tree, node_index)) try self.emit(node_index, offset, destination_qt, value);
                     } else if (destination_qt.is(comp, .pointer)) {
+                        if (cast.kind == .lval_to_rval) return self.walk(cast.operand, destination_qt, offset);
                         const operand = tree.value_map.get(cast.operand) orelse return error.UnsupportedValue;
                         if (!operand.isZero(comp)) return error.UnsupportedValue;
+                    } else if (cast.kind == .no_op or destination_qt.is(comp, .@"struct") or destination_qt.is(comp, .@"union")) {
+                        try self.walk(cast.operand, destination_qt, offset);
                     } else {
                         return error.UnsupportedValue;
                     }

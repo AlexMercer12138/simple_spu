@@ -1,0 +1,87 @@
+{
+  "repository": "ip-repo",
+  "revision": "cbcef4503729bf92f79cdf211df30bd2f001a6ec",
+  "dirty": false,
+  "files": [
+    {
+      "source": "can/drivers/can.c",
+      "path": "can.c",
+      "sha256": "6d36f93ea25682da2577fc22f45d60d8be55b5dd96766f0aac90dbce29953b05"
+    },
+    {
+      "source": "can/drivers/can.h",
+      "path": "can.h",
+      "sha256": "042e79bdcdf39027fe48454000eafd95decfebb1efc7f2f0c450bb1f6e44547b"
+    },
+    {
+      "source": "gpio/drivers/gpio.c",
+      "path": "gpio.c",
+      "sha256": "d57a3a8ff9d812fb3a9c178ba263e241bf87bc47c0beee12274fa8a4cecb2f57"
+    },
+    {
+      "source": "gpio/drivers/gpio.h",
+      "path": "gpio.h",
+      "sha256": "0b7db7de1bbad7e22c14c7b0fa0e47d584957bd68f5337ed80f613d8a07a08e7"
+    },
+    {
+      "source": "i2c/drivers/i2c.c",
+      "path": "i2c.c",
+      "sha256": "f28fe79f9736eb18c9389f9432ea8915dc95e7c51788030339cf8890667eafc7"
+    },
+    {
+      "source": "i2c/drivers/i2c.h",
+      "path": "i2c.h",
+      "sha256": "d767a3742a0ae52cc8df1531290077130ef07b1124930ae7a405c5caf9fbf15c"
+    },
+    {
+      "source": "intc/drivers/intc.c",
+      "path": "intc.c",
+      "sha256": "d78d4e0aaf7b9a7d01e4c912779b765db1e81e675c2c2ded89847457bb1caaba"
+    },
+    {
+      "source": "intc/drivers/intc.h",
+      "path": "intc.h",
+      "sha256": "697c87a2279cda9a27f3277564aeb86263c0ccc007172b9035bec086de43e7ca"
+    },
+    {
+      "source": "qspi/drivers/qspi.c",
+      "path": "qspi.c",
+      "sha256": "1e75115a31650a19825b9a787fbcf0b2543cf367b1e1d88442c083aad0f267b5"
+    },
+    {
+      "source": "qspi/drivers/qspi.h",
+      "path": "qspi.h",
+      "sha256": "b5975b3237626ce56191ade1cccf867e240ce1b882b41b96c6e5e9fcb2c5a494"
+    },
+    {
+      "source": "sdio/drivers/sdio.c",
+      "path": "sdio.c",
+      "sha256": "d636a1388b120826238c928c86fb9b7562b4d77fd78f902aa620d1be6b3f9024"
+    },
+    {
+      "source": "sdio/drivers/sdio.h",
+      "path": "sdio.h",
+      "sha256": "9e35075e855e88702b5bad299dbcfb84b5d801c6516464e33d5dc1be8708a3fa"
+    },
+    {
+      "source": "timer/drivers/timer.c",
+      "path": "timer.c",
+      "sha256": "61027bac069cbaf36426fc8e5fa673276c1d2e779f84f0859ed9be2ee2354617"
+    },
+    {
+      "source": "timer/drivers/timer.h",
+      "path": "timer.h",
+      "sha256": "24fcdbfa6027135d2362a028362aaa2a81c1e31a4d05eb2cc6c0f1f14d417914"
+    },
+    {
+      "source": "uart/drivers/uart.c",
+      "path": "uart.c",
+      "sha256": "44662d5f1ab77320f78ea12fc81a81da02fb77cc8c0a60158c866df4275c4c19"
+    },
+    {
+      "source": "uart/drivers/uart.h",
+      "path": "uart.h",
+      "sha256": "a570e3de31edfb48b537e98a076b54d99bb0a07b17f7d9312a39daca3b65032a"
+    }
+  ]
+}

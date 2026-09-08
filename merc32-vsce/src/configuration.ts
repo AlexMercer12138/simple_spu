@@ -11,6 +11,7 @@ export interface AssemblerSettings {
     cDataBase: number;
     cDlbAddrWidth: number;
     cCodeBase: number;
+    cOptimization: 'none' | 'basic';
 }
 
 export function getAssemblerSettings(sourceFile: string): AssemblerSettings {
@@ -25,6 +26,7 @@ export function getAssemblerSettings(sourceFile: string): AssemblerSettings {
         cDataBase: parseIntegerSetting(config.get<string>('c.dataBase', '0x08000000'), 0x0800_0000),
         cDlbAddrWidth: config.get<number>('c.dlbAddrWidth', 16),
         cCodeBase: parseIntegerSetting(config.get<string>('c.codeBase', '0x00000000'), 0),
+        cOptimization: config.get<'none' | 'basic'>('c.optimization', 'basic'),
     };
 }
 

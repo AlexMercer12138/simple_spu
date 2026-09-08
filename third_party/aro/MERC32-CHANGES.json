@@ -22,8 +22,8 @@
     {
       "path": "src/aro/Parser.zig",
       "upstreamSha256": "974e42408bc63089a5a1ea1d6d6f158081d01a7373d56c42a1e96a7ddfc9ec19",
-      "sha256": "26f7246bdb3aafc1e09e2ec80aa190002da807130385b7fc0fe99c349ddb5c34",
-      "reason": "Route integer-literal and int128 capability behavior through the selected compilation model."
+      "sha256": "3c94eb88396e7702d202b1ba08be59dd097b1dbe3c4a4a4efb08fb607b442456",
+      "reason": "Route integer-literal and int128 capability behavior through the selected compilation model, and apply independent integer promotions to shift operands."
     },
     {
       "path": "src/aro/Preprocessor.zig",
@@ -46,8 +46,8 @@
     {
       "path": "src/aro/Tree.zig",
       "upstreamSha256": "08b68114dfdd5b54de8da4cb1f302121b49616b489b2fcd77153e98ad50ace72",
-      "sha256": "a90516c3c0e60dd12a5fbb78ddd141667c10883bd3af352257d46088457d5ce4",
-      "reason": "Preserve initializer-only and increment-only for clauses in the compact tree representation."
+      "sha256": "ec2fa91c8697399b6cacf81c606aae0b4f928d078ac4d8a8c77ea692a456904c",
+      "reason": "Preserve initializer-only and increment-only for clauses in the compact tree representation, and retain the selected generic association's lvalue and constness."
     },
     {
       "path": "src/aro/TypeStore.zig",

@@ -20,6 +20,7 @@ pub const Store = struct {
         @"enum",
         enumerator,
         string_literal,
+        compound_literal,
     };
 
     const Record = struct {
@@ -91,7 +92,7 @@ pub const Store = struct {
             if (record.kind != .variable) continue;
             const variable = (record.definition_node orelse record.node).get(store.tree).variable;
             if (variable.initializer) |initializer| {
-                _ = try store.collectInitializerStrings(initializer, variable.qt, @intCast(record_index + 1));
+                _ = try store.collectInitializerStrings(initializer, variable.qt, @intCast(record_index + 1), false);
             }
         }
     }
@@ -201,9 +202,23 @@ pub const Store = struct {
         node: aro.Tree.Node.Index,
         destination_qt: aro.QualType,
         owner: u32,
+        address_context: bool,
     ) !?u32 {
         if (store.by_node.get(node)) |id| return id;
         return switch (node.get(store.tree)) {
+            .compound_literal_expr => |literal| blk: {
+                const owner_record = store.records.items[owner - 1];
+                if (owner_record.local) break :blk null;
+                _ = try store.collectInitializerStrings(literal.initializer, literal.qt, owner, false);
+                if (!address_context and !literal.qt.is(store.tree.comp, .array)) break :blk null;
+                const id = try store.add(.compound_literal, node, literal.qt, owner, null);
+                _ = try store.types.intern(literal.qt);
+                break :blk id;
+            },
+            .addr_of_expr => |address| if (try store.collectInitializerStrings(address.operand, destination_qt, owner, true)) |id| blk: {
+                try store.by_node.put(store.allocator, node, id);
+                break :blk id;
+            } else null,
             .string_literal_expr => |literal| blk: {
                 if (destination_qt.get(store.tree.comp, .pointer) == null) break :blk null;
                 const id = try store.add(.string_literal, node, literal.qt, owner, null);
@@ -214,7 +229,7 @@ pub const Store = struct {
                 const array = destination_qt.get(store.tree.comp, .array) orelse return error.UnsupportedInitializer;
                 for (initializer.items) |item| switch (item.get(store.tree)) {
                     .array_filler_expr => {},
-                    else => _ = try store.collectInitializerStrings(item, array.elem, owner),
+                    else => _ = try store.collectInitializerStrings(item, array.elem, owner, false),
                 };
                 break :blk null;
             },
@@ -222,7 +237,7 @@ pub const Store = struct {
                 const record = destination_qt.get(store.tree.comp, .@"struct") orelse return error.UnsupportedInitializer;
                 if (initializer.items.len != record.fields.len) return error.UnsupportedInitializer;
                 for (initializer.items, record.fields) |item, field| {
-                    _ = try store.collectInitializerStrings(item, field.qt, owner);
+                    _ = try store.collectInitializerStrings(item, field.qt, owner, false);
                 }
                 break :blk null;
             },
@@ -230,15 +245,15 @@ pub const Store = struct {
                 if (initializer.initializer) |item| {
                     const record = destination_qt.get(store.tree.comp, .@"union") orelse return error.UnsupportedInitializer;
                     if (initializer.field_index >= record.fields.len) return error.UnsupportedInitializer;
-                    _ = try store.collectInitializerStrings(item, record.fields[initializer.field_index].qt, owner);
+                    _ = try store.collectInitializerStrings(item, record.fields[initializer.field_index].qt, owner, false);
                 }
                 break :blk null;
             },
-            .cast => |cast| if (try store.collectInitializerStrings(cast.operand, destination_qt, owner)) |id| blk: {
+            .cast => |cast| if (try store.collectInitializerStrings(cast.operand, destination_qt, owner, address_context or cast.kind == .array_to_pointer)) |id| blk: {
                 try store.by_node.put(store.allocator, node, id);
                 break :blk id;
             } else null,
-            .paren_expr => |paren| if (try store.collectInitializerStrings(paren.operand, destination_qt, owner)) |id| blk: {
+            .paren_expr => |paren| if (try store.collectInitializerStrings(paren.operand, destination_qt, owner, address_context)) |id| blk: {
                 try store.by_node.put(store.allocator, node, id);
                 break :blk id;
             } else null,
@@ -271,6 +286,7 @@ pub const Store = struct {
             .struct_forward_decl, .union_forward_decl, .enum_forward_decl => |decl| decl.name_or_kind_tok,
             .enum_field => |field| field.name_tok,
             .string_literal_expr => |literal| literal.literal_tok,
+            .compound_literal_expr => |literal| literal.l_paren_tok,
             else => return error.UnsupportedSymbol,
         };
         try output.add("{\"id\":");
@@ -278,9 +294,11 @@ pub const Store = struct {
         try output.add(",\"kind\":");
         try output.string(kindName(record.kind));
         try output.add(",\"name\":");
-        if (record.kind == .string_literal) {
+        if (record.kind == .string_literal or record.kind == .compound_literal) {
             var name_buffer: [32]u8 = undefined;
-            try output.string(std.fmt.bufPrint(&name_buffer, ".L.str.{d}", .{id}) catch unreachable);
+            try output.string(std.fmt.bufPrint(&name_buffer, ".L.{s}.{d}", .{
+                if (record.kind == .string_literal) "str" else "compound", id,
+            }) catch unreachable);
         } else {
             try output.string(store.tree.tokSlice(name_token));
         }
@@ -365,13 +383,13 @@ pub const Store = struct {
                 try store.types.writeIntegerText(output, value, record.type_qt);
                 try output.byte('}');
             },
-            .string_literal => {
+            .string_literal, .compound_literal => {
                 try output.add(",\"type\":");
                 try output.integer(try store.types.intern(record.type_qt));
                 try output.add(",\"linkage\":\"internal\",\"storage\":\"static\",\"definition\":true,\"initializer\":");
                 try serialize_initializers.write(
                     output,
-                    record.node,
+                    if (record.kind == .compound_literal) node.compound_literal_expr.initializer else record.node,
                     record.type_qt,
                     store.types,
                     store.resolver(),
@@ -411,6 +429,6 @@ fn kindName(kind: Store.Kind) []const u8 {
         .record => "record",
         .@"enum" => "enum",
         .enumerator => "enumerator",
-        .string_literal => "variable",
+        .string_literal, .compound_literal => "variable",
     };
 }

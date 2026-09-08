@@ -4,9 +4,9 @@
   "abi": "merc32-c-v1",
   "objects": [
     { "file": "startup.asm", "exports": ["startup"] },
-    { "file": "mem.asm", "exports": ["memcpy", "memset", "memcmp", "strlen", "strcmp"] },
+    { "file": "mem.asm", "exports": ["memcpy", "memmove", "memset", "memcmp", "strlen", "strcmp"] },
     { "file": "float32.asm", "exports": ["__addsf3", "__subsf3", "__mulsf3", "__divsf3", "__eqsf2", "__ltsf2", "__lesf2", "__floatsisf", "__fixsfsi"] },
     { "file": "float64.asm", "exports": ["__adddf3", "__subdf3", "__muldf3", "__divdf3"] }
   ],
-  "symbols": ["startup", "memcpy", "memset", "memcmp", "strlen", "strcmp", "__addsf3", "__subsf3", "__mulsf3", "__divsf3", "__eqsf2", "__ltsf2", "__lesf2", "__floatsisf", "__fixsfsi", "__adddf3", "__subdf3", "__muldf3", "__divdf3"]
+  "symbols": ["startup", "memcpy", "memmove", "memset", "memcmp", "strlen", "strcmp", "__addsf3", "__subsf3", "__mulsf3", "__divsf3", "__eqsf2", "__ltsf2", "__lesf2", "__floatsisf", "__fixsfsi", "__adddf3", "__subdf3", "__muldf3", "__divdf3"]
 }

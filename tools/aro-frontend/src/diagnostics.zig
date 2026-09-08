@@ -37,6 +37,23 @@ pub const Diagnostic = struct {
     macro_expansion_trace: []const Range,
 };
 
+pub fn rejectUnsupportedAttributes(tree: *const aro.Tree, pp: *aro.Preprocessor, aro_diagnostics: *aro.Diagnostics) !void {
+    const map = &tree.attr_map;
+    for (0..map.attributes.len) |index| {
+        const attribute = map.get(@enumFromInt(index));
+        const message = switch (attribute.args) {
+            .weak => "GNU weak attribute is not supported by the MERC32 embedded toolchain",
+            .section => "GNU section attribute is not supported by the MERC32 embedded toolchain",
+            else => continue,
+        };
+        try aro_diagnostics.addWithLocation(tree.comp, .{
+            .kind = .@"error",
+            .text = message,
+            .location = tree.tokens.items(.loc)[attribute.tok].expand(tree.comp),
+        }, pp.expansionSlice(attribute.tok), true);
+    }
+}
+
 pub fn collect(
     allocator: std.mem.Allocator,
     comp: *const aro.Compilation,

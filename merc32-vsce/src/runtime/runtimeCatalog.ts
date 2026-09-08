@@ -20,7 +20,17 @@ interface RuntimeManifest {
 
 export function getDefaultRuntimeObjects(options: RuntimeOptions = {}): Merc32Object[] { return loadRuntimeObjects(options); }
 export function loadRuntimeObjects(options: RuntimeOptions = {}): Merc32Object[] {
-  const root = options.root ?? path.resolve(__dirname, '../../../runtime/merc32');
+  return loadSelectedRuntimeObjects(options);
+}
+
+export function loadMemoryRuntimeObject(options: RuntimeOptions = {}): Merc32Object {
+  const objects = loadSelectedRuntimeObjects(options, 'mem.asm');
+  if (objects.length !== 1) throw new Error('runtime manifest must contain exactly one memory runtime object');
+  return objects[0];
+}
+
+function loadSelectedRuntimeObjects(options: RuntimeOptions, selectedFile?: string): Merc32Object[] {
+  const root = options.root ?? path.resolve(__dirname, '../../resources/runtime/merc32');
   const manifest = readManifest(root);
   const exports = new Set<string>();
   for (const object of manifest.objects) {
@@ -34,16 +44,25 @@ export function loadRuntimeObjects(options: RuntimeOptions = {}): Merc32Object[]
     || [...manifestSymbols].some(name => !exports.has(name))) {
     throw new Error('runtime manifest symbols must match object exports');
   }
-  const objects = manifest.objects.map(entry => {
+  const entries = selectedFile === undefined ? manifest.objects
+    : manifest.objects.filter(entry => entry.file === selectedFile);
+  const objects = entries.map(entry => {
     const source = runtimeAssemblySource(runtimeObjectSource(root, entry.file));
     const object = assembleToObject(source, { abi: manifest.abi, exports: entry.exports });
     for (const name of entry.exports) {
       const definitions = object.symbols.filter(symbol => symbol.name === name && symbol.binding === 'global' && symbol.defined);
       if (definitions.length !== 1) throw new Error(`runtime export '${name}' is not defined by '${entry.file}'`);
     }
-    return object;
+    // Memory routines have no live r8 value across their direct control-flow sites.
+    const memoryFunctions = object.symbols.filter(symbol => symbol.defined && entry.exports.includes(symbol.name))
+      .sort((left, right) => left.offset! - right.offset!);
+    return entry.file !== 'mem.asm' ? object : { ...object,
+      functions: memoryFunctions.map((symbol, index) => ({ name: symbol.name, offset: symbol.offset!,
+        size: (memoryFunctions[index + 1]?.offset ?? object.sections[0].size) - symbol.offset!,
+      })), relocations: object.relocations.map(relocation =>
+      ['CALL16', 'BRANCH16'].includes(relocation.kind) ? { ...relocation, relaxationRegister: 8 } : relocation) };
   });
-  for (const name of exports) {
+  for (const name of entries.flatMap(entry => entry.exports)) {
     const definitions = objects.flatMap(object => object.symbols)
       .filter(symbol => symbol.name === name && symbol.binding === 'global' && symbol.defined);
     if (definitions.length !== 1) throw new Error(`runtime export '${name}' must be defined exactly once`);

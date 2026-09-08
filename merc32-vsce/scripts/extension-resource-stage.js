@@ -14,6 +14,7 @@ const {
 const STAGE_PREFIX = 'merc32-extension-resources-';
 const GENERATED_OUTPUTS = Object.freeze([
     'resources/rtl',
+    'resources/runtime',
     'resources/licenses',
     'resources/resource-manifest.json',
     'resources/schema',
@@ -27,6 +28,10 @@ function runIsolatedResourcePreparation(options) {
     const cFrontendHashes = new Map(inputs.cFrontendFiles.map((logicalPath) => [
         logicalPath,
         sha256File(path.join(extensionRoot, 'resources', ...logicalPath.split('/'))),
+    ]));
+    const runtimeHashes = new Map(inputs.runtimeFiles.map((logicalPath) => [
+        logicalPath,
+        sha256File(path.join(repositoryRoot, ...logicalPath.split('/'))),
     ]));
     const socApiRoot = requireAbsolutePath(
         options.socApiRoot || extensionRoot,
@@ -66,6 +71,7 @@ function runIsolatedResourcePreparation(options) {
             result,
             sourceRevision,
             cFrontendHashes,
+            runtimeHashes,
         );
     } catch (error) {
         primaryFailure = error;
@@ -139,6 +145,9 @@ function copyPreparationInputs(source, stage) {
     for (const logicalPath of source.inputs.rtlFiles) {
         copyLogicalFile(source.repositoryRoot, stage.repositoryRoot, logicalPath);
     }
+    for (const logicalPath of source.inputs.runtimeFiles) {
+        copyLogicalFile(source.repositoryRoot, stage.repositoryRoot, logicalPath);
+    }
     copyLogicalFile(source.repositoryRoot, stage.repositoryRoot, 'LICENSE');
 }
 
@@ -151,12 +160,13 @@ function assertNoGeneratedOutputs(extensionRoot) {
 }
 
 function assertPreparedStage(extensionRoot, inputs, result, sourceRevision,
-    cFrontendHashes) {
+    cFrontendHashes, runtimeHashes) {
     assert.ok(result && typeof result === 'object', 'preparation returned no result');
     const expectedFiles = [
         ...inputs.rtlFiles,
         ...inputs.staticFiles,
         ...inputs.cFrontendFiles,
+        ...inputs.runtimeFiles,
         'licenses/LICENSE',
         'schema/merc32.schema.json',
     ].sort();
@@ -188,6 +198,11 @@ function assertPreparedStage(extensionRoot, inputs, result, sourceRevision,
         const staged = path.join(resourcesRoot, ...logicalPath.split('/'));
         assert.strictEqual(sha256File(staged), cFrontendHashes.get(logicalPath),
             `resource preparation changed authoritative c-frontend input ${logicalPath}`);
+    }
+    for (const logicalPath of inputs.runtimeFiles) {
+        const staged = path.join(resourcesRoot, ...logicalPath.split('/'));
+        assert.strictEqual(sha256File(staged), runtimeHashes.get(logicalPath),
+            `resource preparation changed authoritative runtime input ${logicalPath}`);
     }
 
     const actualFiles = listLogicalFiles(resourcesRoot);

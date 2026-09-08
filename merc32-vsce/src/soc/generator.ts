@@ -27,6 +27,7 @@ import {
     renderStarterMain,
 } from './emitSoftware';
 import { renderRtlBundle } from './emitRtlBundle';
+import { driverResourceFiles, renderDriverIncludes } from './drivers';
 import {
     ManifestFileRecord,
     ManifestManagedRecord,
@@ -317,6 +318,11 @@ function renderGeneratedFiles(
     const result: GeneratedFile[] = [
         generatedFile(`hardware/${plan.topModule}.v`, rtlBundle.content,
             'generator:renderRtlBundle', 'generated/rtl-bundle'),
+        generatedFile('software/drivers/merc32_drivers.h', renderDriverIncludes(plan),
+            'generator:renderDriverIncludes', 'generated/driver-includes'),
+        ...driverResourceFiles(plan).map(logicalPath => generatedFile(
+            `software/${logicalPath}`, requireAssetFile(assetRoot, logicalPath),
+            logicalPath, 'source/driver')),
     ];
     for (const [slot, memory] of [['ilb', plan.memory.ilb], ['dlb', plan.memory.dlb]] as const) {
         if (memory.initFile === undefined) continue;
@@ -336,6 +342,9 @@ function renderGeneratedFiles(
                 integration: [
                     `Compile with \`iverilog -g2005 -s ${plan.topModule} hardware/${plan.topModule}.v\`.`,
                     `Edit \`software/main.c\` and include \`software/${headerFileName(plan)}\`.`,
+                    'Include `drivers/merc32_drivers.h` once in the application to build the selected drivers with Build C to ROM. For separate compilation, include driver headers and compile each driver `.c` separately instead.',
+                    'Drivers use caller-supplied base addresses from the project header; initialize handles and peripheral settings in application code. Generated driver files are managed; keep custom code outside them.',
+                    `Set \`merc32-asm.c.dlbAddrWidth\` to \`${plan.memory.dlb.wordAddressWidth}\` for this SoC before building C; the compiler stack must match the configured DLB capacity.`,
                     ...firmwareIntegrationGuidance(plan),
                 ],
                 outputFiles: expectedGeneratedFiles(plan),

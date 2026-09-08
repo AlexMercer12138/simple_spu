@@ -136,6 +136,12 @@ function isAllowedManagedRecord(
     if (expected !== undefined) {
         return kind === expected[0] && logicalSource === expected[1];
     }
+    if (recordPath === 'software/drivers/merc32_drivers.h') {
+        return kind === 'generated/driver-includes' && logicalSource === 'generator:renderDriverIncludes';
+    }
+    if (/^software\/drivers\/(can|gpio|i2c|intc|qspi|sdio|timer|uart)\.[ch]$/.test(recordPath)) {
+        return kind === 'source/driver' && logicalSource === recordPath.slice('software/'.length);
+    }
     const firmware = /^firmware\/(ilb|dlb)_([^/]+)$/.exec(recordPath);
     return firmware !== null
         && kind === 'source/firmware'

@@ -21,6 +21,7 @@ const Record = struct {
     kind: []const u8,
     token: aro.Tree.TokenIndex,
     children: std.ArrayList(u32) = .empty,
+    initializer_indices: std.ArrayList(u32) = .empty,
     qt: aro.QualType = .invalid,
     value_category: ?[]const u8 = null,
     symbol: ?u32 = null,
@@ -28,6 +29,7 @@ const Record = struct {
     label: ?[]const u8 = null,
     member_index: ?u32 = null,
     target_qt: ?aro.QualType = null,
+    computation_qt: ?aro.QualType = null,
     conversion: ?[]const u8 = null,
     constant_node: ?aro.Tree.Node.Index = null,
     type_info_value: ?u64 = null,
@@ -62,7 +64,10 @@ pub const Store = struct {
     }
 
     pub fn deinit(store: *Store) void {
-        for (store.records.items) |*record| record.children.deinit(store.allocator);
+        for (store.records.items) |*record| {
+            record.children.deinit(store.allocator);
+            record.initializer_indices.deinit(store.allocator);
+        }
         store.records.deinit(store.allocator);
         store.declarations.deinit(store.allocator);
     }
@@ -352,6 +357,11 @@ pub const Store = struct {
             .char_literal => |literal| store.serializeLiteral(node_index, literal.literal_tok, literal.qt, "character-literal"),
             .float_literal => |literal| store.serializeLiteral(node_index, literal.literal_tok, literal.qt, "floating-literal"),
             .string_literal_expr => |literal| store.serializeLiteral(node_index, literal.literal_tok, literal.qt, "string-literal"),
+            .builtin_call_expr => |builtin| blk: {
+                const name = store.tree.tokSlice(builtin.builtin_tok);
+                if (!std.mem.eql(u8, name, "__builtin_offsetof") and !std.mem.eql(u8, name, "__builtin_bitoffsetof")) return error.UnknownAroNode;
+                break :blk store.serializeLiteral(node_index, builtin.builtin_tok, builtin.qt, "integer-literal");
+            },
             .decl_ref_expr, .enumeration_ref => |reference| blk: {
                 _ = try store.types.intern(reference.qt);
                 break :blk try store.addRecord(.{
@@ -482,6 +492,8 @@ pub const Store = struct {
             else => return error.UnknownAroNode,
         };
         _ = try store.types.intern(binary.qt);
+        const computation_qt = operation_node.qt(store.tree);
+        _ = try store.types.intern(computation_qt);
         const id = try store.addRecord(.{
             .category = .expression,
             .kind = "assignment",
@@ -489,9 +501,10 @@ pub const Store = struct {
             .qt = binary.qt,
             .value_category = "rvalue",
             .operator = operator,
+            .computation_qt = computation_qt,
         });
         try store.addChild(id, try store.serializeExpression(binary.lhs));
-        try store.addChild(id, try store.serializeConverted(rhs, "assignment", binary.lhs.qt(store.tree), false));
+        try store.addChild(id, try store.serializeExpression(rhs));
         return id;
     }
 
@@ -803,15 +816,30 @@ pub const Store = struct {
 
     fn addInitializerChildren(store: *Store, parent: u32, initializer: aro.Tree.Node.Index) anyerror!void {
         switch (initializer.get(store.tree)) {
-            .array_init_expr, .struct_init_expr => |container| for (container.items) |item| switch (item.get(store.tree)) {
-                .array_filler_expr, .default_init_expr => {},
-                else => try store.addChild(parent, try store.serializeInitializerValue(item)),
+            .array_init_expr, .struct_init_expr => |container| {
+                var index: u32 = 0;
+                for (container.items) |item| {
+                    switch (item.get(store.tree)) {
+                        .array_filler_expr => |filler| {
+                            index += @intCast(filler.count);
+                            continue;
+                        },
+                        .default_init_expr => {},
+                        else => try store.addInitializerChild(parent, index, item),
+                    }
+                    index += 1;
+                }
             },
             .union_init_expr => |union_init| if (union_init.initializer) |item| {
-                try store.addChild(parent, try store.serializeInitializerValue(item));
+                try store.addInitializerChild(parent, union_init.field_index, item);
             },
-            else => try store.addChild(parent, try store.serializeInitializerValue(initializer)),
+            else => try store.addInitializerChild(parent, 0, initializer),
         }
+    }
+
+    fn addInitializerChild(store: *Store, parent: u32, index: u32, item: aro.Tree.Node.Index) anyerror!void {
+        try store.addChild(parent, try store.serializeInitializerValue(item));
+        try store.records.items[parent - 1].initializer_indices.append(store.allocator, index);
     }
 
     fn serializeInitializerValue(store: *Store, node: aro.Tree.Node.Index) anyerror!u32 {
@@ -895,6 +923,18 @@ pub const Store = struct {
         if (record.target_qt) |target_qt| {
             try output.add(",\"targetType\":");
             try output.integer(try store.types.intern(target_qt));
+        }
+        if (record.computation_qt) |computation_qt| {
+            try output.add(",\"computationType\":");
+            try output.integer(try store.types.intern(computation_qt));
+        }
+        if (std.mem.eql(u8, record.kind, "compound-literal")) {
+            try output.add(",\"initializerIndices\":[");
+            for (record.initializer_indices.items, 0..) |initializer_index, index| {
+                if (index != 0) try output.byte(',');
+                try output.integer(initializer_index);
+            }
+            try output.byte(']');
         }
         if (record.conversion) |conversion| {
             try output.add(",\"conversion\":");

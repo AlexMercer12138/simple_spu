@@ -6884,6 +6884,7 @@ pub const Result = struct {
     /// Adjust types for binary operation, returns true if the result can and should be evaluated.
     fn adjustTypes(a: *Result, tok: TokenIndex, b: *Result, p: *Parser, kind: enum {
         integer,
+        shift,
         arithmetic,
         boolean_logic,
         relational,
@@ -6949,10 +6950,15 @@ pub const Result = struct {
         const b_sk = b.qt.scalarKind(p.comp);
 
         if (a_sk.isInt() and b_sk.isInt()) {
+            if (kind == .shift) {
+                try a.castToInt(p, a.qt.promoteInt(p.comp), tok);
+                try b.castToInt(p, b.qt.promoteInt(p.comp), tok);
+                return;
+            }
             try a.usualArithmeticConversion(b, p, tok);
             return;
         }
-        if (kind == .integer) return a.invalidBinTy(tok, b, p);
+        if (kind == .integer or kind == .shift) return a.invalidBinTy(tok, b, p);
 
         if (a_sk.isArithmetic() and b_sk.isArithmetic()) {
             // <, <=, >, >= only work on real types
@@ -8233,6 +8239,7 @@ fn binaryExpr(p: *Parser, min_prec: Token.Precedence, eval: bool) Error!?Result 
                     .add_assign_expr => try lhs_dummy.adjustTypes(operator, &rhs, p, .add),
                     .shl_assign_expr,
                     .shr_assign_expr,
+                    => try lhs_dummy.adjustTypes(operator, &rhs, p, .shift),
                     .bit_and_assign_expr,
                     .bit_xor_assign_expr,
                     .bit_or_assign_expr,
@@ -8431,7 +8438,7 @@ fn binaryExpr(p: *Parser, min_prec: Token.Precedence, eval: bool) Error!?Result 
                     else => unreachable,
                 };
 
-                try lhs.adjustTypes(operator, &rhs, p, .integer);
+                try lhs.adjustTypes(operator, &rhs, p, .shift);
                 if (try lhs.shouldEval(&rhs, p, eval)) {
                     if (rhs.val.compare(.lt, .zero, p.comp)) {
                         try p.err(operator, .negative_shift_count, .{});

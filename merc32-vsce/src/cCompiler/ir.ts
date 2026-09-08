@@ -3,7 +3,7 @@ import { DebugLocation, Relocation } from '../linker/objectFormat';
 import { SourceLocation } from './source';
 
 export type IRValue = number | string;
-export interface IRInstruction { readonly op: string; readonly args: readonly IRValue[]; readonly dest?: number; readonly location?: SourceLocation; }
+export interface IRInstruction { readonly op: string; readonly args: readonly IRValue[]; readonly dest?: number; readonly location?: SourceLocation; readonly volatile?: boolean; }
 export interface IRBlock { readonly label: string; readonly instructions: readonly IRInstruction[]; }
 export interface IRFunction { readonly name: string; readonly binding?: 'local' | 'global'; readonly returnType?: CType; readonly parameters: readonly CType[]; readonly parameterNames?: readonly string[]; readonly localNames?: readonly string[]; readonly localTypes?: readonly CType[]; readonly returnLabel?: string; readonly blocks: readonly IRBlock[]; }
 export interface IRGlobal {

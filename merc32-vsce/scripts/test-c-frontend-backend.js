@@ -81,10 +81,7 @@ assert.throws(() => adaptTypedUnit(unsupported), (error) => {
 const compoundAssignment = JSON.parse(JSON.stringify(unit));
 compoundAssignment.nodes.find((node) => node.id === 4).kind = 'assignment';
 compoundAssignment.nodes.find((node) => node.id === 4).operator = '+=';
-assert.throws(() => adaptTypedUnit(compoundAssignment), (error) => {
-  assert(error instanceof CBackendCapabilityError);
-  return error.diagnostics[0].message.includes("operator '+='");
-});
+assert.doesNotThrow(() => adaptTypedUnit(compoundAssignment));
 
 const switchUnit = JSON.parse(JSON.stringify(unit));
 switchUnit.nodes.find((node) => node.id === 2).children = [7];
@@ -151,10 +148,8 @@ const genericNode = genericSelection.nodes.find((node) => node.id === 4);
 genericNode.kind = 'generic-selection';
 genericNode.memberIndex = 0;
 delete genericNode.operator;
-assert.throws(() => adaptTypedUnit(genericSelection), (error) => {
-  assert(error instanceof CBackendCapabilityError);
-  return error.diagnostics[0].code === 'C_BACKEND_CAPABILITY';
-}, 'generic selections must report a backend capability diagnostic');
+genericNode.children = [5];
+assert.doesNotThrow(() => adaptTypedUnit(genericSelection));
 
 const crossFunctionLabels = {
   abi: 'merc32-c-v1', globals: [],

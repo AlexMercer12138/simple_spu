@@ -29,6 +29,7 @@ const expectedManifest = Object.freeze({
 const REQUIRED_HEADERS = Object.freeze([
     'include/float.h', 'include/iso646.h', 'include/limits.h', 'include/stdalign.h',
     'include/stdbool.h', 'include/stddef.h', 'include/stdint.h', 'include/stdnoreturn.h',
+    'include/merc32_irq.h', 'include/string.h',
 ]);
 const REQUIRED_FILES = Object.freeze([
     'aro-merc32.wasm', 'build-manifest.json', 'typed-c-unit-v1.schema.json',

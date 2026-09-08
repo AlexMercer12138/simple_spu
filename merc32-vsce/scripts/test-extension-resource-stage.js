@@ -36,6 +36,7 @@ function run() {
             testPreparationFailureCleanup],
         ['rejects preparation that rewrites a c-frontend input',
             testCFrontendMutation],
+        ['rejects preparation that rewrites a runtime input', testRuntimeMutation],
         ['requires absolute explicit preparation roots', testExplicitRootValidation],
         ['keeps wrapper defaults module-relative', testWrapperDefaults],
         ['rejects a relative wrapper repository override before mutation',
@@ -502,9 +503,14 @@ function testStaleGeneratedHardlinks() {
             role: 'repository',
             path: ['LICENSE'],
         },
+        {
+            name: 'memory-runtime',
+            role: 'repository',
+            path: ['runtime', 'merc32', 'mem.asm'],
+        },
     ];
     const failures = [];
-    for (const generatedRootName of ['rtl', 'licenses']) {
+    for (const generatedRootName of ['rtl', 'licenses', 'runtime']) {
         for (const inputClass of inputClasses) {
             const label = `${generatedRootName} stale hardlink to ${inputClass.name}`;
             try {
@@ -549,6 +555,7 @@ function testUnrelatedStaleGeneratedEntries() {
         const staleEntries = [
             path.join(extensionRoot, 'resources', 'rtl', 'stale', 'nested', 'notes.txt'),
             path.join(extensionRoot, 'resources', 'licenses', 'stale', 'nested', 'notes.txt'),
+            path.join(extensionRoot, 'resources', 'runtime', 'stale', 'nested', 'notes.txt'),
         ];
         for (const stale of staleEntries) {
             fs.mkdirSync(path.dirname(stale), { recursive: true });
@@ -682,7 +689,7 @@ function assertRejectedWithoutMutation(fixtureRoot, operation, errorPattern, lab
 }
 
 function copyRepositoryInputs(destinationRoot) {
-    for (const logicalPath of sourceInputs.rtlFiles) {
+    for (const logicalPath of [...sourceInputs.rtlFiles, ...sourceInputs.runtimeFiles]) {
         const source = path.join(sourceRepositoryRoot, ...logicalPath.split('/'));
         const destination = path.join(destinationRoot, ...logicalPath.split('/'));
         fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -752,6 +759,8 @@ function withWorkingDirectory(target, action) {
 }
 
 function copyAuthoritativeExtensionInputs(destinationResourcesRoot) {
+    fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'drivers'),
+        path.join(destinationResourcesRoot, 'drivers'), { recursive: true });
     fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'catalog'),
         path.join(destinationResourcesRoot, 'catalog'), { recursive: true });
     fs.cpSync(path.join(sourceExtensionRoot, 'resources', 'templates'),
@@ -789,6 +798,19 @@ function testCFrontendMutation() {
     } finally {
         fs.rmSync(fixtureRoot, { recursive: true, force: true });
     }
+}
+
+function testRuntimeMutation() {
+    assert.throws(() => stageApi.runIsolatedResourcePreparation({
+        extensionRoot: sourceExtensionRoot,
+        repositoryRoot: sourceRepositoryRoot,
+        socApi: fixtureSocApi,
+        sourceRevision: 'runtime-mutation-revision',
+        prepareResourcesFn(options) {
+            fs.appendFileSync(path.join(options.repositoryRoot, 'runtime/merc32/mem.asm'), '\n; modified\n');
+            return prepareApi.prepareResourcesAtRoots(options);
+        },
+    }), /changed authoritative runtime input/u);
 }
 
 function testUnexpectedCFrontendResource() {
@@ -839,6 +861,7 @@ function testHardLinkedCFrontendResource() {
 function writeVictimOutputs(resourcesRoot, marker) {
     const entries = [
         ['rtl/victim.v', `rtl-${marker}\n`],
+        ['runtime/victim.asm', `runtime-${marker}\n`],
         ['licenses/LICENSE', `license-${marker}\n`],
         ['resource-manifest.json', `manifest-${marker}\n`],
         ['schema/merc32.schema.json', `schema-${marker}\n`],
@@ -853,6 +876,7 @@ function writeVictimOutputs(resourcesRoot, marker) {
 function snapshotVictimOutputs(resourcesRoot, marker) {
     return [
         'rtl/victim.v',
+        'runtime/victim.asm',
         'licenses/LICENSE',
         'resource-manifest.json',
         'schema/merc32.schema.json',
@@ -865,6 +889,7 @@ function snapshotVictimOutputs(resourcesRoot, marker) {
 function assertStageStartsWithoutGeneratedOutputs(stageExtensionRoot) {
     for (const logicalPath of [
         'resources/rtl',
+        'resources/runtime',
         'resources/licenses',
         'resources/resource-manifest.json',
         'resources/schema',

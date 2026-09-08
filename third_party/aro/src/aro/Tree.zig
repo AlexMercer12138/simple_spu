@@ -3305,6 +3305,9 @@ pub fn isLvalExtra(tree: *const Tree, node: Node.Index, is_const: *bool) bool {
         .paren_expr => |un| {
             return tree.isLvalExtra(un.operand, is_const);
         },
+        .generic_expr => |generic| return tree.isLvalExtra(generic.chosen, is_const),
+        .generic_association_expr => |association| return tree.isLvalExtra(association.expr, is_const),
+        .generic_default_expr => |association| return tree.isLvalExtra(association.expr, is_const),
         .builtin_choose_expr => |conditional| {
             if (tree.value_map.get(conditional.cond)) |val| {
                 if (!val.isZero(tree.comp)) {

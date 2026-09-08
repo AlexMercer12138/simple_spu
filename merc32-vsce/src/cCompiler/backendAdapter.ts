@@ -161,8 +161,9 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const functionShape = unwrapType(shell);
         if (functionShape.kind === 'function') {
             if (functionShape.variadic) fail('variadic functions are not supported by the MERC32 backend', findRange(record, unit), files);
-            if (typeSize(functionShape.returnType) > 4 || functionShape.parameters.some((parameter: CType) => typeSize(parameter) > 4)) {
-                fail('aggregate function return and parameter values are not supported by the MERC32 backend', findRange(record, unit), files);
+            if ((!isAggregate(functionShape.returnType) && typeSize(functionShape.returnType) > 4)
+                || functionShape.parameters.some((parameter: CType) => !isAggregate(parameter) && typeSize(parameter) > 4)) {
+                fail('wide scalar function return and parameter values are not supported by the MERC32 backend', findRange(record, unit), files);
             }
         }
         if (functionShape.kind !== 'function' && (typeSize(shell) !== record.size || typeAlignment(shell) !== record.alignment)) {
@@ -170,6 +171,43 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         }
     }
     for (const shell of shells.values()) Object.freeze(shell);
+    const irqNames = new Set(['irq_save', 'irq_restore', '__irq_enable', '__irq_disable', '__irq_enable_level']);
+    const irqIds = new Set<number>();
+    for (const symbol of unit.symbols) {
+        if (symbol.kind !== 'function' || !irqNames.has(symbol.name)) continue;
+        const type = unwrapType(shells.get(Number(symbol.type))!);
+        const builtin = (value: CType, name: string): boolean => {
+            const resolved = unwrapType(value);
+            return resolved.kind === 'builtin' && resolved.name === name;
+        };
+        if (symbol.definition || type.kind !== 'function' || type.variadic
+            || !builtin(type.returnType, symbol.name === 'irq_save' ? 'unsigned int' : 'void')
+            || type.parameters.length !== (symbol.name === 'irq_restore' ? 1 : 0)
+            || (symbol.name === 'irq_restore' && !builtin(type.parameters[0], 'unsigned int'))) {
+            fail(`invalid declaration or definition of reserved IRQ intrinsic '${symbol.name}'`, symbol.range, files);
+        }
+        irqIds.add(Number(symbol.id));
+    }
+    const permittedIrqReferences = new Set<number>();
+    const allNodes = new Map(unit.nodes.map(node => [Number(node.id), node]));
+    for (const node of unit.nodes) {
+        if (node.kind !== 'call') continue;
+        let callee = allNodes.get(Number(node.children[0]));
+        while (callee && (callee.kind === 'conversion' || callee.kind === 'unary' && callee.operator === 'parentheses')) {
+            callee = allNodes.get(Number(callee.children[0]));
+        }
+        if (callee?.kind === 'declaration-reference' && irqIds.has(Number(callee.symbol))) permittedIrqReferences.add(Number(callee.id));
+    }
+    for (const node of unit.nodes) {
+        if (node.kind === 'declaration-reference' && irqIds.has(Number(node.symbol)) && !permittedIrqReferences.has(Number(node.id))) {
+            fail('IRQ intrinsics require a direct call; their address cannot be taken', node.range, files);
+        }
+    }
+    for (const symbol of unit.symbols) {
+        if (symbol.kind === 'variable' && symbol.initializer?.writes.some(write => write.value.kind === 'address' && irqIds.has(Number(write.value.symbol)))) {
+            fail('IRQ intrinsics require a direct call; their address cannot be taken', symbol.range, files);
+        }
+    }
 
     const nodeRecords = new Map(unit.nodes.map((node) => [Number(node.id), node]));
     const functionScopedVariables = new Set<number>();
@@ -186,6 +224,25 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         };
         rootNode.children.forEach((child) => visit(Number(child)));
     }
+    const occupiedNames = new Set(unit.symbols.map(symbol => symbol.name));
+    const privateName = (prefix: string): string => {
+        let name = prefix;
+        while (occupiedNames.has(name)) name += '_';
+        occupiedNames.add(name);
+        return name;
+    };
+    for (const id of functionScopedVariables) {
+        const symbol = symbols.get(id);
+        if (symbol?.kind === 'variable' && symbol.storage === 'static' && symbol.linkage === 'none') {
+            symbols.set(id, { ...symbol, name: privateName(`__merc32_static_${id}`), linkage: 'internal' });
+        }
+    }
+    for (const [id, symbol] of symbols) {
+        if (symbol.kind === 'variable' && symbol.linkage === 'internal' && symbol.name.startsWith('.L.')) {
+            symbols.set(id, { ...symbol, name: privateName(`__merc32_literal_${id}`) });
+        }
+    }
+    const literalGlobals: LoweringGlobal[] = [];
     const expressionMemo = new Map<number, LoweringExpression>();
     const adaptExpression = (id: number): LoweringExpression => {
         const cached = expressionMemo.get(id); if (cached) return cached;
@@ -193,8 +250,21 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const typed = node as Extract<TypedNodeRecord, { category: 'expression' }>;
         const type = shells.get(Number(typed.type)); if (!type) throw new CFrontendInternalError(`expression ${id} references unknown type`);
         requireSupportedValueType(type, typed.range, files);
-        if (typed.kind === 'generic-selection' || typed.kind === 'compound-literal' || typed.kind === 'string-literal') {
-            fail(`${typed.kind} is not supported by the MERC32 backend`, typed.range, files);
+        if (typed.kind === 'generic-selection') {
+            const selected = adaptExpression(Number(typed.children[0]));
+            expressionMemo.set(id, selected);
+            return selected;
+        }
+        if (typed.kind === 'string-literal') {
+            const name = privateName(`__merc32_string_${id}`);
+            literalGlobals.push({ name, binding: 'local', type,
+                initializer: { size: typeSize(type), writes: [{ offset: 0, type,
+                    value: { bytes: typed.constant.bytes }, location: rangeLocation(typed.range, files) }] } });
+            const literal: LoweringExpression = { kind: 'declaration-reference', type,
+                valueCategory: 'lvalue', location: rangeLocation(typed.range, files), operands: [], symbol: name,
+                stringBytes: typed.constant.bytes };
+            expressionMemo.set(id, literal);
+            return literal;
         }
         const operands = Object.freeze(typed.children.map((child) => adaptExpression(Number(child))));
         const expression: LoweringExpression = {
@@ -212,10 +282,12 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                 memberOffset: memberOffset(operands[0]?.type ?? type, Number(typed.memberIndex), files),
             } : {}),
             ...('targetType' in typed && !('conversion' in typed) ? { targetType: shells.get(Number(typed.targetType)) } : {}),
+            ...('computationType' in typed ? { computationType: shells.get(Number(typed.computationType)) } : {}),
+            ...(typed.kind === 'compound-literal' ? { initializerIndices: typed.initializerIndices } : {}),
         };
-        if ((typed.kind === 'binary' && !['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(typed.operator))
-            || (typed.kind === 'assignment' && typed.operator !== '=')
-            || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*', 'parentheses', 'cast'].includes(typed.operator))) {
+        if ((typed.kind === 'binary' && !['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '==', '!=', '<', '<=', '>', '>=', '&&', '||', ','].includes(typed.operator))
+            || (typed.kind === 'assignment' && !['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='].includes(typed.operator))
+            || (typed.kind === 'unary' && !['+', '-', '!', '~', '&', '*', 'parentheses', 'cast', 'pre++', 'pre--', 'post++', 'post--'].includes(typed.operator))) {
             fail(`operator '${'operator' in typed ? typed.operator : String((typed as { kind: string }).kind)}' is not supported by the MERC32 backend`, typed.range, files);
         }
         if (typed.kind === 'unary' && typed.operator === 'parentheses'
@@ -223,20 +295,11 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
             fail('parenthesized expressions must preserve type and value category', typed.range, files);
         }
         if (typed.kind === 'unary' && typed.operator === 'cast'
-            && !isSupportedIdentityCast(operands[0].type, type)) {
-            fail('narrowing or widening explicit casts are not supported by the MERC32 backend', typed.range, files);
+            && !isSupportedCast(operands[0].type, type)) {
+            fail('explicit cast is not supported by the MERC32 backend', typed.range, files);
         }
         if (typed.kind === 'conversion' && !['lvalue-to-rvalue', 'array-to-pointer', 'function-to-pointer', 'integer-promotion', 'usual-arithmetic', 'assignment', 'argument', 'return', 'no-op', 'bitcast', 'int-cast', 'pointer-to-bool', 'pointer-to-int', 'bool-to-int', 'int-to-bool', 'int-to-pointer', 'to-void', 'null-to-pointer'].includes(typed.conversion)) {
             fail(`conversion '${typed.conversion}' is not supported by the MERC32 backend`, typed.range, files);
-        }
-        if (typed.kind === 'conversion' && typed.conversion === 'int-cast'
-            && typeSize(type) !== typeSize(operands[0].type)) {
-            fail('narrowing or widening integer casts are not supported by the MERC32 backend', typed.range, files);
-        }
-        const transparentParentheses = typed.kind === 'unary' && typed.operator === 'parentheses';
-        if (typed.kind !== 'declaration-reference' && typed.kind !== 'member'
-            && !transparentParentheses && typeSize(type) > 4) {
-            fail('aggregate-valued operations are not supported by the MERC32 backend', typed.range, files);
         }
         expressionMemo.set(id, expression);
         return expression;
@@ -260,7 +323,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
                     const symbol = symbols.get(Number(declaration.symbol)); if (!symbol || !('type' in symbol)) throw new CFrontendInternalError('declaration statement has no symbol');
                     if (symbol.kind !== 'variable') throw new CFrontendInternalError('declaration statement variable filter failed');
                     if (symbol.storage === 'thread') fail('thread-local storage is not supported by the MERC32 backend', symbol.range, files);
-                    if (symbol.storage !== 'automatic') fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
+                    if (symbol.storage !== 'automatic') return { kind: 'empty' as const, location };
                     const initializer = declaration.children.length === 1 ? adaptExpression(Number(declaration.children[0])) : undefined;
                     const binding = localBinding(symbol);
                     const type = shells.get(Number(symbol.type)) as CType;
@@ -296,11 +359,10 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
     };
 
     const globals: LoweringGlobal[] = [];
-    for (const symbol of unit.symbols) {
+    for (const symbol of symbols.values()) {
         if (symbol.kind !== 'variable') continue;
         if (symbol.storage === 'thread') fail('thread-local storage is not supported by the MERC32 backend', symbol.range, files);
         if (symbol.storage === 'automatic' || !symbol.definition) continue;
-        if (functionScopedVariables.has(Number(symbol.id))) fail(`${symbol.storage} block-scope objects are not supported by the MERC32 backend`, symbol.range, files);
         const type = shells.get(Number(symbol.type)); if (!type) throw new CFrontendInternalError(`global ${symbol.name} references unknown type`);
         requireSupportedValueType(type, symbol.range, files);
         const initializer = symbol.initializer?.writes.length
@@ -314,6 +376,10 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const type = unwrapType(shells.get(Number(symbol.type)) as CType);
         if (type.kind !== 'function') throw new CFrontendInternalError(`function ${symbol.name} has non-function type`);
         requireSupportedValueType(type, symbol.range, files);
+        if (['main', '__irq_handler'].includes(symbol.name)
+            && (isAggregate(type.returnType) || type.parameters.some(isAggregate))) {
+            fail(`startup entry '${symbol.name}' cannot use aggregate parameters or return values`, symbol.range, files);
+        }
         if (type.variadic) fail('variadic functions are not supported by the MERC32 backend', symbol.range, files);
         const definition = unit.declarations.map((id) => nodeRecords.get(Number(id))).find((node) => node?.kind === 'function-definition' && 'symbol' in node && Number(node.symbol) === Number(symbol.id));
         const bodyNode = definition?.children.map((id) => nodeRecords.get(Number(id))).find((node) => node?.category === 'statement' && node.kind === 'compound');
@@ -343,7 +409,7 @@ export function adaptTypedUnit(unit: TypedCUnitV1): LoweringProgram {
         const parameterNames = type.parameters.map((_parameter, index) => parameters[index] ? localBinding(parameters[index]) ?? parameters[index].name : '');
         functions.push({ name: symbol.name, binding: symbol.linkage === 'internal' ? 'local' : 'global', returnType: type.returnType, parameters: type.parameters, parameterNames, localNames: locals.map((local) => localBinding(local) ?? local.name), localTypes: locals.map((local) => shells.get(Number((local as Extract<TypedSymbolRecord, { kind: 'variable' }>).type)) as CType), body, location: rangeLocation(symbol.range, files) });
     }
-    return freezeLowering({ abi: 'merc32-c-v1' as const, globals, functions });
+    return freezeLowering({ abi: 'merc32-c-v1' as const, globals: [...globals, ...literalGlobals], functions });
 }
 
 function freezeLowering<T>(value: T, seen = new Set<object>()): T {
@@ -392,6 +458,11 @@ function unwrapType(type: CType): CType {
     return current;
 }
 
+function isAggregate(type: CType): boolean {
+    const kind = unwrapType(type).kind;
+    return kind === 'struct' || kind === 'union' || kind === 'array';
+}
+
 function requireSupportedValueType(type: CType, range: SourceRange,
     files: ReadonlyMap<number, string>): void {
     const unsupported = unsupportedValueBuiltin(type, new Set());
@@ -416,13 +487,12 @@ function unsupportedValueBuiltin(type: CType, seen: Set<CType>): string | undefi
     return undefined;
 }
 
-function isSupportedIdentityCast(source: CType, target: CType): boolean {
+function isSupportedCast(source: CType, target: CType): boolean {
     source = unwrapType(source);
     target = unwrapType(target);
+    if (target.kind === 'builtin' && target.name === 'void') return true;
     if (!isScalarType(source) || !isScalarType(target)) return false;
-    if (typeSize(source) > 4 || typeSize(source) !== typeSize(target)) return false;
-    if (target.kind === 'builtin' && target.name === '_Bool'
-        && !(source.kind === 'builtin' && source.name === '_Bool')) return false;
+    if (typeSize(source) > 4 || typeSize(target) > 4) return false;
     const sourceInteger = isIntegerType(source);
     const targetInteger = isIntegerType(target);
     return sourceInteger && targetInteger

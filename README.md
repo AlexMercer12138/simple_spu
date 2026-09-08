@@ -107,10 +107,10 @@ MERC32/
 
 项目提供 `merc32-vsce` VSCode 扩展，集成了 MERC32 汇编器与 Tiny C 编译器，并通过活动栏侧边栏组织构建命令与产物。打开 `.asm` / `.c` 文件时，扩展会提供语法高亮、代码片段以及右上角的一键编译按钮，支持正常、打印、调试三种编译模式，并可将结果输出为 Verilog、COE、MIF、Intel HEX、Binary 或 `$readmemh` 内存文件。
 
-Tiny C 在文件编译前会处理相对路径的引号 `#include`、对象式 `#define`/
-`#undef` 和 `#if`、`#ifdef`、`#ifndef`、`#else`、`#endif` 条件指令；包含守卫可使用
-这组指令。诊断会定位到原始源文件、行和列。完整的支持范围与限制见
-[merc32-vsce/README.md](merc32-vsce/README.md#tiny-c-compiler)。
+当前 C 工具链使用 Aro C17 freestanding 前端，支持标准宏展开、条件预处理和包含，
+再生成 MERC32 对象并链接。已补齐常用整数表达式、字符串、局部静态对象、复合字面量、
+内存/字符串运行库和中断临界区接口。诊断定位到原始源文件、行和列；完整支持范围与限制见
+[merc32-vsce/README.md](merc32-vsce/README.md#c17-编译器)。
 
 详细安装、使用方法与配置项见 [merc32-vsce/README.md](merc32-vsce/README.md)。
 

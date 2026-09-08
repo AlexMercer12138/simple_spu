@@ -33,6 +33,7 @@ export function compileCFileToAssemblyDetailed(sourceFile: string): CCompileDeta
         dataBase: settings.cDataBase,
         dlbAddrWidth: settings.cDlbAddrWidth,
         codeBase: settings.cCodeBase,
+        optimization: settings.cOptimization,
         moduleName: baseName,
     });
 

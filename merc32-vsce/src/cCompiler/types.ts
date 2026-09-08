@@ -9,6 +9,7 @@ export interface BackendCompileOptions {
     readonly codeBase?: number;
     readonly moduleName?: string;
     readonly tempSlots?: number;
+    readonly optimization?: 'none' | 'basic';
 }
 
 export interface CompileResult {

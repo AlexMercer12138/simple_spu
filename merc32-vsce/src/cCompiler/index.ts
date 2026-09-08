@@ -23,6 +23,7 @@ import { lowerProgram } from './lower';
 import { CFrontendError } from './source';
 import { BackendCompileOptions, CompileResult } from './types';
 import { createCStartupObject } from '../runtime/startup';
+import { loadMemoryRuntimeObject } from '../runtime/runtimeCatalog';
 
 export type { Merc32Object } from '../linker/objectFormat';
 export * from './types';
@@ -51,7 +52,7 @@ export function splitCompileOptions(options: CompileOptions = {}): Readonly<{
         'standard', 'sourceName', 'defines', 'includePaths', 'virtualFiles', 'limits',
     ] as const);
     copyDefined(options, backend, [
-        'dataBase', 'dlbAddrWidth', 'codeBase', 'moduleName', 'tempSlots',
+        'dataBase', 'dlbAddrWidth', 'codeBase', 'moduleName', 'tempSlots', 'optimization',
     ] as const);
     return Object.freeze({
         frontend: Object.freeze(frontend) as CFrontendOptions,
@@ -74,9 +75,9 @@ export function compileCToObjectDetailed(
     const standardFailure = validateStandard<Merc32Object>(options, source,
         options.sourceName ?? 'merc32-input.c');
     if (standardFailure) return standardFailure;
-    const { frontend } = splitCompileOptions(options);
+    const { frontend, backend } = splitCompileOptions(options);
     const envelope = getAroFrontend().analyzeSource(source, frontend);
-    return compileEnvelope(envelope, sourceSnapshots(envelopeSources(envelope), source, frontend));
+    return compileEnvelope(envelope, sourceSnapshots(envelopeSources(envelope), source, frontend), backend);
 }
 
 export function compileCFileToObjectDetailed(
@@ -87,10 +88,10 @@ export function compileCFileToObjectDetailed(
     const standardFailure = validateStandard<Merc32Object>(options,
         readSourceForDiagnostic(sourceFile, preprocess), sourceFile);
     if (standardFailure) return standardFailure;
-    const { frontend } = splitCompileOptions(compileOptions);
+    const { frontend, backend } = splitCompileOptions(compileOptions);
     const envelope = getAroFrontend().analyzeFile(sourceFile, frontend, preprocess);
     const sources = envelopeSources(envelope);
-    return compileEnvelope(envelope, fileSnapshots(sourceFile, sources, frontend, preprocess));
+    return compileEnvelope(envelope, fileSnapshots(sourceFile, sources, frontend, preprocess), backend);
 }
 
 export function compileCToObject(source: string, options: CompileOptions = {}): Merc32Object {
@@ -102,14 +103,14 @@ export function compileCFileToObject(sourceFile: string, options: CompileFileOpt
 }
 
 function compileEnvelope(envelope: TypedCEnvelopeV1,
-    snapshots: readonly CCompileDiagnosticSource[]): CCompileDetailedResult<Merc32Object> {
+    snapshots: readonly CCompileDiagnosticSource[], options: BackendCompileOptions): CCompileDetailedResult<Merc32Object> {
     const diagnostics = normalizeDiagnostics(envelope.diagnostics);
     const sources = envelopeSources(envelope);
     if (envelope.unit === undefined || hasErrors(diagnostics)) {
         return withCCompileDiagnosticSources({ diagnostics }, sources, snapshots);
     }
     try {
-        const artifact = generateObject(lowerProgram(adaptTypedUnit(envelope.unit)));
+        const artifact = generateObject(lowerProgram(adaptTypedUnit(envelope.unit), options), options);
         return withCCompileDiagnosticSources({ artifact, diagnostics }, sources, snapshots);
     } catch (error) {
         if (!(error instanceof CBackendCapabilityError)) throw error;
@@ -211,7 +212,9 @@ function linkDetailed(objectResult: CCompileDetailedResult<Merc32Object>,
             entry,
             irqHandler: object.symbols.some(symbol => symbol.name === '__irq_handler' && symbol.defined),
         });
-        const image = linkObjects([startup, object], { textBase: codeBase + 4, dataBase, entrySymbol: entry });
+        const image = linkObjects([startup, object, ...requiredMemoryRuntime(object)], {
+            textBase: codeBase + 4, dataBase, entrySymbol: entry, gcFunctions: options.optimization === 'basic',
+        });
         validateIlbImage(image);
         validateDlbImage(image, dataBase, options.dlbAddrWidth ?? 16);
         const moduleName = sanitizeIdentifier(options.moduleName || 'merc32_c_program');
@@ -226,6 +229,15 @@ function linkDetailed(objectResult: CCompileDetailedResult<Merc32Object>,
         }, getCCompileSourceFiles(objectResult), getCCompileDiagnosticSources(objectResult));
         return failed;
     }
+}
+
+function requiredMemoryRuntime(object: Merc32Object): Merc32Object[] {
+    const names = new Set(['memcpy', 'memmove', 'memset', 'memcmp', 'strlen', 'strcmp']);
+    const defined = new Set(object.symbols.filter(symbol => symbol.defined).map(symbol => symbol.name));
+    if (!object.symbols.some(symbol => !symbol.defined && names.has(symbol.name) && !defined.has(symbol.name))) return [];
+    const memory = loadMemoryRuntimeObject();
+    return [{ ...memory, symbols: memory.symbols.map(symbol =>
+        symbol.binding === 'global' && defined.has(symbol.name) ? { ...symbol, binding: 'local' as const } : symbol) }];
 }
 
 const DLB_BASE_ADDRESS = 0x0800_0000;
@@ -271,9 +283,9 @@ function validateIlbImage(image: LinkedImage): void {
     const textEnd = Math.max(0, ...image.sections
         .filter((section) => section.name === 'text')
         .map((section) => section.address + section.size));
-    if (textEnd > DIRECT_LABEL_EXCLUSIVE_LIMIT) {
+    if (textEnd > DLB_BASE_ADDRESS) {
         throw new ImageCapacityError('MERC32_C_ILB_CAPACITY',
-            'linked ILB image exceeds exclusive direct-label limit 0x00008000');
+            'linked ILB image exceeds exclusive address limit 0x08000000');
     }
 }
 
@@ -310,8 +322,11 @@ function validateAssemblyOptions(options: CompileOptions, source: string,
     return undefined;
 }
 
-function validateStandard<T>(options: CFrontendOptions, source: string,
+function validateStandard<T>(options: CompileOptions, source: string,
     sourceName: string): CCompileDetailedResult<T> | undefined {
+    if (options.optimization !== undefined && options.optimization !== 'none' && options.optimization !== 'basic') {
+        return optionFailure('optimization must be none or basic', source, sourceName);
+    }
     return options.standard !== undefined && options.standard !== 'c17'
         ? optionFailure(`unsupported C standard: ${String(options.standard)}`, source, sourceName)
         : undefined;

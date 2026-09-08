@@ -19,7 +19,13 @@ function run() {
         socApiRoot: extensionRoot,
         prepareResourcesFn: (options, stage) => {
             stageRoot = stage.stageRoot;
-            return prepareResourcesAtRoots(options);
+            const prepared = prepareResourcesAtRoots(options);
+            for (const file of ['mem.asm', 'runtime.manifest.json', 'PROVENANCE.md']) {
+                assert.deepStrictEqual(fs.readFileSync(path.join(stage.extensionRoot, 'resources/runtime/merc32', file)),
+                    fs.readFileSync(path.join(repositoryRoot, 'runtime/merc32', file)),
+                    `packaged runtime differs from authoritative source: ${file}`);
+            }
+            return prepared;
         },
     });
     assert.ok(result.files.includes('rtl/cpu/MERC32_top.v'),
@@ -32,6 +38,7 @@ function run() {
         'isolated preparation did not retain the committed Aro WASM');
     assert.ok(result.files.includes('c-frontend/include/stdint.h'),
         'isolated preparation did not retain the committed freestanding headers');
+    assert.ok(result.files.includes('runtime/merc32/mem.asm'), 'memory runtime missing from resource manifest');
     assert.deepStrictEqual(snapshotLiveGeneratedResources(), liveSnapshot,
         'isolated preparation changed live extension resources');
     assert.strictEqual(lstatOptional(stageRoot), undefined,
@@ -77,6 +84,7 @@ function splitCommandStages(command) {
 function snapshotLiveGeneratedResources() {
     return [
         'resources/rtl',
+        'resources/runtime',
         'resources/licenses',
         'resources/resource-manifest.json',
         'resources/schema/merc32.schema.json',

@@ -19,6 +19,9 @@ export interface LoweringExpression {
     readonly memberIndex?: number;
     readonly memberOffset?: number;
     readonly targetType?: CType;
+    readonly computationType?: CType;
+    readonly initializerIndices?: readonly number[];
+    readonly stringBytes?: readonly number[];
     readonly constant?: LoweringConstant;
 }
 

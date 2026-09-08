@@ -167,6 +167,8 @@ const unsupportedSourceRoot = analyze(makeRequest({
 assert.strictEqual(unsupportedSourceRoot.envelope.status, 'internal-error',
     'source-backed unsupported roots must not disappear from a successful unit');
 
+require('./embedded-semantics')(analyze, makeRequest);
+
 const multibyteSource = analyze(makeRequest({ source: 'int x; /* é */\n' }));
 assert.strictEqual(multibyteSource.envelope.status, 'ok');
 assert.strictEqual(multibyteSource.envelope.unit.sourceFiles[0].utf8BoundaryBitmap, 'fff701',

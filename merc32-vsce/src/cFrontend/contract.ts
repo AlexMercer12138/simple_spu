@@ -282,12 +282,13 @@ export type TypedNodeRecord =
     | (ExpressionBase<'floating-literal'> & Readonly<{ constant: FloatingConstant }>)
     | (ExpressionBase<'string-literal'> & Readonly<{ constant: StringConstant }>)
     | (ExpressionBase<'declaration-reference'> & Readonly<{ symbol: SymbolId }>)
-    | (ExpressionBase<'unary' | 'binary' | 'conditional' | 'assignment'> & Readonly<{ operator: string }>)
+    | (ExpressionBase<'unary' | 'binary' | 'conditional'> & Readonly<{ operator: string }>)
+    | (ExpressionBase<'assignment'> & Readonly<{ operator: string; computationType?: TypeId }>)
     | ExpressionBase<'call' | 'subscript'>
     | (ExpressionBase<'member'> & Readonly<{ memberIndex: number }>)
     | (ExpressionBase<'sizeof' | 'alignof'> & Readonly<{ targetType: TypeId; constant: IntegerConstant }>)
     | (ExpressionBase<'conversion'> & Readonly<{ conversion: ConversionKind; targetType: TypeId }>)
-    | (ExpressionBase<'compound-literal'> & Readonly<{ targetType: TypeId }>)
+    | (ExpressionBase<'compound-literal'> & Readonly<{ targetType: TypeId; initializerIndices?: readonly number[] }>)
     | (ExpressionBase<'generic-selection'> & Readonly<{ memberIndex: number }>);
 
 export interface TypedCUnitV1 {

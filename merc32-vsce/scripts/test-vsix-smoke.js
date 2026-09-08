@@ -420,6 +420,12 @@ function assertVsixContents(audit, extensionRoot) {
             `resource hash mismatch for ${record.path}`);
     }
     assertExactResourceClosure(audit, resources);
+    for (const name of ['can', 'gpio', 'i2c', 'intc', 'qspi', 'sdio', 'timer', 'uart']) {
+        for (const extension of ['c', 'h']) {
+            assert.ok(resources.has(`drivers/${name}.${extension}`),
+                `resource manifest is missing driver ${name}.${extension}`);
+        }
+    }
 
     for (const webviewPath of ['webview/socEditor.css', 'webview/socEditor.js']) {
         assert.ok(resources.has(webviewPath),

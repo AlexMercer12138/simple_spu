@@ -133,6 +133,7 @@ fn analyze(json: []const u8) !void {
     };
     defer if (tree) |*parsed_tree| parsed_tree.deinit();
 
+    if (tree) |*parsed_tree| try diagnostics.rejectUnsupportedAttributes(parsed_tree, &pp, &aro_diagnostics);
     const diagnostic_records = try diagnostics.collect(allocator, &comp, &aro_diagnostics, &sources);
     const status: serializer.Status = if (!compilation_failed and aro_diagnostics.errors == 0) .ok else .diagnostics;
     const encoded = try serializer.envelopeWithPreprocessor(

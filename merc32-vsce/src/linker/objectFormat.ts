@@ -52,9 +52,18 @@ export interface Relocation {
     readonly kind: RelocationKind;
     readonly symbol: string;
     readonly addend: number;
+    /** Scratch register explicitly available at this control-flow site (r4-r11). */
+    readonly relaxationRegister?: number;
     readonly debug?: DebugLocation;
 }
 export interface DebugLocation extends SourceLocation {}
+/** Complete, ordered text partition; each function terminates without falling into its successor.
+ * All symbolic references from these functions must have relocations. */
+export interface ObjectFunction {
+    readonly name: string;
+    readonly offset: number;
+    readonly size: number;
+}
 export interface Merc32Object {
     readonly version: 1;
     readonly target: 'merc32';
@@ -62,5 +71,6 @@ export interface Merc32Object {
     readonly sections: readonly ObjectSection[];
     readonly symbols: readonly ObjectSymbol[];
     readonly relocations: readonly Relocation[];
+    readonly functions?: readonly ObjectFunction[];
     readonly debug?: readonly DebugLocation[];
 }

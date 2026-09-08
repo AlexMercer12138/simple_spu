@@ -5,8 +5,14 @@ import { applyRelocations } from './relocations';
 import { LinkedSection } from './relocations';
 import { LayoutOptions, layoutSections, LinkerError, resolveSymbols } from './resolver';
 import { assembleToObject } from './assembleObject';
+import { relaxObjects } from './relaxation';
+import { collectFunctions } from './functionGc';
 
-export interface LinkOptions extends LayoutOptions { readonly entrySymbol?: string; }
+export interface LinkOptions extends LayoutOptions {
+  readonly entrySymbol?: string;
+  readonly gcFunctions?: boolean;
+  readonly keepSymbols?: readonly string[];
+}
 export interface LinkedImage {
   readonly assembly: string;
   readonly machineCodes?: readonly number[];
@@ -18,7 +24,9 @@ export interface LinkedImage {
 export function linkObjects(objects: readonly Merc32Object[], options: LinkOptions = {}): LinkedImage {
   objects.forEach(validateObject);
   objects = withGlobalInitialization(objects);
+  if (options.gcFunctions) objects = collectFunctions(objects, options.entrySymbol, options.keepSymbols);
   resolveSymbols(objects);
+  objects = relaxObjects(objects, options);
   const layout = layoutSections(objects, options);
   const linked = applyRelocations(layout);
   const textSections = linked.sections.filter(section => section.name === 'text');
@@ -34,7 +42,7 @@ export function linkObjects(objects: readonly Merc32Object[], options: LinkOptio
         machineCodes.push(0);
         address += 4;
       }
-      machineCodes.push(...section.content.map(word => word >>> 0));
+      for (const word of section.content) machineCodes.push(word >>> 0);
       address += section.content.length * 4;
     }
   }
@@ -70,7 +78,8 @@ function withGlobalInitialization(objects: readonly Merc32Object[]): readonly Me
   if (calls.length === 0) return objects;
   const dispatcher = assembleToObject(`${entry}:\nmov r13, r13 - 4\nsw [r13], r14\n${calls.join('\n')}\nlw r14, [r13]\nmov r13, r13 + 4\njmp r14\n`,
     { abi: objects[0].abi, exports: [entry] });
-  return [...prepared, dispatcher];
+  return [...prepared, { ...dispatcher, relocations: dispatcher.relocations.map(relocation =>
+    relocation.kind === 'CALL16' ? { ...relocation, relaxationRegister: 8 } : relocation) }];
 }
 
 export function linkFiles(files: readonly string[], options?: LinkOptions): LinkedImage {

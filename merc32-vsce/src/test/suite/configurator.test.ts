@@ -197,6 +197,7 @@ suite('MERC32 SoC configurator extension host', () => {
                     `hardware/${path.basename(group.outputUri.fsPath) === 'host-a' ? 'host_a' : 'host_b'}.v`,
                     `software/${path.basename(group.outputUri.fsPath) === 'host-a' ? 'host_a' : 'host_b'}.h`,
                     'software/main.c',
+                    'software/drivers/merc32_drivers.h',
                 ]);
             }
             const persisted = memento.get<unknown[]>(SOC_ARTIFACT_STATE_KEY, []);

@@ -119,6 +119,9 @@ async function run() {
             'hardware/all_peripherals_soc.v',
             'software/all_peripherals_soc.h',
             'software/main.c',
+            'software/drivers/merc32_drivers.h',
+            ...['can', 'gpio', 'i2c', 'intc', 'qspi', 'sdio', 'timer', 'uart']
+                .flatMap(name => [`software/drivers/${name}.c`, `software/drivers/${name}.h`]),
         ];
         for (const logicalPath of requiredOutputs) {
             requireExactFile(path.join(outputDir, ...logicalPath.split('/')),
@@ -138,6 +141,16 @@ async function run() {
         }
 
         const cSmokeRoot = path.join(workspaceRoot, 'c-frontend-smoke');
+        const driverMain = path.join(outputDir, 'software', 'driver_smoke.c');
+        fs.writeFileSync(driverMain,
+            '#include "all_peripherals_soc.h"\n#include "drivers/merc32_drivers.h"\n'
+            + 'int main(void) { gpio_handle_t gpio = {0}; '
+            + 'gpio_init(&gpio, ALL_PERIPHERALS_SOC_GPIO0_BASE); gpio_set_mask(&gpio, 1U); return 0; }\n');
+        const driverDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(driverMain));
+        await vscode.window.showTextDocument(driverDocument, { preview: false });
+        await vscode.commands.executeCommand('merc32-asm.compileCToAsm');
+        requireExactFile(path.join(outputDir, 'software', 'driver_smoke.asm'),
+            'offline generated peripheral driver assembly');
         const cMain = path.join(cSmokeRoot, 'main.c');
         const cSibling = path.join(cSmokeRoot, 'sibling.h');
         fs.mkdirSync(cSmokeRoot, { recursive: true });

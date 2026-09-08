@@ -34,5 +34,8 @@ export function createCStartupObject(options: Readonly<{
         'mov r1, r1 | 1',
         'jmp r3',
     );
-    return assembleToObject(lines.join('\n'), { exports: [entry] });
+    const object = assembleToObject(lines.join('\n'), { exports: [entry] });
+    return { ...object, relocations: object.relocations.map(relocation =>
+        relocation.kind === 'CALL16' && ['main', '__merc32_init_globals', '__irq_handler'].includes(relocation.symbol)
+            ? { ...relocation, relaxationRegister: 8 } : relocation) };
 }

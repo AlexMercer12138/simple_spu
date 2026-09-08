@@ -1,13 +1,15 @@
-import { Merc32Object, ObjectSymbol, Relocation } from '../linker/objectFormat';
+import { Merc32Object, ObjectFunction, ObjectSymbol, Relocation } from '../linker/objectFormat';
 import { IRFunction, IRInstruction, Merc32Module } from './ir';
-import { CType, typeAlignment, typeSize } from './types';
+import { BackendCompileOptions, CType, typeAlignment, typeSize } from './types';
+import { allocateTemporarySlots, optimizeModule } from './optimize';
+import { allocateLocalRegisters } from './localRegisters';
 
-export function generateAssembly(module: Merc32Module): string {
-  return emitModule(module).assembly;
+export function generateAssembly(module: Merc32Module, options: BackendCompileOptions = {}): string {
+  return emitModule(module, options).assembly;
 }
 
-export function generateObject(module: Merc32Module): Merc32Object {
-  const emitted = emitModule(module);
+export function generateObject(module: Merc32Module, options: BackendCompileOptions = {}): Merc32Object {
+  const emitted = emitModule(module, options);
   const sections: Merc32Object['sections'][number][] = [
     { name: 'text', alignment: 4, size: emitted.size, content: emitted.assembly },
   ];
@@ -52,20 +54,24 @@ export function generateObject(module: Merc32Module): Merc32Object {
     sections,
     symbols,
     relocations: [...emitted.relocations, ...emittedDataRelocations],
+    functions: emitted.functions,
   };
 }
 
 interface EmittedModule {
+  readonly functions: readonly ObjectFunction[];
   readonly assembly: string;
   readonly size: number;
   readonly symbols: readonly ObjectSymbol[];
   readonly relocations: readonly Relocation[];
 }
 
-function emitModule(module: Merc32Module): EmittedModule {
+function emitModule(module: Merc32Module, options: BackendCompileOptions): EmittedModule {
+  if (options.optimization === 'basic') module = optimizeModule(module);
   const lines: string[] = [];
   const symbols: ObjectSymbol[] = [];
   const relocations: Relocation[] = [];
+  const functions: ObjectFunction[] = [];
   const defined = new Set([
     ...module.functions.map(func => func.name),
     ...module.globals.map(global => global.name),
@@ -78,35 +84,52 @@ function emitModule(module: Merc32Module): EmittedModule {
   }
   const referenced = new Set<string>();
   let offset = 0;
-  const emitInstruction = (instruction: string) => { lines.push(`  ${instruction}`); offset += 4; };
+  const emitInstruction = (instruction: string, relaxationRegister = 8) => {
+    const jump = instruction.match(/^jmp ([A-Za-z_][A-Za-z0-9_]*)(?:, r\d+)?$/);
+    const branch = instruction.match(/^(?:bz|bnz) r\d+, r0 \+ ([A-Za-z_][A-Za-z0-9_]*)$/);
+    const symbol = jump?.[1] ?? branch?.[1];
+    if (symbol && !/^r\d+$/.test(symbol) && relocations[relocations.length - 1]?.offset !== offset) {
+      referenced.add(symbol);
+      relocations.push({ section: 'text', offset, kind: jump ? 'CALL16' : 'BRANCH16',
+        symbol, addend: 0, relaxationRegister });
+    }
+    lines.push(`  ${instruction}`);
+    offset += 4;
+  };
   const emitLocalLabel = (label: string) => {
+    defined.add(label);
     symbols.push({ name: label, binding: 'local', section: 'text', offset, defined: true });
     lines.push(`${label}:`);
   };
 
   for (const func of module.functions) {
+    const start = offset;
     symbols.push({ name: func.name, binding: func.binding ?? 'global', section: 'text', offset, defined: true });
     lines.push(`${func.name}:`);
     const returnLabel = allocateLabel(func.returnLabel ?? `__${func.name}_return`, occupiedLabels);
     emitFunction(func, returnLabel, emitInstruction, (symbol, instruction, kind) => {
       referenced.add(symbol);
       relocations.push({ section: 'text', offset, kind, symbol, addend: 0,
+        ...(kind === 'CALL16' || kind === 'BRANCH16' ? { relaxationRegister: 8 } : {}),
         ...(instruction.location ? { debug: instruction.location } : {}) });
-    }, emitLocalLabel);
+    }, emitLocalLabel, prefix => allocateLabel(prefix, occupiedLabels), options);
+    functions.push({ name: func.name, offset: start, size: offset - start });
   }
 
   for (const name of referenced) {
     if (!defined.has(name)) symbols.push({ name, binding: 'global', defined: false });
   }
-  return { assembly: lines.length === 0 ? '' : `${lines.join('\n')}\n`, size: offset, symbols, relocations };
+  return { assembly: lines.length === 0 ? '' : `${lines.join('\n')}\n`, size: offset, symbols, relocations, functions };
 }
 
 function emitFunction(
   func: IRFunction,
   returnLabel: string,
-  emit: (instruction: string) => void,
+  emit: (instruction: string, relaxationRegister?: number) => void,
   reference: (symbol: string, instruction: IRInstruction, kind: Relocation['kind']) => void,
   emitLabel: (label: string) => void,
+  newLabel: (prefix: string) => string,
+  options: BackendCompileOptions,
 ): void {
   const argumentRegisters = ['r4', 'r5', 'r6', 'r7'];
   const parameterNames = func.parameterNames ?? [];
@@ -126,15 +149,39 @@ function emitFunction(
     nextVariableOffset += variable.type ? typeSize(variable.type) : 4;
   }
   const instructionList = func.blocks.flatMap(block => block.instructions);
-  const valueSlots = Math.max(0, ...instructionList
+  const saveReturnAddress = options.optimization !== 'basic'
+    || instructionList.some(instruction => ['call', 'runtime-call', 'call-indirect'].includes(instruction.op));
+  const localRegisters = options.optimization === 'basic' ? allocateLocalRegisters(func) : undefined;
+  const temporarySlots = options.optimization === 'basic' ? new Map([...allocateTemporarySlots(func)]
+    .filter(([value]) => !localRegisters?.has(value))) : undefined;
+  if (temporarySlots) {
+    const dense = new Map<number, number>();
+    for (const [value, slot] of temporarySlots) {
+      if (!dense.has(slot)) dense.set(slot, dense.size);
+      temporarySlots.set(value, dense.get(slot)!);
+    }
+  }
+  const valueSlots = temporarySlots ? Math.max(0, ...[...temporarySlots.values()].map(slot => slot + 1)) : Math.max(0, ...instructionList
     .filter(instruction => instruction.dest !== undefined)
     .map(instruction => (instruction.dest ?? -1) + 1));
   const valueBase = alignUp(nextVariableOffset, 4);
   const frameSize = alignUp(valueBase + valueSlots * 4, 4);
-  const valueRegister = (value: number) => `r${4 + value % 8}`;
-  const valueOffset = (value: number) => valueBase + value * 4;
-  const readValue = (value: number, target: string) => emit(`mov ${target}, [r12 + ${valueOffset(value)}]`);
-  const spillValue = (value: number) => emit(`sw [r12 + ${valueOffset(value)}], ${valueRegister(value)}`);
+  const valueRegister = (value: number) => localRegisters ? localRegisters.get(value) ?? 'r4' : `r${4 + value % 8}`;
+  const valueOffset = (value: number) => valueBase + (temporarySlots?.get(value) ?? value) * 4;
+  const readValue = (value: number, target: string) => {
+    const register = localRegisters?.get(value);
+    if (!register) emit(`mov ${target}, [r12 + ${valueOffset(value)}]`);
+    else if (register !== target) emit(`mov ${target}, ${register}`);
+  };
+  const spillValue = (value: number) => {
+    if (!localRegisters?.has(value)) emit(`sw [r12 + ${valueOffset(value)}], ${valueRegister(value)}`);
+  };
+  const operandRegister = (value: number, scratch: string): string => {
+    const register = localRegisters?.get(value);
+    if (register) return register;
+    readValue(value, scratch);
+    return scratch;
+  };
   const slot = (name: string) => {
     const entry = slots.get(name);
     if (entry === undefined) throw new Error(`typed code generation cannot resolve scalar '${name}'`);
@@ -143,7 +190,7 @@ function emitFunction(
   const variableType = (name: string) => slots.get(name)?.type;
 
   emit(`mov r13, r13 - ${frameSize}`);
-  emit('mov [r13 + 0], r14');
+  if (saveReturnAddress) emit('mov [r13 + 0], r14');
   emit('mov [r13 + 4], r12');
   emit('mov r12, r13');
   parameterNames.forEach((name, index) => {
@@ -178,7 +225,9 @@ function emitFunction(
           break;
         }
         case 'load':
-          emitLoad(variableType(String(instruction.args[0])), valueRegister(instruction.dest ?? 0), `[r12 + ${slot(String(instruction.args[0]))}]`, emit);
+          if (instruction.args.length >= 3) {
+            emitLoadBySize(Number(instruction.args[1]), !!instruction.args[2], valueRegister(instruction.dest ?? 0), `[r12 + ${slot(String(instruction.args[0]))}]`, emit);
+          } else emitLoad(variableType(String(instruction.args[0])), valueRegister(instruction.dest ?? 0), `[r12 + ${slot(String(instruction.args[0]))}]`, emit);
           spillValue(instruction.dest ?? 0);
           break;
         case 'store':
@@ -211,12 +260,32 @@ function emitFunction(
           readValue(Number(instruction.args[1]), 'r7');
           emitStoreBySize(Number(instruction.args[2]), '[r8]', 'r7', emit);
           break;
+        case 'fill-memory': {
+          const count = Number(instruction.args[2]);
+          if (count === 0) break;
+          readValue(Number(instruction.args[0]), 'r8');
+          readValue(Number(instruction.args[1]), 'r7');
+          const relative = Number(instruction.args[3]);
+          if (relative !== 0) {
+            emitConstant('r6', relative, emit);
+            emit('mov r8, r8 + r6');
+          }
+          emitConstant('r6', count, emit);
+          const loop = newLabel(`__${func.name}_fill`);
+          emitLabel(loop);
+          emit('sb [r8], r7');
+          emit('mov r8, r8 + 1');
+          emit('mov r6, r6 - 1');
+          // r8 retains the destination pointer across this loop; r4 is dead here.
+          emit(`bnz r6, r0 + ${loop}`, 4);
+          break;
+        }
         case 'move-value':
           readValue(Number(instruction.args[0]), valueRegister(instruction.dest ?? 0));
           spillValue(instruction.dest ?? 0);
           break;
-        case 'binary':
-          emitBinary(instruction, valueRegister, readValue, emit);
+        case 'binary': case 'binary-immediate':
+          emitBinary(instruction, valueRegister, operandRegister, emit);
           spillValue(instruction.dest ?? 0);
           break;
         case 'call':
@@ -239,7 +308,7 @@ function emitFunction(
           if (indirect) {
             readValue(Number(target), 'r8');
             emit('jmp r8, r14');
-          } else {
+          } else if (instruction.op !== 'call' || !emitIrqIntrinsic(String(target), argumentsList.length, emit)) {
             const symbol = String(target);
             reference(symbol, instruction, 'CALL16');
             emit(`jmp ${symbol}, r14`);
@@ -261,11 +330,41 @@ function emitFunction(
     }
   }
   emitLabel(returnLabel);
-  emit('mov r14, [r12 + 0]');
+  if (saveReturnAddress) emit('mov r14, [r12 + 0]');
   emit('mov r8, [r12 + 4]');
   emit(`mov r13, r12 + ${frameSize}`);
   emit('mov r12, r8');
   emit('jmp r14');
+}
+
+function emitIrqIntrinsic(symbol: string, argumentCount: number, emit: (instruction: string) => void): boolean {
+  switch (symbol) {
+    case 'irq_save':
+    case 'irq_restore':
+    case '__irq_enable':
+    case '__irq_disable':
+    case '__irq_enable_level':
+      if (argumentCount !== (symbol === 'irq_restore' ? 1 : 0)) {
+        throw new Error(`invalid argument count for IRQ intrinsic '${symbol}'`);
+      }
+      break;
+    default:
+      return false;
+  }
+  switch (symbol) {
+    case 'irq_save':
+      // Logical immediates zero-extend, so construct the full-width mask first.
+      emit('mov r7, r0 - 2');
+      emit('mov r4, r1');
+      emit('mov r1, r1 & r7');
+      return true;
+    case 'irq_restore': emit('mov r1, r4'); break;
+    case '__irq_enable': emit('mov r1, 1'); break;
+    case '__irq_disable': emit('mov r1, 0'); break;
+    case '__irq_enable_level': emit('mov r1, 5'); break;
+  }
+  emit('mov r4, 0');
+  return true;
 }
 
 function alignUp(value: number, alignment: number): number {
@@ -312,15 +411,14 @@ function emitStoreBySize(size: number, address: string, source: string, emit: (i
 function emitBinary(
   instruction: IRInstruction,
   valueRegister: (value: number) => string,
-  readValue: (value: number, target: string) => void,
+  operandRegister: (value: number, scratch: string) => string,
   emit: (instruction: string) => void,
 ): void {
   const [operator, leftValue, rightValue, unsigned] = instruction.args;
   const destination = valueRegister(instruction.dest ?? 0);
-  readValue(Number(leftValue), 'r7');
-  readValue(Number(rightValue), 'r8');
-  const left = 'r7';
-  const right = 'r8';
+  const left = operandRegister(Number(leftValue), 'r7');
+  const immediate = Number(rightValue);
+  const right = instruction.op === 'binary-immediate' ? immediate > 32767 ? `0x${immediate.toString(16)}` : String(immediate) : operandRegister(Number(rightValue), 'r8');
   switch (operator) {
     case '+': case '-': case '&': case '|': case '^': case '<<':
       emit(`mov ${destination}, ${left} ${String(operator)} ${right}`);
