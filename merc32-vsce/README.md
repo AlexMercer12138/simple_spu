@@ -1,504 +1,286 @@
-# MERC32 Toolchain for VSCode
+# MERC32 Toolchain
 
 [![Version](https://img.shields.io/badge/Version-2.2.0-blue.svg)](https://github.com/AlexMercer12138/MERC32)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MERC32 CPU 的统一 VSCode 扩展，内置汇编器与 C17 编译器，并通过活动栏侧边栏组织构建命令与产物。打开 `.asm` / `.c` 文件时，扩展提供语法高亮、代码片段与右上角一键编译按钮，可将源码编译输出为 Verilog、COE、MIF、Intel HEX、Binary 或 `$readmemh` 内存文件。
+MERC32 的 VS Code 裸机开发工具链。从可视化 SoC 配置出发，生成硬件顶层、软件地址映射与所选外设的 C 驱动，再将 C 程序编译、链接为可用于仿真或 FPGA 存储器初始化的 ROM 文件。汇编器同时支持 C 后端输出和手写 MERC32 汇编。
 
-## 功能特性
+```text
+*.merc32.json
+    -> SoC 配置、地址分配、中断路由
+    -> hardware/<project>.v + software/<project>.h + software/drivers/
+    -> software/main.c
+    -> C17 前端 -> MERC32 对象与链接 -> 汇编 -> ROM
+```
 
-- ▶️ **一键编译** - 打开 `.asm` / `.c` 文件后，编辑器右上角显示编译按钮，自动按文件类型选择流程
-- 🧩 **C17 编译器** - Aro C17 freestanding 前端与 MERC32 后端，支持预处理、静态类型检查和裸机代码生成
-- 🔧 **内置汇编器** - 纯 TypeScript 实现，无需外部工具链即可完成 `.asm` 到机器码的转换
-- 🗂️ **工具链侧边栏** - 活动栏 `MERC32` 视图集中管理构建命令与最近生成的产物，点击即可打开
-- 🎨 **语法高亮** - ALU、乘除余、宽度化访存、比较、分支和跳转指令
-- ✂️ **代码片段** - 输入 `mov`、`mul`、`lw`、`sw`、`cmp`、`bz`、`macro`、`rept` 等快速生成代码
-- 📝 **注释支持** - `//` 行注释与 `/* */` 块注释，支持 `Ctrl+/` 快捷键
-- 🔤 **括号匹配** - 内存访问括号 `[]`、函数括号 `()`、块 `{}` 自动匹配
-- 🔄 **多种输出格式** - Verilog、COE、MIF、Intel HEX、Binary、`$readmemh` MEM
-- 🐛 **调试模式** - 额外生成标签表与替换后的汇编代码，便于排查
+安装的 VSIX 包含 Aro WASM 前端、freestanding 头文件、运行库、汇编器，以及 SoC 生成所需的 RTL、驱动、目录描述、模板和许可证。正常编译与生成可离线完成，不需要检出 MERC32 或外设仓库，也不需要安装 Zig 或宿主 C 编译器。FPGA 综合、仿真和烧录仍使用相应的外部工具。
 
-## 安装
+## 安装与快速开始
 
-### 从 VSIX 安装
+要求 VS Code 1.74.0 或更高版本。使用已构建的安装包：
 
 ```bash
 code --install-extension merc32-vsce.vsix
 ```
 
-### 从源码构建
+1. 打开项目文件夹，点击活动栏的 **MERC32**，执行 **MERC32 SoC: Create Configuration**。
+2. 打开生成的 `*.merc32.json`，在可视化编辑器中设置项目名、输出目录、ILB/DLB 存储器、外设、外部接口和中断路由。
+3. 按需执行 **Auto-assign Addresses**，然后执行 **Validate** 和 **Generate**。
+4. 打开输出目录中的 `software/main.c`，使用生成的地址宏和驱动编写应用。
+5. 将 C 编译设置与实际 SoC 内存布局对应，执行 **MERC32: Build C to ROM**。在 **Artifacts** 中打开构建产物。
+6. 将 `hardware/<project>.v` 加入 FPGA 或仿真工程；根据所用存储器选择 ROM 输出格式并接入初始化文件。
 
-```bash
-cd merc32-vsce
-npm install
-npm run compile
+新建配置默认使用 32 KiB ILB 和 32 KiB DLB。编译器的默认 DLB 栈设置对应 256 KiB，因此第一次构建默认 SoC 前，应在工作区 `.vscode/settings.json` 中设置：
+
+```json
+{
+  "merc32-asm.c.dataBase": "0x08000000",
+  "merc32-asm.c.dlbAddrWidth": 13,
+  "merc32-asm.c.codeBase": "0x00000000",
+  "merc32-asm.c.optimization": "basic",
+  "merc32-asm.outputFormat": "mem"
+}
 ```
 
-### 打包 NOR Flash 应用镜像
+`dlbAddrWidth` 是 **32 位字地址位宽**，32 KiB 对应 `2^13` 个字。SoC 配置不会自动同步 VS Code 的 C 编译设置；修改存储器容量或应用加载地址后，需要一并调整这些设置。`basic` 为可选优化，扩展默认仍为 `none`。
 
-先用已设置实际 ILB 加载地址的 `merc32-asm.c.codeBase` 生成原始 `.bin`，再打包：
+## SoC 配置与生成
+
+`*.merc32.json` 默认由 **MERC32 SoC Configurator** 打开，也可执行 **Reopen as Text** 使用 JSON 编辑器。配置采用严格 JSON，提供 schema 校验、地址冲突检查和定位诊断。
+
+配置器支持 CPU 调试选项、内部 RAM 或外部 Local Bus 存储器、APB 外设、外部总线接口，以及直接中断或中断控制器路由。地址字段固定显示 `0x` 前缀，容量以 KiB 显示。外部接口的 **High Address** 包含在地址范围内；保存时按 `windowSize = High Address - Base Address + 1` 写入版本 1 JSON。
+
+选择 **Controller** 模式后，配置器自动管理 `apb_intc`。控制器名称和基地址在 Interrupts 页面设置，`IRQ_COUNT` 与 `IRQ_MODE` 从路由生成。中断源可选择已添加外设或 External interrupt；外部中断顶层端口按路由顺序命名为 `external_interrupt0`、`external_interrupt1` 等。
+
+### 输出目录
+
+以项目 `demo` 为例，默认输出位置为配置文件旁的 `generated/demo/`：
+
+```text
+generated/demo/
+  hardware/
+    demo.v
+  software/
+    demo.h
+    main.c
+    drivers/
+      merc32_drivers.h
+      gpio.h
+      gpio.c
+      ...
+  firmware/             # 仅在配置了存储器初始化文件时生成
+  README.md
+  manifest.json
+```
+
+| 产物 | 内容与用途 |
+| --- | --- |
+| `hardware/<project>.v` | 合并 CPU、桥接器、存储器和所选外设的完整 SoC Verilog 源文件 |
+| `software/<project>.h` | 内存与实例的基地址、大小、末地址、功能宏和中断路由宏 |
+| `software/drivers/<type>.h`、`.c` | 按实际使用的外设类型生成的公开驱动接口与实现 |
+| `software/drivers/merc32_drivers.h` | 将所选驱动实现纳入当前翻译单元，适配活动文件构建 |
+| `software/main.c` | 仅首次创建的应用起始文件，由用户维护 |
+| `firmware/` | 配置引用的存储器初始化文件副本 |
+| `README.md`、`manifest.json` | 端口与集成说明、地址布局、生成来源、资源版本和文件哈希 |
+
+将 `hardware/<project>.v` 作为该 SoC 的唯一 Verilog 源文件加入工程，例如 `iverilog -g2005 -s demo hardware/demo.v`。生成的顶层仅公开端口，配置参数在内部固化。生成器不创建 FPGA 工程、引脚约束或 testbench；存在固件绑定时，以生成目录中的 README 为准设置仿真工作目录与初始化文件路径。
+
+### 自动生成 C 驱动
+
+支持 `gpio`、`timer`、`uart`、`intc`、`i2c`、`qspi`、`sdio` 和 `can` 八类外设。仅生成当前 SoC 使用的驱动，同类多个实例共享一份 `.c/.h`；Controller 模式自动加入的中断控制器也会生成 `intc` 驱动。当前不支持 USB 外设生成。
+
+驱动通过调用方提供的句柄和基地址访问寄存器，具体实例地址来自 `<project>.h`，不写死在通用驱动中。以项目名 `demo`、GPIO 实例名 `gpio0` 为例：
+
+```c
+#include "demo.h"
+#include "drivers/merc32_drivers.h"
+
+int main(void) {
+    gpio_handle_t gpio = { (volatile uint32_t *)DEMO_GPIO0_BASE };
+    gpio_config_output(&gpio, GPIO_PIN_0, GPIO_LEVEL_LOW);
+    gpio_set_mask(&gpio, GPIO_PIN_0);
+    for (;;) {
+    }
+}
+```
+
+新建的 `main.c` 已包含项目头文件和 `drivers/merc32_drivers.h`。驱动生成不等于外设初始化：波特率、分频、GPIO 方向、总线模式和中断使能等参数由应用按硬件连接与运行需求设置。
+
+**当前 VS Code 构建命令只编译活动 `.c` 文件，不会扫描或自动链接目录内其他 `.c`。** `drivers/merc32_drivers.h` 会包含所选驱动的实现，因此只需构建 `main.c`。在一个程序中只让一个翻译单元包含该聚合头；采用独立对象编译时，应用包含 `drivers/<type>.h`，各驱动 `.c` 分别编译后参与链接，避免重复定义。
+
+### 再次生成与文件归属
+
+RTL、项目头文件、驱动及聚合头均是生成器管理的文件。再次 Generate 会更新它们，并删除已不再需要且未被修改的旧产物；删除某类外设的最后一个实例时，其驱动也会被清理。
+
+生成器通过 `manifest.json` 中的哈希检查修改。已手工修改的受管文件或待清理文件会阻止普通生成并报告冲突。**Force Generate** 用于明确替换这些修改；**Adopt Output** 用于接管属于其他配置的输出目录。`software/main.c` 一旦存在就不会被覆盖，包括强制生成。旧项目需要自行为保留的 `main.c` 加入驱动包含语句；应用代码应放在用户维护的文件中。
+
+## C17 编译器
+
+编译流程使用固定版本的 Aro WASM 完成预处理、语法与语义分析，再由 MERC32 后端生成 `.mobj` 对象、链接启动代码与所需运行库，最终输出汇编或 ROM。Aro 是生产 C 前端，前端错误不会回退到另一套解析器。
+
+默认语言模式为 ISO C17 freestanding，目标为 `merc32`，ABI 为 `merc32-c-v1`，数据模型为 `merc32-ilp32`：8 位字节、小端数据布局，`short` 为 16 位，`int`、`long` 和指针为 32 位，最大自然对齐为 4 字节。类型模型中的 `long long` 为 64 位，但后端尚不支持其值运算。
+
+### 当前支持范围
+
+| 类别 | 可生成代码的主要能力 |
+| --- | --- |
+| 类型 | `_Bool`、8/16/32 位整数、指针、数组、枚举、`typedef`、普通结构体与联合体，`const` / `volatile` / `restrict` |
+| 表达式 | 算术、位运算、逻辑与比较、复合赋值、自增减、条件与逗号表达式、成员及下标访问、指针算术、整数转换、`sizeof` / `_Alignof` / `offsetof`、`_Generic` |
+| 控制流 | `if`、`while`、`do`、`for`、`switch`、`break`、`continue`、`return`、`goto` 与标签 |
+| 函数 | 直接调用、函数指针、递归、栈上传递额外参数、内部与外部链接，以及结构体/联合体按值传参和返回 |
+| 对象 | 全局与局部对象、块作用域静态及 extern、多维数组、嵌套与指定初始化、字符串、复合字面量、聚合赋值与地址重定位 |
+| 启动与链接 | 栈初始化、全局初始化、IRQ 向量与上下文、`main` 调用及返回停机、多翻译单元对象链接、远控制流展开 |
+
+Aro 支持函数式与可变参数宏、条件预处理、字符串化和记号粘贴。引号包含搜索源文件目录、调用方配置的包含目录与内置头文件；不隐式使用宿主系统头文件。诊断显示在 VS Code Problems 中，并保留源码位置、相关位置、包含链和宏展开信息。
+
+内置头文件包括 `float.h`、`iso646.h`、`limits.h`、`stdalign.h`、`stdbool.h`、`stddef.h`、`stdint.h`、`stdnoreturn.h`、`string.h` 和 `merc32_irq.h`。这是 freestanding 环境，不包含完整 hosted C 标准库、POSIX 或操作系统服务。
+
+### 运行库、MMIO 与中断
+
+`string.h` 提供 `memcpy`、`memmove`、`memset`、`memcmp`、`strlen` 和 `strcmp`。普通 C 构建自动按需链接内置字节循环实现。MMIO 使用 `volatile` 访问，生成驱动已提供相应寄存器操作。
+
+包含 `merc32_irq.h` 后，可定义 `void __irq_handler(void)` 作为中断处理函数。`__irq_enable()` 启用上升沿中断，`__irq_enable_level()` 对应高有效中断控制器输出，`__irq_disable()` 关闭中断。`irq_save()` 保存控制状态并关中断，`irq_restore(saved)` 恢复状态，可用于嵌套临界区。这些接口是编译器内置的直接调用，不支持取函数地址或重新定义。中断处理程序仍须按外设及控制器接口清除相应中断源。
+
+### 优化与代码大小
+
+`merc32-asm.c.optimization` 支持 `none` 和 `basic`，默认 `none`。`basic` 同时应用于 **Compile C to ASM** 和 **Build C to ROM**：
+
+- 对重复初始化字节生成填充循环，包括 BSS 清零、稀疏初始化和字符串补零。
+- 在基本块内传播与折叠常量，选用立即数指令，简化局部访存并删除未使用的纯计算。
+- 折叠已知条件分支，删除不可达代码，缩短跳转链并清理多余跳转和标签。
+- 根据活跃性复用临时栈槽，部分临时值保存在 `r9-r11`，叶函数省略不必要的返回地址保存。
+- 在同一翻译单元中内联符合限制的小型叶函数，随后继续简化计算。
+- 完整 C 构建在链接时裁剪未使用函数与不可达调用链，按依赖保留内存运行库函数。
+
+优化保持可达路径上的 `volatile` 访问及副作用；调用、IRQ 操作和未知操作形成保守屏障。当前没有跨基本块寄存器分配或循环展开。内联仅适用于短小、无分支、无其他调用和无需局部对象的函数，并受展开预算限制；`inline` 关键字不保证内联，也不进行跨翻译单元内联。
+
+优化会改变指令数量、栈帧和软件延时循环的时间，外设时序应使用硬件计时器。两种模式保持相同 ABI，可混合链接。独立对象编译保留全部函数；调用 `linkObjects` 时可用 `gcFunctions: true` 启用裁剪，用 `keepSymbols` 保留额外入口。当前不裁剪全局数据。
+
+### 能力边界与对象链接
+
+**C17 前端不代表后端已经实现所有 C17 运行语义。** 当前不生成 64 位整数值运算、浮点/复数运算、可变参数函数、原子类型、线程局部存储、packed 布局、位域和超过 4 字节的显式对齐。未支持的后端能力会报告带源码位置的 `C_BACKEND_CAPABILITY` 诊断。GNU `weak` / `section` 不提供弱符号或自定义节语义；被 Aro 忽略的属性会保留前端警告。随资源保留的软浮点汇编是占位实现，普通 C 构建不会链接它。
+
+`compileCToObject` / `compileCFileToObject` 可生成独立翻译单元，`linkObjects` 提供多对象链接；这些是工具链 API，当前没有对应的 VS Code 多文件工程构建命令。`compileC` / `compileCFile` 及界面的 C 构建会加入启动代码并要求 `main`，**Compile C to ASM** 输出的也是已链接汇编。
+
+C 调用、跳转和条件分支在目标地址超出短指令范围时自动展开，`none` 与 `basic` 均适用；程序正文可跨越 32 KiB 和 64 KiB。汇编互调、聚合参数与返回值、对象格式及链接接口见 [ABI 文档](../docs/ABI.md)。
+
+## 命令与设置
+
+活动栏 **MERC32** 包含 **SoC Configurations**、**Generate**、**Toolchain** 和 **Artifacts** 视图。以下命令可在命令面板搜索；打开 `.c` 时编辑器右上角提供 **Build C to ROM**，打开 `.asm` 时提供 **Assemble ASM**。
+
+| 命令标题 | 用途 |
+| --- | --- |
+| `MERC32 SoC: Create Configuration` / `Open Configuration` | 创建或打开 SoC 配置 |
+| `MERC32 SoC: Auto-assign Addresses` / `Validate` | 分配缺失地址、校验配置 |
+| `MERC32 SoC: Generate` | 生成当前配置的硬件和软件 |
+| `MERC32 SoC: Force Generate` / `Adopt Output` | 处理受管文件修改或输出目录归属变更 |
+| `MERC32 SoC: Reopen as Text` / `Refresh` | 文本编辑配置、刷新视图 |
+| `MERC32: Build Active File` | 按活动文件类型执行 C 构建或汇编 |
+| `MERC32: Build C to ROM` | C 编译、链接并汇编为所选格式 |
+| `MERC32: Compile C to ASM` | C 编译、链接并输出汇编 |
+| `MERC32: Assemble ASM` | 汇编活动 `.asm` 文件 |
+| `MERC32: Select Compile Mode` | 切换正常、打印或调试模式 |
+| `MERC32: Assemble ASM (Print Mode)` / `Assemble ASM (Debug Mode)` | 直接使用对应模式汇编 |
+| `MERC32: Open Last Artifact` | 打开最近产物 |
+
+正常模式写出产物；打印模式将汇编结果写到 **MERC32 Toolchain** 输出面板；调试模式还生成标签表与预处理后的汇编。该调试模式用于检查构建产物，不是 CPU 源码调试器。
+
+在 VS Code 设置中搜索 `merc32-asm`：
+
+| 设置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `merc32-asm.outputFormat` | `verilog` | `verilog` / `coe` / `mif` / `hex` / `bin` / `mem` |
+| `merc32-asm.outputPath` | 空字符串 | 空值表示源文件目录；自定义目录建议使用绝对路径 |
+| `merc32-asm.c.keepAssembly` | `true` | C 构建 ROM 时保留中间 `.asm` |
+| `merc32-asm.c.dataBase` | `"0x08000000"` | DLB 数据基址 |
+| `merc32-asm.c.dlbAddrWidth` | `16` | DLB 字地址位宽，整数 `1..25`，决定初始栈顶 |
+| `merc32-asm.c.codeBase` | `"0x00000000"` | ILB 代码链接基址，须对应实际加载位置 |
+| `merc32-asm.c.optimization` | `"none"` | `none` 或 `basic` |
+
+`dataBase` 和 `codeBase` 接受十进制、`0x` 或 `0b` 前缀的字符串。`dataBase` 必须位于 `0x08000000..0x0FFFFFFF`，栈区域独占上界 `dataBase + 2^(dlbAddrWidth + 2)` 不得超过 `0x10000000`，并且必须落在实际 DLB 容量内。
+
+`codeBase` 须为 4 字节对齐的 `0x00000000..0x00007FFF` 地址，以保留近端复位与中断入口；代码末端独占上界不超过 `0x08000000`。这些是工具链地址限制，程序仍须满足实际 ILB 容量和加载器分区。
+
+## ROM 与 Flash 输出
+
+| 格式 | 文件 | 典型用途 |
+| --- | --- | --- |
+| Verilog | `.v` | 指令 ROM 模块 |
+| COE | `.coe` | Xilinx 存储器初始化 |
+| MIF | `.mif` | Intel/Altera 存储器初始化 |
+| Intel HEX | `.hex` | 支持 Intel HEX 的加载工具 |
+| Binary | `.bin` | 原始指令字节流、应用镜像输入 |
+| `$readmemh` | `.mem` | Verilog 仿真或存储器初始化 |
+
+Binary 每条 32 位指令按大端顺序输出 4 字节；这是指令文件编码，与 C 对象采用的小端数据布局不同。格式转换不会替代地址链接或 FPGA 存储器配置。
+
+仓库提供 NOR Flash 镜像封装命令。先以实际 ILB 加载地址编译 `.bin`，例如参考 bootloader 的应用使用 `merc32-asm.c.codeBase = "0x1000"`，再在 `merc32-vsce` 目录执行：
 
 ```bash
-cd merc32-vsce
 npm run flash:image -- application.bin application.img 0x1000
 ```
 
-可选的第四个参数指定入口地址；省略时入口等于加载地址：
-
-```bash
-npm run flash:image -- application.bin application.img 0x1000 0x1004
-```
-
-生成的镜像在 20 字节头之后原样保留输入 `.bin`，不会重定位或交换任何 payload 字节。头部字段全部为大端 32 位整数：
-
-| Offset | Field | Value |
-| ---: | --- | --- |
-| `0x00` | magic | `0x4d333246` (`M32F`) |
-| `0x04` | image size | 非零且为 4 的倍数的 payload 字节数 |
-| `0x08` | load address | 4 字节对齐的 ILB 字节地址 |
-| `0x0c` | entry address | payload 内的 4 字节对齐地址 |
-| `0x10` | CRC32 | payload 的 IEEE CRC32 |
-
-如需生成 VSIX 安装包：
-
-```bash
-cd merc32-vsce
-npm run package:vsix
-```
-
-### 从市场安装（待发布）
-
-在 VSCode 扩展面板搜索 `MERC32 Toolchain` 并安装。
-
-## 使用方法
-
-### SoC 配置与生成
-
-1. 在工作区中新建任意名称的 `*.merc32.json` 文件。
-2. 直接打开文件使用图形化编辑器，或选择 **Reopen as Text** 编辑 JSON。
-3. 依次执行 **Validate**、**Auto-assign**（需要自动分配地址时）和 **Generate**。
-4. 将生成目录中的 `hardware/<project>.v` 作为唯一的 SoC Verilog 源文件加入 FPGA 或仿真工程；例如使用 `iverilog -g2005 -s <project> hardware/<project>.v`。
-5. 从 `software/main.c` 开始编写裸机软件，并包含 `software/<project>.h` 中的软件地址映射。
-6. 如配置了存储器初始化文件，生成器会将其放入可选的 `firmware/` 目录。
-
-配置器中的地址字段固定显示 `0x` 前缀并只编辑 8 位十六进制数字，RAM 容量固定显示 `KiB` 后缀。外部接口使用包含在地址范围内的 **High Address**；保存时 JSON 仍保持版本 1 的 `windowSize` 字段，并按 `windowSize = High Address - Base Address + 1` 自动换算。
-
-选择 **Controller** 中断模式后，配置器会自动创建并管理一个 `apb_intc`，其 Instance name 与 Base address 在 Interrupts 页面修改，`IRQ_COUNT` 和 `IRQ_MODE` 由路由自动生成。中断源通过下拉框选择已添加外设的中断或可重复选择的 External interrupt；生成 RTL 时，外部中断引脚按路由出现顺序命名为 `external_interrupt0`、`external_interrupt1` 等。
-
-生成的项目 SoC 顶层模块只公开端口，不公开配置参数；CPU、桥接器、RAM 和外设参数都由 JSON 配置对应的生成结果内部维护。
-
-VSIX 已包含生成所需的目录、模板、许可证和 RTL 资源，安装后可离线、独立生成，不依赖 MERC32 仓库检出。生成器绝不会覆盖已经存在的 `software/main.c`。输出包含可集成的 RTL 和软件起始文件，但不生成 FPGA 工程或 testbench。
-
-### 工具链侧边栏
-
-点击活动栏中的 `MERC32` 图标打开 `Toolchain` 视图：
-
-- **Build** 组 - 列出所有构建命令，点击即可执行
-- **Artifacts** 组 - 列出最近一次构建生成的文件，点击即可在编辑器中打开
-
-### 编译汇编文件
-
-1. 打开任意 `.asm` 文件
-2. 点击编辑器右上角的 ▶ **Assemble ASM** 按钮（或侧边栏 `Assemble ASM`）
-3. 编译结果按配置的格式输出到源文件同目录（或自定义目录）
-
-### 编译 C 文件
-
-1. 打开任意 `.c` 文件
-2. 选择右上角按钮之一：
-   - **Build C to ROM** - 编译 C → 生成汇编 → 汇编为最终 ROM 文件
-   - **Compile C to ASM** - 仅编译 C 为 `.asm`，不继续汇编
-
-### 切换编译模式
-
-点击 ▶ 右侧的 ▼ 下拉按钮，或在侧边栏点击 `Select Compile Mode`：
-
-| 模式 | 说明 |
-|------|------|
-| 正常模式 | 编译并输出文件（默认） |
-| 打印模式 | 编译结果输出到 `MERC32 Toolchain` 输出面板，不保存文件 |
-| 调试模式 | 编译并额外生成 `<name>_label_table.txt` 与 `<name>_replaced.asm` |
-
-## 命令
-
-所有命令均可在命令面板（`Ctrl+Shift+P`）中搜索 `MERC32` 调用：
-
-| 命令 | 标题 | 作用 |
-|------|------|------|
-| `merc32-asm.compile` | MERC32: Build Active File | 按当前文件类型执行默认构建 |
-| `merc32-asm.assembleActive` | MERC32: Assemble ASM | 汇编当前 `.asm` 文件 |
-| `merc32-asm.compileCToAsm` | MERC32: Compile C to ASM | 将当前 `.c` 编译为 `.asm` |
-| `merc32-asm.buildCToRom` | MERC32: Build C to ROM | 将当前 `.c` 编译并汇编为 ROM |
-| `merc32-asm.compilePrint` | MERC32: Assemble ASM (Print Mode) | 以打印模式汇编 |
-| `merc32-asm.compileDebug` | MERC32: Assemble ASM (Debug Mode) | 以调试模式汇编 |
-| `merc32-asm.selectCompileMode` | MERC32: Select Compile Mode | 切换编译模式 |
-| `merc32-asm.openLastArtifact` | MERC32: Open Last Artifact | 打开最近一次生成的产物 |
-
-## 配置项
-
-在 VSCode 设置中搜索 `MERC32 Assembler`：
-
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `merc32-asm.outputFormat` | 输出格式：`verilog` / `coe` / `mif` / `hex` / `bin` / `mem` | `verilog` |
-| `merc32-asm.outputPath` | 自定义输出目录（空则与源文件同目录） | `""` |
-| `merc32-asm.c.keepAssembly` | 构建 C 时是否保留中间生成的 `.asm` 文件 | `true` |
-| `merc32-asm.c.dataBase` | C 编译器使用的 DLB 数据基址 | `0x08000000` |
-| `merc32-asm.c.dlbAddrWidth` | DLB 字地址位宽（`1..25`），用于初始化 C 栈指针 | `16` |
-| `merc32-asm.c.codeBase` | C 编译器使用的 4 字节对齐 ILB 代码基址 | `0x00000000` |
-
-`dataBase` 与 `dlbAddrWidth` 支持 `0x` / `0b` 前缀的字面量。
-MERC32 C 后端只接受 `0x08000000..0x0FFFFFFF` 内的 `dataBase`；计算得到的
-`dataBase + (1 << (dlbAddrWidth + 2))` 是独占上界，且不得超过
-`0x10000000`。当前 C 后端的直接标签跳转使用汇编器的有符号 16 位
-立即数字面量，因此 `codeBase` 必须位于 `0x00000000..0x00007FFF`（独占上界
-`0x00008000`，且 4 字节对齐）；
-超出范围会在编译阶段明确报错。
-从 bootloader 加载的应用必须把它设置为实际 ILB 加载地址（默认布局使用 `0x1000`）。
+可在末尾另加入口地址，省略时入口等于加载地址。镜像在原始 payload 前添加 20 字节大端头，包含 `M32F` 标识、长度、加载地址、入口和 IEEE CRC32；不重定位或交换 payload 字节。Flash 偏移、分区与硬件参数见 [参考启动加载器](../example/nor_flash_bootloader.c) 和 [仓库启动说明](../README.md)。该脚本是源码仓库工具，扩展未提供 Flash 烧录命令。
 
 ## 汇编语法参考
 
-汇编器强制一行一条语句，不使用分号分隔。标签可以单独一行，也可以写成 `label: instruction`。
+汇编器为独立的 TypeScript 实现，提供语法高亮、代码片段、注释和括号匹配。它也用于检查 C 后端生成的代码、编写启动逻辑或进行底层验证。
 
-### 立即数格式
-
-立即数支持 C 语言风格，无需 `#` 前缀：
-
-| 格式 | 示例 | 说明 |
-|------|------|------|
-| 十进制 | `100`, `-1`, `325` | 有符号十进制整数 |
-| 十六进制 | `0xAB`, `0x1234` | `0x` 前缀 |
-| 二进制 | `0b110`, `0b1010` | `0b` 前缀 |
-| 字符 | `"A"`, `"AB"`, `"\n"` | 双引号内最多两个字符，每字符按 ASCII 编码为 8 位无符号数 |
-
-### mov 指令
-
-```asm
-// 加载立即数 (I-Type)
-mov rd, imm               // rd = imm
-
-// 寄存器复制 (R-Type)
-mov rd, rs                // rd = rs
-```
-
-### ALU 运算指令
-
-支持 I-Type（立即数）和 R-Type（寄存器）两种形式：
-
-```asm
-// I-Type: rs op imm
-mov rd, rs + imm          // rd = rs + imm
-mov rd, rs - imm          // rd = rs - imm
-mov rd, rs & imm          // rd = rs & imm
-mov rd, rs | imm          // rd = rs | imm
-mov rd, rs ^ imm          // rd = rs ^ imm
-mov rd, rs << imm         // rd = rs << imm (逻辑左移)
-mov rd, rs >> imm         // rd = rs >> imm (逻辑右移)
-mov rd, rs >>> imm        // rd = rs >>> imm (算术右移)
-
-// R-Type: rs2 op rs1
-mov rd, rs2 + rs1         // rd = rs2 + rs1
-mov rd, rs2 - rs1         // rd = rs2 - rs1
-mov rd, rs2 & rs1         // rd = rs2 & rs1
-mov rd, rs2 | rs1         // rd = rs2 | rs1
-mov rd, rs2 ^ rs1         // rd = rs2 ^ rs1
-mov rd, rs2 << rs1        // rd = rs2 << rs1 (逻辑左移)
-mov rd, rs2 >> rs1        // rd = rs2 >> rs1 (逻辑右移)
-mov rd, rs2 >>> rs1       // rd = rs2 >>> rs1 (算术右移)
-
-// 乘法、除法与余数；rhs 可为寄存器或立即数
-mul  rd, rs2, rhs         // 乘积低 32 位
-div  rd, rs2, rhs         // 有符号商
-divu rd, rs2, rhs         // 无符号商
-rem  rd, rs2, rhs         // 有符号余数
-remu rd, rs2, rhs         // 无符号余数
-```
-
-### 内存访问指令
-
-```asm
-lw  rd, [rs2 + rhs]       // 32 位读取
-lh  rd, [rs2 + rhs]       // 16 位读取并符号扩展
-lhu rd, [rs2 + rhs]       // 16 位读取并零扩展
-lb  rd, [rs2 + rhs]       // 8 位读取并符号扩展
-lbu rd, [rs2 + rhs]       // 8 位读取并零扩展
-
-sw [rs2 + rhs], rd        // 写入 rd[31:0]
-sh [rs2 + rhs], rd        // 写入 rd[15:0]
-sb [rs2 + rhs], rd        // 写入 rd[7:0]
-
-// rhs 可为寄存器或 16 位立即数；省略时等价于 0
-lw rd, [rs2]
-sw [rs2], rd
-
-// 旧 word 访问兼容别名
-mov rd, [rs2 + rhs]       // lw
-mov [rs2 + rhs], rd       // sw
-```
-
-### jmp 指令
-
-```asm
-jmp imm, rd               // rd = PC+4, PC = r0 + imm
-jmp label, rd             // rd = PC+4, PC = r0 + label
-jmp rs, rd                // rd = PC+4, PC = r0 + rs
-jmp rs + imm, rd          // rd = PC+4, PC = rs + imm
-jmp rs - imm, rd          // rd = PC+4, PC = rs + (-imm)
-jmp rs1 + rs2, rd         // rd = PC+4, PC = rs1 + rs2
-
-jmp imm                   // PC = r0 + imm，不保存链接
-jmp rs                    // PC = r0 + rs，不保存链接
-jmp rs + imm              // PC = rs + imm，不保存链接
-jmp rs1 + rs2             // PC = rs1 + rs2，不保存链接
-```
-
-`r15` 是软件可读写的当前 PC 专用寄存器，不作为普通寄存器分配。直接写入 `r15` 不会改变控制流，寄存器组空闲时硬件会把它刷新为当前指令字节地址。跳转由 JAL、BZ 或 BNZ 完成；按当前 PC 相对跳转时可以把 `r15` 作为基址，例如 `jmp r15 + 8`。
-
-### cmp / cmpu / bz / bnz 指令（比较与分支）
-
-```asm
-cmp  rd, rs2 < rs1        // 有符号比较，rd = 0 或 1
-cmp  rd, rs2 == imm       // 16 位立即数先符号扩展
-cmpu rd, rs2 >= rs1       // 无符号比较，rd = 0 或 1
-cmpu rd, rs2 < imm        // 16 位立即数先零扩展
-
-bz  rd, r0 + label        // rd == 0 时跳到绝对字节地址 label
-bnz rd, r0 + label        // rd != 0 时跳到绝对字节地址 label
-bz  rd, rs2 + imm         // rd == 0 时跳到 R[rs2] + zero_extend(imm16)
-bnz rd, rs2 + rs1         // rd != 0 时跳到 R[rs2] + R[rs1]
-```
-
-`cmp` 和 `cmpu` 都支持 `==`、`!=`、`<`、`<=`、`>`、`>=`。分支必须显式写出目标基址；直接标签目标使用 `r0 + label`。旧 `brc/brcu` 语法不再支持。
-
-### 标签
-
-```asm
-start:
-    mov r0, 0
-    mov r1, 10
-
-loop:
-    mov r0, r0 + r1
-    jmp loop, r2
-```
-
-### 伪指令
-
-预编译阶段支持 `.equ` 常量/符号、`.prog` 输出名、`.org` 链接地址、`.entry` 入口标签、`.ifdef` / `.else` / `.elsif` / `.endif` 条件编译、`.macro` / `.endm` 代码段宏、`.include` 文件引用和 `.rept` / `.endr` 重复展开：
+每行一条语句，不使用分号分隔；标签可单独成行或写在指令前。立即数无需 `#` 前缀，支持十进制、`0x`、`0b` 和双引号字符字面量。常用形式：
 
 ```asm
 .prog demo
 .org 0x1000
 .entry main
-.equ count 4
-.equ value 0b1000
-
-.macro load_value(rd, value)
-    mov rd, value
-.endm
-
-.ifdef count
-.rept count
-    load_value(r1, value)
-.endr
-.endif
 
 main:
-    mov r1, value
+    mov r4, 10
+    mov r5, r4 + 1
+    mul r6, r5, 2
+    cmp r7, r6 > r4
+    bz r7, r0 + done
+    mov r6, 0
+done:
+    jmp done
 ```
 
-- `.org address` 设置 4 字节对齐的链接地址，只重定位标签而不填充机器码；省略时为 0
-- `.entry label` 在当前链接地址插入 `jmp label`；省略时从首条指令开始执行
-- `.include "file.asm"` 会把引用文件按声明顺序追加到主文件之后一起汇编
-- `.macro` 不允许递归调用，参数数量必须匹配
+支持 `mov` 与 ALU 表达式、`mul` / `div` / `divu` / `rem` / `remu`、`lb` / `lbu` / `lh` / `lhu` / `lw`、`sb` / `sh` / `sw`、`cmp` / `cmpu`、`bz` / `bnz` 和 `jmp`。分支标签须写作 `r0 + label`，旧 `brc/brcu` 语法已移除。
 
-### 16 位立即数
+预处理提供 `.equ`、`.prog`、`.org`、`.entry`、`.include`、条件编译、宏与重复展开。`.org` 重定位标签但不填充镜像；`.entry` 插入入口跳转；`.include` 按声明顺序将引用文件追加到主文件后。指令编码、立即数扩展和寄存器语义见 [ISA 文档](../docs/ISA.md)，C 与汇编互调见 [ABI 文档](../docs/ABI.md)。
 
-十进制立即数默认按 **16 位有符号数** 检查，范围为 `-32768 ~ 32767`；带 `0x`/`0b` 前缀的字面量可直接给出 `0 ~ 0xffff` 的原始位模式。EQ/NE 和有符号关系比较符号扩展该 16 位位模式，无符号关系比较与 `bz/bnz` 的立即数目标按无符号数零扩展。`cmpu ==` 和 `cmpu !=` 是 EQ/NE 的编码别名，因此仍执行符号扩展。
+## 从源码开发与打包
 
-```asm
-mov r1, 100               // r1 = 100
-mov r2, -1                // r2 = 0xFFFF
-mov r3, -32768            // r3 = 0x8000
-mov r4, 0xFFFF            // r4 = 65535
+在完整源码仓库中使用 Node.js 与 npm：
+
+```bash
+cd merc32-vsce
+npm ci
+npm run compile
+npm run prepare:resources
+npm test
 ```
 
-### 注释
+`prepare:resources` 校验并收集随包资源；普通扩展构建使用仓库中的 Aro WASM，不重新编译 Aro。RTL 执行回归还需要 Icarus Verilog。常用专项检查包括：
 
-支持 `//` 行注释与 `/* */` 块注释：
+驱动以 `ip-repo/<外设>/drivers/` 为维护源，扩展保存独立快照。更新 IP 驱动后，在打包前执行 `npm run sync:drivers -- ../../ip-repo`，再运行 `npm run test:soc:drivers`；来源提交、工作区修改状态和文件 SHA-256 记录在 `resources/drivers/provenance.json`。日常安装和生成不依赖 IP 仓库路径。
 
-```asm
-// 这是行注释
-mov r0, 1           // 行尾注释
-/* 这是块注释 */
+| 命令 | 检查范围 |
+| --- | --- |
+| `npm run test:soc` | 配置、编辑器、生成器、RTL 与运行时依赖 |
+| `npm run test:c:optimization` | 两种优化模式的执行结果、代码量、栈帧与相关回归 |
+| `npm run test:c:function-gc` / `test:c:inline` / `test:c:control-flow` | 函数裁剪、内联、控制流简化 |
+| `npm run test:c:far-control-flow` | 远调用与分支展开 |
+| `npm run test:extension` | 扩展资源与 VS Code 扩展宿主集成 |
+
+发布前按仓库 [AGENTS.md](../AGENTS.md) 判断版本：仅修复递增 PATCH，兼容功能递增 MINOR，重大或破坏性变更递增 MAJOR；同一未发布版本的重打包不重复递增。同步 `package.json`、`package-lock.json` 的两个版本字段及本页徽章，提交版本元数据后再进行最终来源可追溯构建：
+
+```bash
+npm run package:vsix
+npm run test:vsix
 ```
 
-## C17 编译器
-
-2.2.0 使用固定版本的 [Aro](https://github.com/Vexu/arocc) WASM 作为唯一的生产 C 预处理、语法和语义前端，再由 MERC32 后端生成 `.mobj`、链接运行时并输出汇编或 ROM。普通编译完全离线运行，不依赖 Zig、宿主 C 编译器或网络，也不会在 Aro 失败后回退到旧的手写前端。
-
-默认语言模式是 ISO C17 freestanding。公开目标为 `merc32`，ABI 为 `merc32-c-v1`，数据模型为 `merc32-ilp32`：小端、8 位字节，`short` 为 16 位，`int`、`long` 和指针为 32 位，`long long` 为 64 位，最大自然对齐为 4 字节。
-
-### 预处理、包含与诊断
-
-Aro 负责 C17 宏展开、条件预处理和包含处理，包括函数式及可变参数宏、字符串化和记号粘贴。引号包含依次搜索当前文件目录、调用方给出的包含目录和扩展内置头文件；尖括号包含不搜索当前文件目录，也不会隐式使用宿主编译器的头文件路径。
-
-扩展随包提供以下 freestanding 头文件：
-
-- `float.h`、`iso646.h`、`limits.h`、`stdalign.h`
-- `stdbool.h`、`stddef.h`、`stdint.h`、`stdnoreturn.h`
-
-语法、语义和后端能力错误会保留文件、行列、相关位置、包含链与宏展开链，并显示在 VS Code Problems 中。这里提供的是编译器头文件，不包含 hosted C 标准库、POSIX API 或操作系统服务。
-
-### 当前可生成代码的范围
-
-| 类别 | 已支持内容 |
-|------|------------|
-| 标量与类型 | `_Bool`、字符类型、`short`、`int`、`long` 及无符号版本、`void`、指针、数组、枚举、`typedef`、非 packed 的结构体和联合体，以及 `const` / `volatile` / `restrict` |
-| 表达式 | 32 位整数常量及后缀、字符常量、算术/位/逻辑/比较、简单赋值、条件表达式、取地址与解引用、数组下标、成员访问、`sizeof` / `_Alignof`、受支持的隐式转换和同宽显式转换 |
-| 控制流 | `if` / `else`、`while`、`do` / `while`、全部 8 种省略子句的 `for`、`switch` / `case` / `default`、fallthrough、`break`、`continue`、`return`、`goto` 和标签 |
-| 函数 | 声明与定义、直接调用、多于 4 个参数时的栈传参、内部/外部链接；32 位以内的标量参数和返回值 |
-| 对象与初始化 | 自动局部对象、全局/文件作用域静态对象、多维数组、结构体/联合体成员、嵌套及指定初始化、数组长度推导、字符串数组初始化和可重定位地址初始化 |
-| 链接与启动 | 多翻译单元 `.mobj` 链接、内部链接隔离、全局初始化调度，以及栈、IRQ 向量、`main` 调用和返回停机的启动代码 |
-
-窄整数对象按 1/2 字节自然对齐，读取时按类型符号扩展或零扩展，参与普通运算前执行整数提升。指针算术和数组下标按元素大小缩放。`compileCToObject` / `compileCFileToObject` 可生成独立翻译单元；`compileC` / `compileCFile` 会链接启动代码并要求程序提供 `main`。
-
-### 尚未生成代码的 C17 能力
-
-Aro 能正确识别和检查的合法 C17 程序不一定都能由当前 MERC32 后端生成代码。以下能力会返回带源码位置的 `C_BACKEND_CAPABILITY` 诊断，不会静默降级或按错误 ABI 编译：
-
-- `long long` 的 64 位值运算，以及 `float`、`double`、`long double` 和复数运算
-- 可变参数函数、原子类型、线程局部存储、packed 布局、位域和超过 4 字节的显式对齐
-- 聚合值参数、返回值和整体运算，以及非 automatic 的块作用域对象
-- 复合字面量、`_Generic` 选择表达式、字符串字面量表达式、不同宽度的显式整数转换，以及复合赋值和 `++` / `--`
-
-当前 `switch` 使用顺序比较；代码分支仍受指令集 16 位绝对跳转范围限制，尚未实现自动远跳转跳板。
-
-### MMIO 与中断
-
-通过 `volatile` 指针访问内存映射外设。地址 `0x08000000` 起为 DLB 数据空间，由 `merc32-asm.c.dataBase` 配置：
-
-```c
-volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
-*status = 0x600D;
-```
-
-定义名为 `__irq_handler` 的无参 `void` 函数即可启用中断支持，编译器会在向量地址自动生成跳转指令并保存 / 恢复上下文。通过内置调用 `__irq_enable()` / `__irq_disable()` 控制上升沿中断使能；高有效中断控制器输出使用 `__irq_enable_level()`。后者写入 `r1=5`，而原有 `__irq_enable()` 继续写入 `r1=1`：
-
-```c
-volatile unsigned int irq_count = 0;
-
-void __irq_handler(void) {
-    irq_count = irq_count + 1;
-}
-
-int main(void) {
-    __irq_enable();
-    while (irq_count == 0) {
-    }
-    return 0;
-}
-```
-
-### 示例
-
-```c
-int data[4];
-
-int sum(int *p, int n) {
-    int i = 0;
-    int total = 0;
-    while (i < n) {
-        total = total + p[i];
-        i = i + 1;
-    }
-    return total;
-}
-
-int main(void) {
-    volatile unsigned int *status = (volatile unsigned int *)0x080003C0;
-    data[0] = 1;
-    data[1] = 2;
-    data[2] = 3;
-    data[3] = 4;
-    if (sum(data, 4) == 10) {
-        *status = 0x600D;
-    } else {
-        *status = 0x0BAD;
-    }
-    return 10;
-}
-```
-
-## 输出格式说明
-
-### Verilog 格式
-
-生成完整的 Verilog ROM 模块，可直接例化使用：
-
-```verilog
-// Simple CPU Program Memory Initialization
-module prog_rom(
-    input wire [15:0] prog_addr,
-    output reg [31:0] prog_data
-);
-always @(*) begin
-    case (prog_addr)
-        0 : prog_data = 32'h00000000;
-        ...
-        default: prog_data = 0;
-    endcase
-end
-endmodule
-```
-
-### COE 格式（Xilinx）
-
-```
-; Simple CPU Program Memory COE File
-memory_initialization_radix=16;
-memory_initialization_vector=
-00000000,
-00001001,
-...,
-FFFFFFFF;
-```
-
-### MIF 格式（Altera/Intel）
-
-```
--- Simple CPU Program Memory MIF File
-WIDTH=32;
-DEPTH=256;
-
-ADDRESS_RADIX=HEX;
-DATA_RADIX=HEX;
-
-CONTENT BEGIN
-    0000 : 00000000;
-    ...
-END;
-```
-
-### HEX 格式（Intel HEX）
-
-```
-:0400000000000010EC
-:0400040000010110E6
-:00000001FF
-```
-
-### MEM 格式（用于 Verilog `$readmemh`）
-
-```
-00000010
-00010110
-```
-
-### BIN 格式
-
-原始大端二进制字节流，每条 32 位指令编码为 4 字节，可直接烧录到片上存储。
+安装包输出为 `merc32-vsce.vsix`。发布验证还须确认 VSIX 内 `extension/package.json` 与源文件一致；仓库 VSIX smoke 检查实际安装包及独立运行所需资源，不能用仅通过 TypeScript 编译替代。
 
 ## 许可证
 
-MIT License
+扩展采用 MIT License。Aro、Unicode 数据和其他随包资源的许可证与来源记录随 VSIX 一并提供。
