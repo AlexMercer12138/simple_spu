@@ -321,7 +321,7 @@
         "merc32-asm.c.optimization": {
           "type": "string",
           "enum": ["none", "basic"],
-          "default": "none",
+          "default": "basic",
           "description": "C optimization mode: basic reduces initialization code, local computations and temporary stack slots"
         }
       }
