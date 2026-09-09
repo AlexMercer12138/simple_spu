@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AssemblyRunner } from './assemblyRunner';
 import { CDiagnostics } from './cDiagnostics';
+import { registerCli } from './cliIntegration';
 import { OUTPUT_CHANNEL_NAME, SOC_EDITOR_VIEW_TYPE, SOC_VIEW_IDS } from './constants';
 import { registerAssemblerCommands, ToolchainCommandState } from './extensionCommands';
 import { loadCatalog, ModuleCatalog } from './soc';
@@ -19,6 +20,7 @@ import { DEFAULT_COMPILE_MODE } from './types';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+    context.subscriptions.push(registerCli(context, output));
     const runner = new AssemblyRunner(output);
     const cDiagnostics = new CDiagnostics();
     const state: ToolchainCommandState = {

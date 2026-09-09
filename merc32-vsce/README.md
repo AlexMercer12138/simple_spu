@@ -1,6 +1,6 @@
 # MERC32 Toolchain for VSCode
 
-[![Version](https://img.shields.io/badge/Version-2.2.0-blue.svg)](https://github.com/AlexMercer12138/MERC32)
+[![Version](https://img.shields.io/badge/Version-2.3.0-blue.svg)](https://github.com/AlexMercer12138/MERC32)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 MERC32 CPU 的统一 VSCode 扩展，集成可视化 SoC 配置、外设驱动生成、C17 编译器与汇编器。从配置硬件、编写裸机程序到生成 ROM 文件，均可在编辑器中完成。
@@ -10,6 +10,7 @@ MERC32 CPU 的统一 VSCode 扩展，集成可视化 SoC 配置、外设驱动�
 - 🧩 **SoC 配置器** - 可视化配置存储器、外设、地址映射与中断路由，一键生成 Verilog 顶层
 - 🔧 **自动生成驱动** - 支持 GPIO、Timer、UART、INTC、I2C、QSPI、SDIO 和 CAN
 - ▶️ **一键编译** - 打开 `.c` / `.asm` 文件，通过编辑器右上角按钮生成汇编或 ROM
+- ⌨️ **命令行编译** - CLI 随扩展分发，配置一次 PATH 后可从外部终端编译，无需打开 VSCode或安装 npm 包
 - ⚡ **C17 裸机编译** - 内置 Aro 前端，支持结构体、数组、函数指针等常用语法，默认开启 `basic` 优化
 - 🗂️ **工具链侧边栏** - 集中管理 SoC 配置、构建命令和生成产物
 - 🎨 **汇编编辑支持** - 语法高亮、代码片段、注释与括号匹配
@@ -26,6 +27,41 @@ code --install-extension merc32-vsce.vsix --force
 ```
 
 ## 使用方法
+
+### 命令行 CLI
+
+编辑器内编译只需 VSCode 和本扩展。独立 CLI 额外使用系统 Node.js（已验证 Node.js 24），不需要发布或安装 npm 包，也不需要执行 `npm install`。
+
+1. 安装 Node.js，确认新终端中 `node --version` 正常。
+2. 安装本扩展后，在命令面板执行 **MERC32: Set Up Command Line**。
+3. 将显示的目录加入用户 `PATH` 一次。Windows 默认是 `%USERPROFILE%\.merc32\bin`；Linux/macOS 默认是 `$HOME/.merc32/bin`。Windows 可在“环境变量 → 用户变量 → Path → 新建”中添加目录；不要用它替换整个 Path。
+4. 新开 PowerShell/CMD，执行 `merc32 --version`。扩展激活后新建的 VSCode 集成终端会自动获得此 PATH。
+
+```powershell
+# C → ROM；DLB 位宽需与实际 SoC 一致
+merc32 build .\software\main.c --format mem --out-dir .\build --dlb-addr-width 13
+
+# C → 汇编
+merc32 compile main.c --emit asm --out-dir build
+
+# 汇编 → 二进制
+merc32 assemble main.asm --format bin --out-dir build
+
+# 头文件、宏、加载地址和优化
+merc32 build main.c -I include -D DEBUG=1 --code-base 0x1000 --optimization basic
+
+merc32 --help
+```
+
+CLI 从磁盘读取一个 `.c` 或 `.asm` 文件；不会读取未保存的编辑器内容、`.vscode/settings.json` 或 SoC 配置。默认值与扩展一致：`verilog` 输出、`basic` 优化、代码基址 `0`、数据基址 `0x08000000`、DLB 位宽 `16`，默认输出到源文件所在目录并保留 ASM。请通过参数覆盖项目需要的设置。
+
+`--format` 支持 `verilog/coe/mif/hex/bin/mem`；`--mode` 支持 `normal/print/debug`，其中 `print` 将结果写到标准输出，`debug` 额外输出标签表和展开后的汇编。`--no-keep-assembly` 不生成中间 ASM，也不会删除已有同名 ASM。诊断写入标准错误；退出码 `0` 表示成功、`1` 表示编译或 I/O 失败、`2` 表示命令行用法错误。
+
+扩展每次正常激活都会更新固定目录中的启动器目标。升级后打开一次 MERC32 源文件或再次执行设置命令即可刷新，PATH 无需更改，之后关闭 VSCode 仍可编译。多个版本/编辑器共用目录时，最后激活的版本生效；可在启动 VSCode 前设置绝对路径 `MERC32_CLI_HOME` 隔离启动器（实际 PATH 为该目录下的 `bin`）。远程 SSH/WSL 窗口中的 CLI 安装在扩展运行的远程环境，Node.js 和 PATH 也需要在该环境配置。
+
+卸载扩展后旧启动器会提示重新安装/设置。启动器目录由用户管理；不再使用时可从 PATH 移除并手动清理。Windows CMD/PowerShell 为当前验证平台，POSIX 启动脚本随包提供。
+
+PowerShell 使用 `merc32.ps1` 保留宏参数中的引号和百分号，例如 `'-DMESSAGE="hello world"'`。如果本机执行策略禁止脚本，可用 CMD 中的 `merc32.cmd` 或直接运行 `node "$env:USERPROFILE\.merc32\bin\merc32-launcher.js" --help`；扩展不会修改执行策略。
 
 ### SoC 配置与生成
 

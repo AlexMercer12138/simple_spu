@@ -344,6 +344,9 @@ function assertVsixContents(audit, extensionRoot) {
         'extension/package.json',
         'extension/readme.md',
         'extension/out/extension.js',
+        'extension/out/cli.js',
+        'extension/out/cliInstall.js',
+        'extension/out/cliLauncher.js',
         'extension/language-configuration/language-configuration.json',
         'extension/syntaxes/merc32-asm.tmLanguage.json',
         'extension/snippets/merc32-asm.json',
@@ -933,6 +936,7 @@ async function runInstalledSmoke(options) {
             `installed smoke is missing network-denial flag ${argument}`);
     }
     const hostEnvironment = offlineEnvironment({
+        MERC32_CLI_HOME: path.join(options.tempRoot, 'cli-home'),
         MERC32_SMOKE_CONFIG: configFile,
         MERC32_SMOKE_EXTENSIONS_DIR: extensionsDir,
         MERC32_SMOKE_INSTALLED_EXTENSION: installedExtension,

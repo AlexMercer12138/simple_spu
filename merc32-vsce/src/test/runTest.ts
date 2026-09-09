@@ -57,6 +57,7 @@ async function main(): Promise<void> {
             extensionTestsEnv: {
                 MERC32_TEST_VSCODE_VERSION: VSCODE_VERSION,
                 MERC32_TEST_WORKSPACE: workspaceDir,
+                MERC32_CLI_HOME: path.join(workspaceDir, 'cli-home'),
             },
         });
     } finally {

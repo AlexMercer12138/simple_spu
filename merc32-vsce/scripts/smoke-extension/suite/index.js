@@ -103,7 +103,14 @@ async function run() {
         assert.strictEqual(extension.isActive, true,
             'explicit installed MERC32 extension activation did not complete');
 
+        const cliBin = path.join(requiredEnvironment('MERC32_CLI_HOME'), 'bin');
+        assert.strictEqual(comparablePath(JSON.parse(fs.readFileSync(path.join(cliBin, 'merc32-target.json'), 'utf8')).extensionRoot),
+            comparablePath(extension.extensionPath), 'installed CLI launcher did not target the installed extension');
+        requireExactFile(path.join(cliBin, 'merc32-launcher.js'), 'installed CLI launcher');
+        requireExactFile(path.join(cliBin, process.platform === 'win32' ? 'merc32.cmd' : 'merc32'), 'installed shell launcher');
+
         const commands = await vscode.commands.getCommands(true);
+        assert.ok(commands.includes('merc32.cli.setup'), 'CLI setup command was not registered');
         assert.ok(commands.includes(GENERATE_COMMAND),
             `installed extension did not register ${GENERATE_COMMAND}`);
         const generated = await vscode.commands.executeCommand(

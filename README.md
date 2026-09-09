@@ -114,6 +114,8 @@ MERC32/
 
 详细安装、使用方法与配置项见 [merc32-vsce/README.md](merc32-vsce/README.md)。
 
+扩展也内置独立 CLI。安装系统 Node.js 后，执行 **MERC32: Set Up Command Line**，将显示的固定目录加入 PATH 一次，即可在外部终端运行 `merc32 build main.c --format mem --out-dir build`。无需 npm 发包或安装 npm 包；详见扩展文档中的命令行说明。
+
 ### QSPI NOR 启动加载器
 
 [`example/nor_flash_bootloader.c`](example/nor_flash_bootloader.c) 是默认 SoC

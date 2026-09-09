@@ -669,7 +669,9 @@ function compactArtifactPaths(manifest: SocManifest): string[] {
             const rightSlot = right.startsWith('firmware/ilb_') ? 0 : 1;
             return leftSlot - rightSlot || compareText(left, right);
         });
-    return [...mandatory, ...firmware];
+    const drivers = manifest.files.some(record => record.path === 'software/drivers/merc32_drivers.h')
+        ? ['software/drivers/merc32_drivers.h'] : [];
+    return [...mandatory, ...drivers, ...firmware];
 }
 
 function sameConfigIdentity(sourceConfig: string, configUri: vscode.Uri): boolean {

@@ -2,7 +2,7 @@
   "name": "merc32-vsce",
   "displayName": "MERC32 Toolchain",
   "description": "MERC32 SoC configurator, peripheral drivers, C17 compiler and ROM toolchain",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "publisher": "Vikai-mercer",
   "icon": "images/icon.png",
   "repository": "https://github.com/AlexMercer12138/MERC32",
@@ -20,6 +20,7 @@
     "verilog"
   ],
   "activationEvents": [
+    "onCommand:merc32.cli.setup",
     "onLanguage:merc32-asm",
     "onLanguage:c",
     "onCustomEditor:merc32.socConfigEditor",
@@ -71,6 +72,10 @@
       }
     ],
     "commands": [
+      {
+        "command": "merc32.cli.setup",
+        "title": "MERC32: Set Up Command Line"
+      },
       {
         "command": "merc32-asm.compile",
         "title": "MERC32: Build Active File",
@@ -339,6 +344,8 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
+    "test:cli": "npm run compile && node scripts/test-cli.js && node scripts/test-cli-install.js",
+    "test:cli:vsix": "node scripts/test-cli.js --vsix merc32-vsce.vsix",
     "sync:drivers": "node scripts/sync-ip-drivers.js",
     "test:soc:drivers": "npm run compile && node scripts/test-soc-drivers.js",
     "prepare:resources": "node scripts/prepare-resources.js",
@@ -382,7 +389,7 @@
     "test:smoke-extension:unit": "node scripts/test-smoke-extension.js",
     "test:vsix:unit": "node scripts/test-vsix-smoke-state.js",
     "test:vsix": "node scripts/test-vsix-smoke.js merc32-vsce.vsix",
-    "test": "npm run compile && npm run prepare:resources && node scripts/test-test-infrastructure.js && node scripts/test-pseudo-instructions.js && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js && node scripts/test-c-embedded-contract.js && node scripts/test-c-embedded.js && node scripts/test-c-aggregate-calls.js && node scripts/test-c-optimization.js && node scripts/test-c-registers.js && node scripts/test-c-irq-intrinsics.js && node scripts/test-runtime-memory-execution.js && node scripts/test-linker-relaxation.js && node scripts/test-c-far-control-flow.js && node scripts/test-linker-gc.js && node scripts/test-c-function-gc.js && node scripts/test-c-inline.js && node scripts/test-c-control-flow.js",
+    "test": "npm run compile && npm run prepare:resources && node scripts/test-cli.js && node scripts/test-cli-install.js && node scripts/test-test-infrastructure.js && node scripts/test-pseudo-instructions.js && node scripts/test-c-preprocessor.js && node scripts/test-c-compiler.js && node scripts/test-c-embedded-contract.js && node scripts/test-c-embedded.js && node scripts/test-c-aggregate-calls.js && node scripts/test-c-optimization.js && node scripts/test-c-registers.js && node scripts/test-c-irq-intrinsics.js && node scripts/test-runtime-memory-execution.js && node scripts/test-linker-relaxation.js && node scripts/test-c-far-control-flow.js && node scripts/test-linker-gc.js && node scripts/test-c-function-gc.js && node scripts/test-c-inline.js && node scripts/test-c-control-flow.js",
     "flash:image": "npm run compile && node out/flashImage.js",
     "watch": "tsc -watch -p ./"
   },

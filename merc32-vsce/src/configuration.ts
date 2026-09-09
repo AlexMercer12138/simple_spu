@@ -2,31 +2,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { EXTENSION_CONFIG_SECTION } from './constants';
-import { DEFAULT_OUTPUT_FORMAT, isOutputFormat, OutputFormat } from './types';
-
-export interface AssemblerSettings {
-    outputFormat: OutputFormat;
-    outputDir: string;
-    cKeepAssembly: boolean;
-    cDataBase: number;
-    cDlbAddrWidth: number;
-    cCodeBase: number;
-    cOptimization: 'none' | 'basic';
-}
+import { isOutputFormat } from './types';
+import { AssemblerSettings, defaultAssemblerSettings } from './toolchainSettings';
+export type { AssemblerSettings } from './toolchainSettings';
 
 export function getAssemblerSettings(sourceFile: string): AssemblerSettings {
     const config = vscode.workspace.getConfiguration(EXTENSION_CONFIG_SECTION);
-    const rawOutputFormat = config.get<string>('outputFormat', DEFAULT_OUTPUT_FORMAT);
+    const defaults = defaultAssemblerSettings(sourceFile);
+    const rawOutputFormat = config.get<string>('outputFormat', defaults.outputFormat);
     const customOutputPath = config.get<string>('outputPath', '');
 
     return {
-        outputFormat: isOutputFormat(rawOutputFormat) ? rawOutputFormat : DEFAULT_OUTPUT_FORMAT,
+        outputFormat: isOutputFormat(rawOutputFormat) ? rawOutputFormat : defaults.outputFormat,
         outputDir: resolveOutputDir(sourceFile, customOutputPath),
-        cKeepAssembly: config.get<boolean>('c.keepAssembly', true),
-        cDataBase: parseIntegerSetting(config.get<string>('c.dataBase', '0x08000000'), 0x0800_0000),
-        cDlbAddrWidth: config.get<number>('c.dlbAddrWidth', 16),
-        cCodeBase: parseIntegerSetting(config.get<string>('c.codeBase', '0x00000000'), 0),
-        cOptimization: config.get<'none' | 'basic'>('c.optimization', 'basic'),
+        cKeepAssembly: config.get<boolean>('c.keepAssembly', defaults.cKeepAssembly),
+        cDataBase: parseIntegerSetting(config.get<string>('c.dataBase'), defaults.cDataBase),
+        cDlbAddrWidth: config.get<number>('c.dlbAddrWidth', defaults.cDlbAddrWidth),
+        cCodeBase: parseIntegerSetting(config.get<string>('c.codeBase'), defaults.cCodeBase),
+        cOptimization: config.get<'none' | 'basic'>('c.optimization', defaults.cOptimization),
     };
 }
 
